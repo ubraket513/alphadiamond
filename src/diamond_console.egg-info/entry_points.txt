@@ -1,0 +1,2 @@
+[console_scripts]
+diamond = diamond.main:main

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chinese-checkers-console"
+name = "diamond-console"
 version = "0.1.0"
-description = "3-player Chinese Checkers tournament/operator console (PySide6 + QML)"
+description = "3-player Diamond tournament/operator console (PySide6 + QML)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -19,7 +19,7 @@ dev = [
 ]
 
 [project.scripts]
-chinese-checkers = "chinese_checkers.main:main"
+diamond = "diamond.main:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -28,7 +28,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-chinese_checkers = ["qml/*.qml", "qml/Style/*.qml", "qml/Style/qmldir"]
+diamond = ["qml/*.qml", "qml/Style/*.qml", "qml/Style/qmldir"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

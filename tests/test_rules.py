@@ -3,22 +3,22 @@ from __future__ import annotations
 import pytest
 from conftest import make_state
 
-from chinese_checkers.game.board import CAMP_SIZE
-from chinese_checkers.game.move import Move, MoveKind
-from chinese_checkers.game.rules import (
+from diamond.game.board import CAMP_SIZE
+from diamond.game.move import Move, MoveKind
+from diamond.game.rules import (
     IllegalMoveError,
     find_winner,
     has_finished,
     legal_moves,
     validate_move,
 )
-from chinese_checkers.game.state import DEFAULT_PLAYERS, EMPTY, initial_state
+from diamond.game.state import DEFAULT_PLAYERS, EMPTY, initial_state
 
 
 def test_initial_state_gives_each_player_ten_pieces(board):
     state = initial_state()
     for spec in DEFAULT_PLAYERS:
-        assert len(state.positions_of(spec.id)) == CAMP_SIZE
+        assert len(state.positions_of(spec.id)) == CAMP_SIZE == 10
 
 
 def test_initial_state_has_thirty_pieces(board):
@@ -33,11 +33,20 @@ def test_initial_pieces_sit_exactly_in_their_home_camp(board):
         assert set(state.positions_of(spec.id)) == set(board.camp_positions(spec.camp))
 
 
-def test_target_camps_are_empty_at_the_start(board):
+def test_no_player_starts_with_a_piece_already_home(board):
     state = initial_state()
     for spec in DEFAULT_PLAYERS:
         for pid in board.camp_positions(spec.target_camp):
-            assert state.is_empty(pid)
+            assert state.occupant(pid) != spec.id
+
+
+def test_each_target_camp_starts_with_two_holes_held_by_opponents(board):
+    """A "+" camp and a "-" camp share a hexagon corner, so every target camp
+    opens with exactly two holes blocked.  They clear as opponents move out."""
+    state = initial_state()
+    for spec in DEFAULT_PLAYERS:
+        blocked = [pid for pid in board.camp_positions(spec.target_camp) if not state.is_empty(pid)]
+        assert len(blocked) == 2
 
 
 def test_active_camps_are_distinct_and_targets_are_opposites():
@@ -102,3 +111,76 @@ def test_a_target_camp_filled_by_the_wrong_player_is_not_a_win(board):
 
 def test_no_winner_in_the_initial_position(board):
     assert find_winner(board, initial_state(), DEFAULT_PLAYERS) is None
+
+
+# -- match setup: seat count and turn order ---------------------------------
+
+
+def test_two_player_match_uses_opposite_camps(board):
+    """Head-to-head seats must face each other, so each aims at the other's home."""
+    from diamond.game.state import build_players
+
+    players = build_players(2)
+    assert len(players) == 2
+    assert players[0].camp is players[1].target_camp
+    assert players[1].camp is players[0].target_camp
+
+
+def test_turn_order_is_the_seat_list_order(board):
+    from diamond.game.state import build_players, next_player_id
+
+    players = build_players(3, order=(3, 1, 2))
+    assert [p.id for p in players] == [3, 1, 2]
+    assert next_player_id(players, 3) == 1
+    assert next_player_id(players, 1) == 2
+    assert next_player_id(players, 2) == 3
+
+
+def test_first_player_to_act_follows_the_chosen_order(board):
+    from diamond.game.state import build_players, initial_state
+
+    for order in ((1, 2, 3), (2, 3, 1), (3, 1, 2)):
+        players = build_players(3, order=order)
+        assert initial_state(players, board).current_player_id == order[0]
+
+
+def test_next_player_skips_players_already_home(board):
+    from diamond.game.state import build_players, next_player_id
+
+    players = build_players(3)
+    assert next_player_id(players, 1, skip=(2,)) == 3
+    assert next_player_id(players, 3, skip=(1,)) == 2
+    # Everyone skipped: caller gets its own id back rather than looping forever.
+    assert next_player_id(players, 1, skip=(1, 2, 3)) == 1
+
+
+def test_every_seat_count_places_ten_pieces_per_player(board):
+    from diamond.game.state import EMPTY, SUPPORTED_PLAYER_COUNTS, build_players, initial_state
+
+    for count in SUPPORTED_PLAYER_COUNTS:
+        players = build_players(count)
+        state = initial_state(players, board)
+        assert sum(1 for v in state.occupancy if v != EMPTY) == 10 * count
+        for spec in players:
+            assert len(state.positions_of(spec.id)) == 10
+
+
+def test_build_players_rejects_a_bad_seat_count_or_order(board):
+    from diamond.game.state import build_players
+
+    with pytest.raises(ValueError):
+        build_players(4)
+    with pytest.raises(ValueError):
+        build_players(3, order=(1, 1, 2))
+    with pytest.raises(ValueError):
+        build_players(2, order=(1, 3))  # seat 3 is not in a 2-player match
+
+
+def test_ai_seats_become_ai_players(board):
+    from diamond.game.state import PlayerKind, build_players
+
+    players = build_players(3, ai_seats=(2,))
+    kinds = {p.id: p.kind for p in players}
+    assert kinds[2] is PlayerKind.AI
+    assert kinds[1] is PlayerKind.HUMAN
+    assert kinds[3] is PlayerKind.HUMAN

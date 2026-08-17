@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 from conftest import pump
 
-from chinese_checkers.agents.base import MoveProposal, MoveRequest
-from chinese_checkers.agents.random_agent import RandomAgent
-from chinese_checkers.app.controller import GameController, Phase
-from chinese_checkers.game.state import DEFAULT_PLAYERS, PlayerKind
+from diamond.agents.base import MoveProposal, MoveRequest
+from diamond.agents.random_agent import RandomAgent
+from diamond.app.controller import GameController, Phase
+from diamond.game.state import DEFAULT_PLAYERS, PlayerKind
 
 
 @pytest.fixture
@@ -263,19 +263,27 @@ def test_undo_discards_an_in_flight_ai_result(qapp):
 # -- game over -------------------------------------------------------------
 
 
-def test_filling_the_target_camp_ends_the_match(qapp, board):
-    from conftest import make_state
-
-    spec = DEFAULT_PLAYERS[0]
+def _one_move_from_home(board, spec):
     target = board.camp_positions(spec.target_camp)
     last = target[-1]
     entry = next(n for n in board.neighbours(last) if n is not None and n not in target)
     pieces = {pid: spec.id for pid in target[:-1]}
     pieces[entry] = spec.id
+    return pieces, entry, last
+
+
+def test_filling_the_target_camp_ends_a_two_player_match(qapp, board):
+    from conftest import make_state
+
+    from diamond.game.state import build_players
+
+    players = build_players(2, ai_seats=(2,))
+    spec = players[0]
+    pieces, entry, last = _one_move_from_home(board, spec)
 
     controller = GameController(
-        DEFAULT_PLAYERS,
-        agents={3: RandomAgent(seed=1)},
+        players,
+        agents={2: RandomAgent(seed=1)},
         thinking_delay_ms=0,
         animate=False,
         initial_state=make_state(board, pieces, current_player_id=spec.id, turn=40),
@@ -293,12 +301,91 @@ def test_filling_the_target_camp_ends_the_match(qapp, board):
         assert controller.winnerId == spec.id
         assert controller.winnerName == spec.name
         assert finished == [spec.id]
+        assert [row["playerId"] for row in controller.standings] == [spec.id, players[1].id]
 
         # the board is locked once the match is over
         errors = []
         controller.errorRaised.connect(errors.append)
         controller.selectPosition(last)
         assert errors
+    finally:
+        controller.shutdown()
+
+
+def test_three_player_match_continues_after_first_place(qapp, board):
+    """First place is announced, the seat drops out, the match stays live."""
+    from conftest import make_state
+
+    spec = DEFAULT_PLAYERS[0]
+    others = [p for p in DEFAULT_PLAYERS if p.id != spec.id]
+    pieces, entry, last = _one_move_from_home(board, spec)
+    target = set(board.camp_positions(spec.target_camp))
+    for other in others:
+        for pid in board.camp_positions(other.camp):
+            if pid not in target:
+                pieces.setdefault(pid, other.id)
+
+    controller = GameController(
+        DEFAULT_PLAYERS,
+        agents={3: RandomAgent(seed=1)},
+        thinking_delay_ms=0,
+        animate=False,
+        initial_state=make_state(board, pieces, current_player_id=spec.id, turn=40),
+    )
+    try:
+        over = []
+        placed = []
+        controller.gameFinished.connect(over.append)
+        controller.playerFinished.connect(lambda pid, place: placed.append((pid, place)))
+
+        controller.selectPosition(entry)
+        controller.selectPosition(last)
+        controller.confirmProposal()
+
+        assert placed == [(spec.id, 1)]
+        assert over == []
+        assert not controller.isGameOver
+        assert controller.winnerId == spec.id
+        assert controller.currentPlayerId != spec.id
+        assert [row["playerId"] for row in controller.standings] == [spec.id]
+        assert "2nd" in controller.resultSummary
+    finally:
+        controller.shutdown()
+
+
+def test_start_match_reconfigures_seats_and_turn_order(qapp, board):
+    controller = GameController(
+        DEFAULT_PLAYERS, agents={3: RandomAgent(seed=1)}, thinking_delay_ms=0, animate=False
+    )
+    try:
+        assert controller.startMatch([2, 1], [])
+        assert controller.playerCount == 2
+        assert list(controller.turnOrder) == [2, 1]
+        assert controller.currentPlayerId == 2
+        assert controller.playerModel.rowCount() == 2
+        assert controller.pieceModel.rowCount() == 20
+
+        assert controller.startMatch([3, 1, 2], [3])
+        assert list(controller.turnOrder) == [3, 1, 2]
+        assert controller.currentPlayerId == 3
+        assert controller.isCurrentPlayerAi
+        assert controller.pieceModel.rowCount() == 30
+    finally:
+        controller.shutdown()
+
+
+def test_start_match_rejects_an_invalid_setup(qapp, board):
+    controller = GameController(
+        DEFAULT_PLAYERS, agents={3: RandomAgent(seed=1)}, thinking_delay_ms=0, animate=False
+    )
+    try:
+        errors = []
+        controller.errorRaised.connect(errors.append)
+        assert not controller.startMatch([1, 1, 2], [])
+        assert errors
+        # the running match is untouched by a rejected setup
+        assert controller.playerCount == 3
+        assert list(controller.turnOrder) == [1, 2, 3]
     finally:
         controller.shutdown()
 

@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from chinese_checkers.game.rules import IllegalMoveError
-from chinese_checkers.game.session import SCHEMA_VERSION, GameSession
-from chinese_checkers.game.state import initial_state
+from diamond.game.rules import IllegalMoveError
+from diamond.game.session import SCHEMA_VERSION, GameSession
+from diamond.game.state import initial_state
 
 
 def play(session: GameSession, count: int) -> None:
@@ -159,8 +159,9 @@ def one_move_from_winning(board, spec):
     return pieces, entry, last
 
 
-def test_finishing_the_target_camp_ends_the_game(board):
-    from chinese_checkers.game.state import DEFAULT_PLAYERS, GameStatus
+def test_first_finisher_does_not_end_a_three_player_match(board):
+    """Play continues past first place so second and third get decided."""
+    from diamond.game.state import DEFAULT_PLAYERS, GameStatus
 
     from conftest import make_state
 
@@ -171,23 +172,77 @@ def test_finishing_the_target_camp_ends_the_game(board):
     session = GameSession(initial=setup)
     assert not session.is_over
 
-    move = session.moves_from(entry)[last]
-    session.commit(move)
+    session.commit(session.moves_from(entry)[last])
+
+    assert session.state.finish_order == (spec.id,)
+    assert session.state.winner_id == spec.id
+    assert session.state.place_of(spec.id) == 1
+    # ...but the match is still live, and the finisher is out of the rotation.
+    assert not session.is_over
+    assert session.state.status is GameStatus.IN_PROGRESS
+    assert session.state.current_player_id != spec.id
+
+
+def test_first_finisher_ends_a_two_player_match(board):
+    """With two seats there is nothing left to decide, so first place ends it."""
+    from diamond.game.state import GameStatus, build_players
+
+    from conftest import make_state
+
+    players = build_players(2)
+    spec = players[0]
+    pieces, entry, last = one_move_from_winning(board, spec)
+
+    setup = make_state(board, pieces, current_player_id=spec.id, turn=40)
+    session = GameSession(players=players, initial=setup)
+    session.commit(session.moves_from(entry)[last])
 
     assert session.is_over
     assert session.state.status is GameStatus.FINISHED
     assert session.state.winner_id == spec.id
+    # The loser is placed implicitly; nobody had to overtake them.
+    assert session.state.finish_order == (spec.id, players[1].id)
+    assert session.state.place_of(players[1].id) == 2
 
 
-def test_no_further_moves_are_accepted_after_the_game_ends(board):
-    from chinese_checkers.game.state import DEFAULT_PLAYERS
+def test_a_finished_player_is_skipped_in_the_turn_rotation(board):
+    from diamond.game.state import DEFAULT_PLAYERS
 
     from conftest import make_state
 
     spec = DEFAULT_PLAYERS[0]
+    others = [p for p in DEFAULT_PLAYERS if p.id != spec.id]
     pieces, entry, last = one_move_from_winning(board, spec)
+    # Give the other two seats their home camps so they have moves to make,
+    # minus the corner holes their camps share with P1's target camp.
+    target = set(board.camp_positions(spec.target_camp))
+    for other in others:
+        for pid in board.camp_positions(other.camp):
+            if pid not in target:
+                pieces.setdefault(pid, other.id)
+
     setup = make_state(board, pieces, current_player_id=spec.id, turn=40)
     session = GameSession(initial=setup)
+    session.commit(session.moves_from(entry)[last])
+
+    seen = set()
+    for _ in range(6):
+        seen.add(session.state.current_player_id)
+        session.commit(session.legal_moves()[0])
+    assert spec.id not in seen
+    assert seen == {other.id for other in others}
+
+
+def test_no_further_moves_are_accepted_after_the_game_ends(board):
+    from diamond.game.state import build_players
+
+    from conftest import make_state
+
+    players = build_players(2)
+    spec = players[0]
+    pieces, entry, last = one_move_from_winning(board, spec)
+    setup = make_state(board, pieces, current_player_id=spec.id, turn=40)
+    session = GameSession(players=players, initial=setup)
     winning_move = session.moves_from(entry)[last]
     session.commit(winning_move)
 

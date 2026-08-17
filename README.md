@@ -1,7 +1,7 @@
-# Chinese Checkers — 3-Player Controller Console
+# Diamond — 3-Player Controller Console
 
-A desktop **tournament/operator console** for running a real 3-player Chinese
-Checkers match. It is not an online game: one human *Controller* sits at the
+A desktop **tournament/operator console** for running a real 3-player Diamond
+match. It is not an online game: one human *Controller* sits at the
 computer, records the moves that Players 1 and 2 make, asks the agent for
 Player 3's move, and physically plays that move on the real board before
 confirming it.
@@ -19,7 +19,7 @@ touching the GUI or the controller** — see
 
 | | |
 |---|---|
-| Board | Standard 121-hole six-pointed star, derived from lattice coordinates |
+| Board | 73-hole six-pointed star (Diamond geometry), derived from lattice coordinates |
 | Players | P1 human, P2 human, P3 agent — 10 pieces each, 30 total |
 | Turn order | P1 → P2 → P3 → P1 … |
 | Agent | `RandomAgent` (uniform over legal moves, seedable) |
@@ -69,7 +69,7 @@ proposes — happen in `game/rules.py`.
 ### Layout
 
 ```
-src/chinese_checkers/
+src/diamond/
 ├── main.py              entry point: engine + QML wiring
 ├── app/
 │   ├── controller.py    GameController: the turn state machine
@@ -78,7 +78,7 @@ src/chinese_checkers/
 │   └── ai_worker.py     async agent boundary + generation tokens
 ├── game/
 │   ├── coordinates.py   cube lattice coordinates and the 6 directions
-│   ├── board.py         121 holes, neighbours, camps (derived, not hard-coded)
+│   ├── board.py         73 holes, neighbours, camps (derived, not hard-coded)
 │   ├── move.py          Move / MoveKind
 │   ├── state.py         GameState (immutable), PlayerSpec, initial position
 │   ├── rules.py         move generation, validation, win detection
@@ -101,20 +101,43 @@ Qt, and leaves `GameController` a thin Qt wrapper.
 
 ### Board geometry
 
-The 121 holes are **derived**, never hard-coded as pixels. Using cube
+The 73 holes are **derived**, never hard-coded as pixels. Using cube
 coordinates with `x + y + z == 0`:
 
 | set | constraint | holes |
 |---|---|---|
-| triangle up | `x ≥ -4 ∧ y ≥ -4 ∧ z ≥ -4` | 91 |
-| triangle down | `x ≤ 4 ∧ y ≤ 4 ∧ z ≤ 4` | 91 |
-| central hexagon (overlap) | `-4 ≤ x, y, z ≤ 4` | 61 |
-| **star** | union | **121** |
+| triangle up | `x ≥ -3 ∧ y ≥ -3 ∧ z ≥ -3` | 55 |
+| triangle down | `x ≤ 3 ∧ y ≤ 3 ∧ z ≤ 3` | 55 |
+| central hexagon (overlap) | `-3 ≤ x, y, z ≤ 3` | 37 |
+| **star** | union | **73** |
 
-Each camp is one inequality (`x ≥ 5`, `z ≤ -5`, …) giving exactly 10 holes, and
-a camp's opposite is the same axis with the sign flipped — which is precisely
-the "move to the camp across the board" relation. Position IDs `0…120` come
-from sorting by `(z, x)`, so they are stable and safe to persist.
+The hexagon is **7 holes across**, so each of its six sides is **4 holes** long.
+
+#### Camps — the Diamond rule
+
+This is where Diamond departs from traditional Chinese Checkers. A camp is not
+just the star point sticking out past the hexagon: it is the **10-hole triangle
+formed by that point plus the hexagon side it stands on**. The triangle's
+4-hole base edge and the hexagon's 4-hole side are the *same row of holes*, so
+at the opening **3 of the 6 hexagon sides are lined with pieces**.
+
+| camp | constraint | rows | holes |
+|---|---|---|---|
+| `x+` | `x ≥ 3`, clipped to triangle up | 4 + 3 + 2 + 1 | 10 |
+
+A camp's opposite is the same axis with the sign flipped — precisely the "move
+to the camp across the board" relation. Position IDs `0…72` come from sorting
+by `(z, x)`, so they are stable and safe to persist.
+
+Two consequences the rules and the renderer both live with:
+
+* The three starting camps `x+, y+, z+` are the corners of triangle *up*, so
+  they sit on **alternating** hexagon sides, are mutually disjoint, and the 30
+  opening pieces all fit. The three targets `x-, y-, z-` likewise.
+* A `+` camp and a `-` camp still meet at a single hexagon **corner** hole.
+  Camps are therefore **not** globally disjoint, and every target camp opens
+  with two of its ten holes held by opponents — they clear as those opponents
+  move out. Nothing in the code may assume camps are disjoint.
 
 QML receives logical coordinates and converts them to screen space itself; the
 lattice, camp fills and move paths are drawn procedurally on a `Canvas`, so the
@@ -171,20 +194,20 @@ pip install -e ".[dev]"     # runtime + pytest
 ## How to run
 
 ```bash
-python -m chinese_checkers
+python -m diamond
 ```
 
 or, after installation:
 
 ```bash
-chinese-checkers
+diamond
 ```
 
 Options:
 
 ```bash
-python -m chinese_checkers --seed 42            # reproducible RandomAgent
-python -m chinese_checkers --thinking-delay 0   # skip the artificial pause
+python -m diamond --seed 42            # reproducible RandomAgent
+python -m diamond --thinking-delay 0   # skip the artificial pause
 ```
 
 The window opens at 1440 × 900 and stays usable down to 980 × 640; the board
@@ -204,7 +227,7 @@ QT_QPA_PLATFORM=offscreen python -m pytest
 tests need no Qt at all; the controller and integration tests run on a plain
 `QCoreApplication` — no window is ever created.
 
-The suite covers: board topology (121 holes, 10-hole camps, neighbour
+The suite covers: board topology (73 holes, 10-hole camps, neighbour
 symmetry), initial placement, move generation (steps, blocked steps, single and
 chained jumps, jump collinearity, cycle prevention), turn cycling, proposal /
 confirm / cancel, undo, save/load round-trips, win detection, RandomAgent
@@ -367,7 +390,7 @@ Nothing else has to change:
 * the async boundary (`AiWorker`) already runs the agent off the GUI thread and
   already tolerates searches lasting seconds;
 * generation tokens already discard results from superseded positions;
-* `GameState` is immutable with a flat 121-entry occupancy tuple, cheap to copy
+* `GameState` is immutable with a flat 73-entry occupancy tuple, cheap to copy
   and ready for state hashing;
 * the engine validates every agent proposal, so a buggy search cannot corrupt
   the game.

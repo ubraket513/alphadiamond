@@ -5,9 +5,10 @@ from __future__ import annotations
 import pytest
 from conftest import pump
 
-from chinese_checkers.agents.random_agent import RandomAgent
-from chinese_checkers.app.controller import GameController, Phase
-from chinese_checkers.game.state import DEFAULT_PLAYERS, PlayerKind
+from diamond.agents.random_agent import RandomAgent
+from diamond.game.board import CAMP_SIZE, PLAYABLE_HOLES
+from diamond.app.controller import GameController, Phase
+from diamond.game.state import DEFAULT_PLAYERS, PlayerKind
 
 
 @pytest.fixture
@@ -74,8 +75,8 @@ def test_models_stay_in_sync_with_the_engine(qapp, ctrl):
     piece_model = ctrl.pieceModel
     history_model = ctrl.historyModel
 
-    assert board_model.rowCount() == 121
-    assert piece_model.rowCount() == 30
+    assert board_model.rowCount() == PLAYABLE_HOLES
+    assert piece_model.rowCount() == CAMP_SIZE * 3
     assert history_model.rowCount() == 0
 
     human_turn(ctrl)
@@ -84,10 +85,10 @@ def test_models_stay_in_sync_with_the_engine(qapp, ctrl):
     ctrl.confirmProposal()
 
     assert history_model.rowCount() == 3
-    assert piece_model.rowCount() == 30
+    assert piece_model.rowCount() == CAMP_SIZE * 3
 
     occupant_role = role(board_model, "occupant")
-    for pid in range(121):
+    for pid in range(PLAYABLE_HOLES):
         shown = board_model.data(board_model.index(pid, 0), occupant_role)
         assert shown == ctrl.session.state.occupant(pid)
 
@@ -97,7 +98,7 @@ def test_models_stay_in_sync_with_the_engine(qapp, ctrl):
         for row in range(piece_model.rowCount())
     )
     assert occupied == sorted(
-        pid for pid in range(121) if not ctrl.session.state.is_empty(pid)
+        pid for pid in range(PLAYABLE_HOLES) if not ctrl.session.state.is_empty(pid)
     )
 
 
@@ -136,6 +137,6 @@ def test_a_long_random_match_never_produces_an_illegal_state(qapp, ctrl):
             human_turn(ctrl)
 
         state = ctrl.session.state
-        assert sum(1 for v in state.occupancy if v != 0) == 30
+        assert sum(1 for v in state.occupancy if v != 0) == CAMP_SIZE * 3
         for player_id in (1, 2, 3):
-            assert len(state.positions_of(player_id)) == 10
+            assert len(state.positions_of(player_id)) == CAMP_SIZE

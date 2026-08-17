@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from conftest import make_state
 
-from chinese_checkers.game.coordinates import DIRECTIONS, Cube
-from chinese_checkers.game.move import MoveKind
-from chinese_checkers.game.rules import find_legal_move, legal_moves, moves_from
-from chinese_checkers.game.state import initial_state
+from diamond.game.coordinates import DIRECTIONS, Cube
+from diamond.game.move import MoveKind
+from diamond.game.rules import find_legal_move, legal_moves, moves_from
+from diamond.game.state import initial_state
 
 
 def cid(board, x, y, z):
@@ -52,11 +52,11 @@ def test_jump_blocked_when_landing_is_occupied(board):
 
 
 def test_chained_jump_is_one_move(board):
-    origin = cid(board, 0, 0, 0)
-    over1 = cid(board, 1, -1, 0)
-    mid = cid(board, 2, -2, 0)
-    over2 = cid(board, 3, -3, 0)
-    landing = cid(board, 4, -4, 0)
+    origin = cid(board, -2, 2, 0)
+    over1 = cid(board, -1, 1, 0)
+    mid = cid(board, 0, 0, 0)
+    over2 = cid(board, 1, -1, 0)
+    landing = cid(board, 2, -2, 0)
     state = make_state(board, {origin: 1, over1: 2, over2: 2})
     move = find_legal_move(board, state, origin, landing)
     assert move is not None

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from chinese_checkers.agents.base import MoveProposal, MoveRequest
-from chinese_checkers.agents.random_agent import RandomAgent
-from chinese_checkers.game.rules import legal_moves, validate_move
-from chinese_checkers.game.session import GameSession
-from chinese_checkers.game.state import initial_state
+from diamond.agents.base import MoveProposal, MoveRequest
+from diamond.agents.random_agent import RandomAgent
+from diamond.game.rules import legal_moves, validate_move
+from diamond.game.session import GameSession
+from diamond.game.state import initial_state
 
 
 def request_for(board, state, avoid=(), seed=None):

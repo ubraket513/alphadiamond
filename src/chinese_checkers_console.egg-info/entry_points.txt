@@ -1,2 +1,0 @@
-[console_scripts]
-chinese-checkers = chinese_checkers.main:main

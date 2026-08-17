@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from chinese_checkers.game.board import standard_board
-from chinese_checkers.game.state import EMPTY, GameState
+from diamond.game.board import standard_board
+from diamond.game.state import EMPTY, GameState
 
 
 @pytest.fixture(scope="session")
