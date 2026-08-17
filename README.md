@@ -1,12 +1,12 @@
-# Diamond — 3-Player Controller Console
+# Diamond — Controller Console
 
-A desktop **tournament/operator console** for running a real 3-player Diamond
-match. It is not an online game: one human *Controller* sits at the
-computer, records the moves that Players 1 and 2 make, asks the agent for
-Player 3's move, and physically plays that move on the real board before
+A desktop **tournament/operator console** for running a real 2- or 3-player
+Diamond match. It is not an online game: one human *Controller* sits at the
+computer, records the moves the human players make, asks the agent for its
+seat's move, and physically plays that move on the real board before
 confirming it.
 
-Player 3 is currently driven by a `RandomAgent`. The whole point of the
+The agent seat is currently driven by a `RandomAgent`. The whole point of the
 architecture is that it can be replaced by an AlphaZero agent later **without
 touching the GUI or the controller** — see
 [Future AlphaZero integration point](#future-alphazero-integration-point).
@@ -20,9 +20,10 @@ touching the GUI or the controller** — see
 | | |
 |---|---|
 | Board | 73-hole six-pointed star (Diamond geometry), derived from lattice coordinates |
-| Players | P1 human, P2 human, P3 agent — 10 pieces each, 30 total |
-| Turn order | P1 → P2 → P3 → P1 … |
-| Agent | `RandomAgent` (uniform over legal moves, seedable) |
+| Players | 2 or 3 seats, chosen at match setup — 10 pieces each |
+| Turn order | Chosen at match setup; any permutation of the seats |
+| Agent | `RandomAgent` (uniform over legal moves, seedable) on any one seat, or none |
+| Typeface | Google Sans Flex, bundled under the OFL |
 | GUI | PySide6 / Qt 6 / Qt Quick / QML |
 | Engine | Pure Python, no Qt imports, fully unit-tested headless |
 
@@ -75,6 +76,7 @@ src/diamond/
 │   ├── controller.py    GameController: the turn state machine
 │   ├── models.py        BoardModel, PieceModel, MoveHistoryModel,
 │   │                    PlayerModel, BoardGeometry
+│   ├── fonts.py         registers the bundled typeface with Qt
 │   └── ai_worker.py     async agent boundary + generation tokens
 ├── game/
 │   ├── coordinates.py   cube lattice coordinates and the 6 directions
@@ -87,11 +89,16 @@ src/diamond/
 ├── agents/
 │   ├── base.py          Agent protocol, MoveRequest, MoveProposal
 │   └── random_agent.py  RandomAgent
+├── assets/fonts/        bundled Google Sans Flex (OFL) + licence
 └── qml/
     ├── Main.qml  Board.qml  Hole.qml  Piece.qml
     ├── SidePanel.qml  GamePanel.qml  PlayerPanel.qml
     ├── MovePanel.qml  AiPanel.qml  HistoryPanel.qml
     ├── StatusBar.qml  PanelSection.qml  ActionButton.qml
+    ├── AppDialog.qml        the one styled shell every pop-up uses
+    ├── NewMatchDialog.qml   seat count, turn order, agent seat
+    ├── ResultDialog.qml     final standings
+    ├── SegmentedControl.qml ReorderButton.qml
     └── Style/Theme.qml   ← every colour, size and duration lives here
 ```
 
@@ -145,6 +152,80 @@ board stays sharp at any window size.
 
 ---
 
+## Match setup
+
+**New Game (Ctrl+N)** opens the setup dialog: seat count, turn order and which
+seat the agent drives.
+
+### Seat layouts
+
+Which camps are in play depends on the seat count, because every player must
+aim at the camp *directly across* the board:
+
+| Players | Camps | Why |
+|---|---|---|
+| 2 | `z+` vs `z-` | One camp and its literal opposite — head to head |
+| 3 | `z+`, `y+`, `x+` | The corners of triangle *up*, 120° apart |
+
+The three `+` camps are **not** opposite each other, so a 2-player match cannot
+simply take two of the 3-player seats — it needs its own layout. Both layouts
+keep the starting camps mutually disjoint, so the pieces always fit.
+
+Seat ids stay tied to a board position and colour, so reordering turns never
+changes where a player sits or what colour they are.
+
+### Turn order
+
+The seat list *is* the turn order — `next_player_id` walks it directly, and the
+first entry moves first. Any permutation is allowed. The setup dialog reorders
+with explicit up/down controls rather than drag-and-drop: with at most three
+rows the target is always one click away, and it stays keyboard-reachable.
+
+### Design references
+
+UI patterns were taken from comparable production interfaces on
+[Mobbin](https://mobbin.com):
+
+* **Segmented control for the seat count** — the closed-set picker used by
+  [HelloFresh's box-size dialog](https://mobbin.com/screens/7b1c1a2e-8d38-447e-8cee-54df649bdc73)
+  and [Cursor's team setup](https://mobbin.com/screens/16e397ce-db38-447e-92a2-994d341a83cf):
+  all options visible at once with the active one filled, so the choice and its
+  alternatives read in a single glance.
+* **Reorderable list in a modal** — the shape of
+  [Circle's "Re-order courses"](https://mobbin.com/screens/a0684ada-0fe1-410b-a8e6-f4109d3c33a7)
+  and [Behance's "Reorder Content"](https://mobbin.com/screens/c2e38307-e570-44b8-b96a-95b5709351e7):
+  a numbered list with per-row controls and one confirming action.
+* **Ranked result rows** — the compact leaderboard row (rank chip, identity,
+  result) from [Binance's ranking screen](https://mobbin.com/screens/921a90b8-c664-4fba-9c94-f00d0b6d1748)
+  and [Transit's contributor board](https://mobbin.com/screens/d1aa00b6-6263-41d9-9ac3-2c9a1a881f0d),
+  rather than a podium graphic — this is an operator console, so density beats
+  celebration furniture.
+
+### Pop-ups
+
+Every dialog uses `AppDialog.qml`, which paints its own surface, title, body
+text and buttons from `Theme`. The Basic Qt Quick style ships an unstyled
+`Dialog` that inherits the platform palette, which is what made the earlier
+pop-ups hard to read; nothing visible is left to inherit now, message text
+wraps instead of clipping, and the modal scrim is opaque enough to separate the
+dialog from the board lattice behind it.
+
+### Typography
+
+The UI is set in **Google Sans Flex**, bundled in `src/diamond/assets/fonts/`
+under the SIL Open Font License (Regular/Medium/Bold). It is registered with Qt
+at startup by `app/fonts.py`, which hands the resolved family name to QML — so
+the UI never asks for a family that might not exist. The font ships with the
+app rather than being assumed installed: no desktop OS provides it, and a
+missing family would silently fall back to a system default and shift every
+metric the layout was tuned against.
+
+Google Sans Flex is a Latin face with no arrow glyphs. Qt substitutes those
+from the system font database, so move notation (`12 → 34`) still renders; UI
+icons are drawn as shapes rather than typed, so they never depend on it.
+
+---
+
 ## Game rules implemented
 
 * **Single step** — slide into an adjacent empty hole.
@@ -157,9 +238,14 @@ board stays sharp at any window size.
   directions, one step apart each. Bent or arbitrary-diagonal jumps are not
   representable. A chain may change direction *between* hops, never within one.
 * **No cycles** — each hole is visited at most once per chain.
-* **Win** — a player finishes when all ten of their pieces occupy their target
-  camp. The first finisher ends the match; full 3-player ranking is
-  deliberately left as a future rule option.
+* **Finishing** — a player is home when all ten of their pieces occupy their
+  target camp. They take the next place on the podium and drop out of the turn
+  rotation; the others keep playing.
+* **End of match** — play stops once every place *but the last* is decided,
+  because the final seat has nobody left to overtake them and takes the
+  remaining place implicitly. In a 2-player match that means the first finisher
+  ends it; in a 3-player match play continues past first place to settle
+  **second**, and third falls out for free.
 
 ### Canonical path policy
 
@@ -330,8 +416,13 @@ JSON, written wherever you choose in the file dialog. The dialog opens at:
 ```
 
 A save contains the schema version, the players, the current board, current
-player, turn number, game status and the full move history. Pending proposals
-are intentionally **not** saved.
+player, turn number, game status, the finishing order so far, and the full move
+history. Pending proposals are intentionally **not** saved.
+
+The seat list is part of the save, so a 2-player match reloads as one, in its
+original turn order, whatever the session happened to be set up with. Schema
+version **2** added `finish_order` and the variable seat list; version 1 files
+are rejected rather than silently misread.
 
 Loading replays the saved history from the opening — which rebuilds the
 per-move snapshots that undo needs — and then cross-checks the result against
@@ -343,8 +434,9 @@ Undo works normally after a load.
 ## Current limitations
 
 * The agent is `RandomAgent`; there is no search, evaluation or learning.
-* Only the **first finisher** is detected. Play does not continue to rank the
-  remaining two players.
+* At most **one** seat can be driven by an agent; there is no agent-vs-agent mode.
+* A player with no legal move is reported as an error rather than being passed
+  over, since the position cannot arise in normal play.
 * No optional rules: pieces may leave a target camp, and may pass through or
   stop in camps that belong to other players.
 * Save files always describe a match played from the standard opening; a

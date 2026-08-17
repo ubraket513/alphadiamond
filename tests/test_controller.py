@@ -11,6 +11,7 @@ from conftest import pump
 from diamond.agents.base import MoveProposal, MoveRequest
 from diamond.agents.random_agent import RandomAgent
 from diamond.app.controller import GameController, Phase
+from diamond.game.board import PLAYABLE_HOLES
 from diamond.game.state import DEFAULT_PLAYERS, PlayerKind
 
 
@@ -74,7 +75,7 @@ def test_illegal_destination_keeps_the_selection(ctrl):
     ctrl.selectPosition(move.source)
     illegal = next(
         pid
-        for pid in range(121)
+        for pid in range(PLAYABLE_HOLES)
         if ctrl.session.state.is_empty(pid) and pid not in ctrl.session.moves_from(move.source)
     )
     errors = []
@@ -408,5 +409,72 @@ def test_an_illegal_agent_proposal_is_rejected_by_the_engine(qapp):
         assert pump(qapp, lambda: bool(errors))
         assert not controller.hasProposal
         assert controller.session.state.current_player_id == 3
+    finally:
+        controller.shutdown()
+
+
+def test_player_model_reports_the_finishing_place(qapp, board):
+    """Regression: the commit path once refreshed the model without the podium,
+    blanking every player's place until the next unrelated sync."""
+    from conftest import make_state
+
+    spec = DEFAULT_PLAYERS[0]
+    others = [p for p in DEFAULT_PLAYERS if p.id != spec.id]
+    pieces, entry, last = _one_move_from_home(board, spec)
+    target = set(board.camp_positions(spec.target_camp))
+    for other in others:
+        for pid in board.camp_positions(other.camp):
+            if pid not in target:
+                pieces.setdefault(pid, other.id)
+
+    controller = GameController(
+        DEFAULT_PLAYERS,
+        agents={3: RandomAgent(seed=1)},
+        thinking_delay_ms=0,
+        animate=False,
+        initial_state=make_state(board, pieces, current_player_id=spec.id, turn=40),
+    )
+    try:
+        controller.selectPosition(entry)
+        controller.selectPosition(last)
+        controller.confirmProposal()
+
+        model = controller.playerModel
+        roles = {bytes(v).decode(): k for k, v in model.roleNames().items()}
+        rows = [
+            {
+                name: model.data(model.index(r, 0), role)
+                for name, role in roles.items()
+            }
+            for r in range(model.rowCount())
+        ]
+        by_id = {row["playerId"]: row for row in rows}
+
+        assert by_id[spec.id]["place"] == 1
+        assert by_id[spec.id]["placeLabel"] == "1st"
+        assert by_id[spec.id]["homeCount"] == 10
+        for other in others:
+            assert by_id[other.id]["place"] == 0
+            assert by_id[other.id]["placeLabel"] == ""
+    finally:
+        controller.shutdown()
+
+
+def test_player_model_rows_follow_the_chosen_turn_order(qapp, board):
+    controller = GameController(
+        DEFAULT_PLAYERS, agents={3: RandomAgent(seed=1)}, thinking_delay_ms=0, animate=False
+    )
+    try:
+        assert controller.startMatch([3, 1, 2], [1])
+        model = controller.playerModel
+        roles = {bytes(v).decode(): k for k, v in model.roleNames().items()}
+        seats = [
+            model.data(model.index(r, 0), roles["playerId"]) for r in range(model.rowCount())
+        ]
+        turn_indexes = [
+            model.data(model.index(r, 0), roles["turnIndex"]) for r in range(model.rowCount())
+        ]
+        assert seats == [3, 1, 2]
+        assert turn_indexes == [1, 2, 3]
     finally:
         controller.shutdown()

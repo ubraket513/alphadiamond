@@ -28,7 +28,13 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-diamond = ["qml/*.qml", "qml/Style/*.qml", "qml/Style/qmldir"]
+diamond = [
+    "qml/*.qml",
+    "qml/Style/*.qml",
+    "qml/Style/qmldir",
+    "assets/fonts/*.ttf",
+    "assets/fonts/OFL.txt",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

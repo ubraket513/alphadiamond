@@ -33,6 +33,7 @@ from ..game.state import (
     player_by_id,
 )
 from .ai_worker import AiWorker
+from .sounds import MovePlayer
 from .models import BoardGeometry, BoardModel, MoveHistoryModel, PieceModel, PlayerModel
 
 HOP_DURATION_MS = 140
@@ -82,6 +83,7 @@ class GameController(QObject):
         thinking_delay_ms: int | None = None,
         animate: bool = True,
         initial_state: GameState | None = None,
+        sounds: bool = True,
     ) -> None:
         super().__init__(parent)
         self._session = GameSession(players, initial=initial_state)
@@ -90,6 +92,9 @@ class GameController(QObject):
             spec.id: RandomAgent() for spec in players if spec.kind is PlayerKind.AI
         }
         self._animate = animate
+        # Audio is best-effort and silent on failure; tests pass sounds=False
+        # so a headless run never touches an audio backend.
+        self._sound = MovePlayer(self) if sounds else None
 
         board = self._session.board
         agent_names = {pid: agent.name for pid, agent in self._agents.items()}
@@ -636,10 +641,14 @@ class GameController(QObject):
         self._board_model.set_last_move(move)
         self._history_model.set_records(self._session.history)
         self._player_model.update(
-            self._session.state.occupancy, self._session.state.current_player_id
+            self._session.state.occupancy,
+            self._session.state.current_player_id,
+            self._session.state.finish_order,
         )
         self._ai_status = "Ready"
         self._status_message = ""
+        if self._sound is not None:
+            self._sound.play()
         self._start_animation(row, move)
 
     # -- animation -------------------------------------------------------

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -15,10 +16,17 @@ def board():
 
 @pytest.fixture(scope="session")
 def qapp():
-    """A minimal Qt event loop for controller tests (no GUI, no display)."""
-    from PySide6.QtCore import QCoreApplication
+    """A Qt event loop for controller and font tests.
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    QGuiApplication rather than QCoreApplication: the font database needs the
+    GUI layer to register the bundled typeface.  ``offscreen`` keeps it
+    headless, and only one application object may exist per process, so every
+    Qt test shares this one.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QGuiApplication.instance() or QGuiApplication([])
     yield app
 
 

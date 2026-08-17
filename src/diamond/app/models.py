@@ -435,8 +435,13 @@ class PlayerModel(QAbstractListModel):
         self,
         occupancy: tuple[int, ...],
         current_player_id: int,
-        finish_order: tuple[int, ...] = (),
+        finish_order: tuple[int, ...],
     ) -> None:
+        """Refresh progress and standings.
+
+        ``finish_order`` has no default on purpose: a caller that forgot it
+        used to silently blank out every player's place.
+        """
         for row, spec in zip(self._rows, self._specs):
             target = self._board.camp_positions(spec.target_camp)
             home = sum(1 for pid in target if occupancy[pid] == spec.id)
