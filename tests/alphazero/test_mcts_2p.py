@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pytest
+
+from diamond.alphazero.config import MCTSConfig
+from diamond.alphazero.evaluator.base import EvalRequest
+from diamond.alphazero.evaluator.dummy import DummyEvaluator
+from diamond.alphazero.mcts.search_2p import MCTS2P
+
+
+@dataclass(frozen=True)
+class State:
+    name: str
+    player: int
+
+
+class Toy2PGame:
+    def __init__(self):
+        self.children = {
+            ("root", 10): State("a_wins", 2),
+            ("root", 20): State("b_wins", 2),
+        }
+
+    def current_player_id(self, state):
+        return state.player
+
+    def legal_action_ids(self, state):
+        return tuple(action for (name, action) in self.children if name == state.name)
+
+    def apply_action(self, state, action):
+        return self.children[(state.name, action)]
+
+    def is_terminal(self, state):
+        return state.name.endswith("wins")
+
+    def terminal_scalar_value(self, state, player_id):
+        winner = 1 if state.name == "a_wins" else 2
+        return 1.0 if player_id == winner else -1.0
+
+    def evaluation_request(self, state):
+        return EvalRequest(((0.0,),), self.legal_action_ids(state), (state.player, 3 - state.player))
+
+
+def test_two_player_backup_flips_child_perspective_sign() -> None:
+    game = Toy2PGame()
+    search = MCTS2P(
+        game,
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=48, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+    )
+
+    result = search.run(State("root", 1), temperature=0.0)
+
+    assert result.selected_action == 10
+    assert sum(result.visit_counts.values()) == 48
+    assert result.visit_counts[10] > result.visit_counts[20]
+    assert result.q_values[10] > 0
+    assert result.q_values[20] < 0
+    assert sum(result.policy.values()) == pytest.approx(1.0)
+
+
+def test_two_player_search_is_reproducible_with_fixed_seed() -> None:
+    config = MCTSConfig(simulations=20, c_puct=1.0, dirichlet_epsilon=0.25, seed=9)
+    first = MCTS2P(Toy2PGame(), DummyEvaluator(0.0), config).run(State("root", 1))
+    second = MCTS2P(Toy2PGame(), DummyEvaluator(0.0), config).run(State("root", 1))
+    assert first == second
+
