@@ -1,6 +1,6 @@
-"""Graph policy/value models for two- and three-player Diamond."""
+"""Soo/Min models over shared neutral graph-network components."""
 
-from .model_2p import DiamondModel2P
-from .model_3p import DiamondModel3P
+from .min import MinModel
+from .soo import SooModel
 
-__all__ = ["DiamondModel2P", "DiamondModel3P"]
+__all__ = ["MinModel", "SooModel"]

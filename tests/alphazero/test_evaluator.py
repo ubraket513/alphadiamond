@@ -9,7 +9,7 @@ from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.evaluator.base import EvalRequest
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.evaluator.torch import TorchEvaluator
-from diamond.alphazero.network.model_2p import DiamondModel2P
+from diamond.alphazero.network import SooModel
 
 
 def request(legal: tuple[int, ...] = (7, 19, 100)) -> EvalRequest:
@@ -32,7 +32,7 @@ def test_dummy_evaluator_is_deterministic_and_legal_only() -> None:
 
 
 def test_torch_evaluator_masks_and_normalizes_legal_actions() -> None:
-    model = DiamondModel2P(NetworkConfig(width=16, residual_blocks=1))
+    model = SooModel(NetworkConfig(width=16, residual_blocks=1))
     evaluator = TorchEvaluator(model, value_size=1, device="cpu")
 
     result = evaluator.evaluate((request(),))[0]
@@ -51,7 +51,7 @@ def test_evaluators_reject_requests_without_legal_actions() -> None:
         DummyEvaluator().evaluate((empty,))
     with pytest.raises(ValueError, match="legal"):
         TorchEvaluator(
-            DiamondModel2P(NetworkConfig(width=16, residual_blocks=1)),
+            SooModel(NetworkConfig(width=16, residual_blocks=1)),
             value_size=1,
         ).evaluate((empty,))
 
