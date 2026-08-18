@@ -160,6 +160,8 @@ class RatingRegistry:
     def __init__(self, protocol: BenchmarkProtocol) -> None:
         if not isinstance(protocol, BenchmarkProtocol):
             raise ValueError("protocol must be a BenchmarkProtocol")
+        if protocol.compatibility.identity.model_name != SOO_MODEL_NAME:
+            raise ValueError("Task 3 registry requires a Soo compatibility protocol")
         if protocol.rating_system_version != EloConfig().rating_system_version:
             raise ValueError("Task 3 registry requires the soo-elo-v1 rating system")
         try:

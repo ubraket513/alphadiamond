@@ -13,9 +13,12 @@ from diamond.alphazero.rating.protocol import BenchmarkProtocol, EloConfig
 from diamond.alphazero.rating.registry import RatingRegistry
 
 
-def _protocol() -> BenchmarkProtocol:
+def _protocol(
+    *, compatibility: CheckpointCompatibilitySpec | None = None
+) -> BenchmarkProtocol:
     return BenchmarkProtocol(
-        compatibility=CheckpointCompatibilitySpec.soo(
+        compatibility=compatibility
+        or CheckpointCompatibilitySpec.soo(
             model_version="1.2.3",
             network_config=NetworkConfig(width=16, residual_blocks=1),
         ),
@@ -86,6 +89,18 @@ def test_new_participant_starts_at_default_elo() -> None:
     registry, _ = _registry_with(participant)
 
     assert registry.ratings[participant.participant_id] == 1_000.0
+
+
+def test_registry_rejects_elo_protocol_with_min_compatibility() -> None:
+    protocol = _protocol(
+        compatibility=CheckpointCompatibilitySpec.min(
+            model_version="1.2.3",
+            network_config=NetworkConfig(width=16, residual_blocks=1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="Soo"):
+        RatingRegistry(protocol)
 
 
 def test_duplicate_event_is_idempotent() -> None:
