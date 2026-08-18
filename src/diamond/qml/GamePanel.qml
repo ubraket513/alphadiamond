@@ -2,6 +2,12 @@ import QtQuick
 import QtQuick.Layouts
 import Style
 
+// Whose turn it is, and nothing else.
+//
+// Phase, the proposed move and the status/error line were all removed from
+// here deliberately: the board itself shows the proposal (highlighted path,
+// numbered hop markers), and this panel is meant to answer one question at a
+// glance rather than be a log.
 PanelSection {
     id: root
     required property var controller
@@ -55,23 +61,5 @@ PanelSection {
                 }
             }
         }
-    }
-
-    Rectangle {
-        Layout.fillWidth: true
-        implicitHeight: 1
-        color: Theme.border
-    }
-
-    Text {
-        Layout.fillWidth: true
-        text: root.controller.isGameOver
-              ? ("GAME OVER — " + root.controller.winnerName + " wins")
-              : root.controller.phase.replace(/_/g, " ")
-        color: root.controller.isGameOver ? Theme.danger : Theme.textMuted
-        font.family: Theme.fontFamily
-        font.pixelSize: Theme.fontSmall
-        font.weight: root.controller.isGameOver ? Theme.weightBold : Theme.weightRegular
-        elide: Text.ElideRight
     }
 }

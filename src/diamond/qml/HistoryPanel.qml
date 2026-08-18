@@ -20,7 +20,7 @@ PanelSection {
 
         onCountChanged: positionViewAtEnd()
 
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: PanelScrollBar {}
 
         delegate: Rectangle {
             id: entry

@@ -46,20 +46,16 @@ RED = "#FF3B30"
 YELLOW = "#FFCC00"
 GREEN = "#34C759"
 
-# Which camps are in play depends on how many seats there are, because every
-# player must aim at the camp directly across the board:
+# Every layout draws from the same three seats -- the corners of triangle "up",
+# 120 degrees apart, sitting on alternating hexagon sides so the starting camps
+# stay disjoint.  A 2-player match simply leaves the yellow seat empty, which
+# keeps the board's geometry identical whatever the seat count.
 #
-#   3 players -- the three corners of triangle "up", 120 degrees apart.  They
-#       sit on alternating hexagon sides, so the starting camps stay disjoint.
-#   2 players -- one camp and its literal opposite, head to head.  The three
-#       "+" camps are *not* opposite each other, so a 2-player match cannot
-#       just take two of the 3-player seats.
-#
-# Seat 1 is red in both layouts.  Seat 2 is not the same colour in both: a
-# head-to-head match uses red vs green, the pair that stays furthest apart,
-# rather than dragging yellow in as a second colour.
+# Each player still aims at the camp directly across from their own, so in a
+# 2-player match both target camps are empty at the start rather than being the
+# opponent's home.
 SEAT_LAYOUTS: dict[int, tuple[tuple[Camp, str], ...]] = {
-    2: ((Camp.Z_POS, RED), (Camp.Z_NEG, GREEN)),
+    2: ((Camp.Z_POS, RED), (Camp.X_POS, GREEN)),
     3: ((Camp.Z_POS, RED), (Camp.Y_POS, YELLOW), (Camp.X_POS, GREEN)),
 }
 
@@ -89,6 +85,10 @@ def build_players(
     :func:`next_player_id` walks.  ``ai_seats`` lists the seats the agent
     drives.  Seat ids stay tied to the board position, so reordering turns does
     not change which camp a player sits in or what colour they are.
+
+    Note that seat 2 is *not* the same camp in every layout: a 2-player match
+    puts the second player in the green seat, 120 degrees from red, rather than
+    in the yellow one.
     """
     seat_ids = seat_ids_for(count)
     layout = SEAT_LAYOUTS[count]

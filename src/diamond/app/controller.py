@@ -284,7 +284,9 @@ class GameController(QObject):
         return self._phase is Phase.HUMAN_MOVE_PROPOSED or self._selected is not None
 
     def _get_can_select(self) -> bool:
-        return self._phase is Phase.WAITING_FOR_HUMAN
+        # The board stays live while a human proposal is pending, so another
+        # candidate can be picked without cancelling first.
+        return self._phase in (Phase.WAITING_FOR_HUMAN, Phase.HUMAN_MOVE_PROPOSED)
 
     def _get_proposal_is_ai(self) -> bool:
         return self._proposal_is_ai
@@ -390,10 +392,7 @@ class GameController(QObject):
     @Slot(int)
     def selectPosition(self, position_id: int) -> None:
         """Handle a click on a hole.  All legality comes from the engine."""
-        if self._phase is Phase.HUMAN_MOVE_PROPOSED:
-            self._fail("Confirm or cancel the proposed move first.")
-            return
-        if self._phase is not Phase.WAITING_FOR_HUMAN:
+        if self._phase not in (Phase.WAITING_FOR_HUMAN, Phase.HUMAN_MOVE_PROPOSED):
             self._fail("The board is locked right now.")
             return
         if not 0 <= position_id < len(self._session.board):
@@ -402,6 +401,21 @@ class GameController(QObject):
         state = self._session.state
         occupant = state.occupant(position_id)
         current = state.current_player_id
+
+        # A pending proposal is a draft, not a commitment: clicking any other
+        # candidate re-aims it, and clicking another of your own pieces starts
+        # over on that piece.  Only a confirm reaches the game state, so there
+        # is nothing to protect here by forcing a cancel first.
+        if self._phase is Phase.HUMAN_MOVE_PROPOSED:
+            if self._selected is not None and position_id in self._legal:
+                self._propose(self._legal[position_id], is_ai=False, metadata={})
+                return
+            if occupant == current:
+                self._clear_proposal()
+                self._select(position_id)
+                return
+            self._fail("Confirm or cancel the proposed move first.")
+            return
 
         if occupant == current:
             self._select(position_id)
@@ -423,14 +437,8 @@ class GameController(QObject):
     @Slot()
     def cancelProposal(self) -> None:
         if self._phase is Phase.HUMAN_MOVE_PROPOSED:
-            self._proposal = None
-            self._proposal_metadata = {}
-            self._proposal_is_ai = False
-            self._board_model.set_proposal(None)
-            self._phase = Phase.WAITING_FOR_HUMAN
-            self._selected = None
-            self._legal = {}
-            self._board_model.set_selection(None, set(), set())
+            self._clear_proposal()
+            self._clear_selection()
             self._status_message = "Proposal cancelled."
             self._emit()
         elif self._selected is not None:
@@ -668,6 +676,14 @@ class GameController(QObject):
         )
         self._error_message = ""
         self._emit()
+
+    def _clear_proposal(self) -> None:
+        """Drop a pending proposal without touching the selection."""
+        self._proposal = None
+        self._proposal_metadata = {}
+        self._proposal_is_ai = False
+        self._board_model.set_proposal(None)
+        self._phase = Phase.WAITING_FOR_HUMAN
 
     def _clear_selection(self) -> None:
         self._selected = None

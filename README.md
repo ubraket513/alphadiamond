@@ -25,8 +25,9 @@ touching the GUI or the controller** — see
 | Agent | `RandomAgent` (uniform over legal moves, seedable) on any one seat, or none |
 | Typeface | Google Sans Flex, bundled under the OFL |
 | Palette | Apple HIG system colours — red/yellow/green players, blue as the only UI accent |
-| Audio | Move sound per hop, with volume control in the title bar |
+| Audio | Move sound per hop; volume under **View ▸ Sounds** |
 | Chrome | Frameless window with a custom title bar (menus + caption buttons) |
+| Icons | QtAwesome — Codicons for chrome, `fa6s.diamond` for the app icon |
 | GUI | PySide6 / Qt 6 / Qt Quick / QML |
 | Engine | Pure Python, no Qt imports, fully unit-tested headless |
 
@@ -98,17 +99,17 @@ src/diamond/
 │   └── sounds/          move.m4a
 └── qml/
     ├── Main.qml  Board.qml  Hole.qml  Piece.qml
-    ├── SidePanel.qml  GamePanel.qml  PlayerPanel.qml
-    ├── MovePanel.qml  AiPanel.qml  HistoryPanel.qml
-    ├── StatusBar.qml  PanelSection.qml  ActionButton.qml
+    ├── SidePanel.qml  GamePanel.qml
+    ├── AiPanel.qml  HistoryPanel.qml
+    ├── PanelSection.qml  ActionButton.qml
     ├── AppDialog.qml        the one styled shell every pop-up uses
     ├── NewMatchDialog.qml   seat count, turn order, agent seat
     ├── ResultDialog.qml     final standings
     ├── TitleBar.qml         custom window chrome: menus + caption buttons
     ├── TitleMenu.qml        one flat menu in the title bar
     ├── WindowButton.qml     minimise / maximise / close
-    ├── SoundControl.qml     speaker button + volume popover
-    ├── SegmentedControl.qml ReorderButton.qml
+    ├── SoundDialog.qml      mute + volume, from View ▸ Sounds
+    ├── SegmentedControl.qml ReorderButton.qml PanelScrollBar.qml
     └── Style/Theme.qml   ← every colour, size and duration lives here
 ```
 
@@ -170,20 +171,24 @@ seat the agent drives.
 
 ### Seat layouts
 
-Which camps are in play depends on the seat count, because every player must
-aim at the camp *directly across* the board:
+Every layout draws from the same three seats — the corners of triangle *up*,
+120° apart, sitting on alternating hexagon sides so the starting camps stay
+disjoint:
 
-| Players | Camps | Why |
+| Players | Camps | Colours |
 |---|---|---|
-| 2 | `z+` vs `z-` | One camp and its literal opposite — head to head |
-| 3 | `z+`, `y+`, `x+` | The corners of triangle *up*, 120° apart |
+| 2 | `z+`, `x+` | Red and green; the yellow seat sits out |
+| 3 | `z+`, `y+`, `x+` | Red, yellow, green |
 
-The three `+` camps are **not** opposite each other, so a 2-player match cannot
-simply take two of the 3-player seats — it needs its own layout. Both layouts
-keep the starting camps mutually disjoint, so the pieces always fit.
+A 2-player match simply leaves one seat empty rather than moving anyone, so the
+board's geometry is identical whatever the seat count. Each player still aims
+at the camp directly across from their own, which means in a 2-player match
+both target camps start empty rather than being the opponent's home.
 
 Seat ids stay tied to a board position and colour, so reordering turns never
-changes where a player sits or what colour they are.
+changes where a player sits or what colour they are. Note that seat 2 is *not*
+the same camp in both layouts — head-to-head puts the second player in the
+green seat, not the yellow one.
 
 ### Turn order
 
@@ -211,6 +216,89 @@ UI patterns were taken from comparable production interfaces on
   and [Transit's contributor board](https://mobbin.com/screens/d1aa00b6-6263-41d9-9ac3-2c9a1a881f0d),
   rather than a podium graphic — this is an operator console, so density beats
   celebration furniture.
+
+### Screen layout
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ ☰  File Edit View Window Help   Diamond · Game #001  ─ □ ✕ │
+├───────────────┬──────────────────────────────────────────┤
+│          GAME │                                          │
+│      AI AGENT │                board                     │
+│  MOVE HISTORY │                                          │
+└───────────────┴──────────────────────────────────────────┘
+```
+
+The side panel sits on the **left**; the title bar's ☰ collapses it. Section
+titles are right-aligned while their content stays left, so the titles form a
+quiet rail down the panel's inner edge instead of competing with the content
+for the same starting edge. There is no status bar.
+
+**GAME** answers one question — whose turn it is — and nothing else. Phase, the
+proposed move and the status/error line were all removed from it: the board
+already shows the proposal as a highlighted path with numbered hop markers.
+
+> *Trade-off worth knowing:* error text (e.g. "Player 2's piece — it is Player
+> 1's turn.") now has nowhere to appear. Illegal clicks are still refused, but
+> silently. If that turns out to matter, a transient toast over the board is
+> the natural home for it.
+
+Two sections were folded away as redundant:
+
+* **PLAYERS** — the board carries seat colour and GAME names the current
+  player. Per-seat progress (`7/10` home) and the finishing-place chips are no
+  longer visible during play; final standings still appear in the results
+  dialog.
+* **MOVE** — its Confirm/Cancel buttons are gone; confirming is `Enter` / `Esc`
+  or **Edit ▸ Confirm move / Cancel**, and undo is **Edit ▸ Undo move**
+  (`Ctrl+Z`).
+
+#### Proposing a move
+
+Click a piece to see its destinations, then click one to propose it. A pending
+proposal is a **draft, not a commitment**: clicking a different destination
+re-aims it, and clicking another of your own pieces starts over on that piece.
+Neither needs a cancel first, because nothing reaches the game state until the
+proposal is confirmed.
+
+Only the *human* draft is editable this way. An agent's proposal still locks
+the board — the operator has to physically play that move before confirming it,
+so letting a stray click re-aim it would desynchronise the console from the
+real board.
+
+#### Collapsing the panel
+
+The laid-out width is animated, so the board grows into the space over the same
+frames rather than snapping once at the end. The content is pinned to the full
+panel width and the Flickable's `contentX` keeps its *right* edge against the
+panel's, so the panel slides out of view instead of being squeezed — pinning
+the width also stops every frame of the animation rewrapping the text.
+
+Pieces animate their **lattice** position, not their screen position — see
+[Board rendering](#board-rendering).
+
+### Motion
+
+Two cubic-bezier curves, defined once in `Theme` and used everywhere, so
+movement across the app reads as one system rather than a set of unrelated
+tweens:
+
+| Curve | Shape | Used for |
+|---|---|---|
+| `easeStandard` | `0.4, 0, 0.2, 1` | Things moving between two states — hops, colour changes, hover |
+| `easeEmphasized` | `0.2, 0, 0, 1` | Things arriving or taking over — dialogs, menus, the side panel |
+
+Both are beziers rather than Qt's named easing types, whose curves stop short
+of the long soft tail that reads as considered rather than merely animated.
+
+Dialogs scale up from 0.96 while fading in, and leave faster than they arrive —
+a dismissed dialog should get out of the way rather than be admired on the way
+out. Menus drop in from a few pixels above. A plain fade reads as a slideshow;
+a large scale reads as a cartoon.
+
+One hard constraint: a piece's hop animation must finish inside
+`HOP_DURATION_MS` in `app/controller.py`, which paces the multi-hop sequence.
+Overrun it and the piece lags its own tick.
 
 ### Colour
 
@@ -250,27 +338,105 @@ head-to-head one.
 The camp regions are the part most worth explaining, because the obvious
 implementation looks wrong in two specific ways.
 
-They are **not** filled triangles. Each camp region is the convex hull of that
-camp's own hole centres, filled *and* stroked with a round-joined pen of twice
-the offset width — a Minkowski sum with a disc, which yields a smooth rounded
-region offset from the real hole set. There are no vertices to mitre, and none
-of the scalloping that a plain union of discs leaves behind.
+Each camp is a **sharp triangle whose three vertices sit exactly on the camp's
+corner holes**, drawn at the very back and composited once through the layer's
+own `opacity` — everything else on the board is painted over it.
 
-Two problems this solves:
+The vertex placement is what makes the mitred triangle workable. Adjacent camps
+share precisely one hexagon-corner hole, so their triangles meet at that single
+vertex and never overlap by *area*. No colour has to win over another at the
+junction, and no alpha doubles up, so the region needs no rounding, offsetting
+or gap to resolve it.
 
-* **Sharp edges.** A triangle through the corner holes has three hard vertices
-  and straight edges that slice between rows of holes. The offset hull is all
-  curves and follows the holes that are actually in the camp.
-* **The shared node.** Adjacent camps share a hexagon corner hole, so filled
-  triangles always overlapped there — one colour abruptly clipping the other
-  along a straight seam, with the alpha doubling up. The hull is built from
-  each camp's *exclusive* holes, so neighbouring camps stop just short of one
-  another and the shared node resolves into a clean neutral gap. Nothing
-  overlaps, so nothing has to be resolved.
+Because the edges pass through hole centres, they cut across the sockets on a
+camp's boundary. That stays invisible because both pieces *and* empty sockets
+are opaque: a hole is painted in the board's colour rather than left clear, so
+the triangle never shows through one.
 
-The whole camp layer is drawn on its own `Canvas` at full opacity and
-composited once through the item's `opacity`. Painting each region translucent
-individually would double the alpha anywhere two regions met.
+#### Holes, pieces and move affordances
+
+A hole is a **hollow socket**, and a piece is that socket filled. Both use one
+radius (`Theme.socketRatio`, 0.32 lattice units against a spacing of 1.0), and
+the socket's ring is stroked *inside* its bounds, so an occupied hole is a
+clean disc of the owner's colour with no ring peeking out from under it.
+
+Lattice segments are **trimmed back by a socket radius at each end**, so they
+run between sockets rather than through them. Untrimmed, every empty socket
+reads as a hole with an X drawn across it.
+
+| State | Treatment |
+|---|---|
+| Empty hole | Grey ring filled with the board's own colour |
+| Occupied | Socket filled in the owner's colour |
+| Selected piece | The same fill, fully saturated |
+| Any other piece | The same fill, blended halfway to the board |
+| Legal destination | Socket filled with translucent accent — a *ghost* of the piece that would land there |
+
+Two deliberate simplifications:
+
+* **Step and jump look identical.** The engine still distinguishes them, but a
+  second colour on the board bought nothing: either way the hole is somewhere
+  this piece can go, and the operator does not act differently. One uniform
+  destination marker is the pattern
+  [Duolingo's chess puzzle](https://mobbin.com/screens/0e70c6d4-d220-44c4-89d1-4ae085a2a145)
+  uses too.
+* **Selection is weight of colour alone** — no ring around the selected piece,
+  and no rings marking the last move or the proposal's endpoints either. A
+  selected piece is the only fully saturated thing on the board.
+
+The washed-back state is a **blend against the board colour, not `opacity`**.
+A genuinely translucent piece lets whatever is behind it show through, and two
+things are: the camp triangle, whose sharp edge cuts across the boundary
+sockets and split those pieces diagonally, and the proposed move path, which
+showed straight through the pieces it jumps over. Blending to an opaque colour
+makes a piece look identical wherever it stands.
+
+> *Trade-off:* opacity used to encode *whose turn it is* (the current player's
+> pieces were brighter). It now encodes selection, so the board no longer shows
+> which colour is live — only the GAME panel does. Note also that seat-picker
+> UIs ([Expedia](https://mobbin.com/screens/c4c5deeb-c279-4ad1-8a10-b9ba1851e86a),
+> [Shopee](https://mobbin.com/screens/923eb86e-2fa7-4e8b-a51a-93b7cca63411))
+> generally signal selection with fill *plus* a second channel rather than one
+> alone. A third opacity level, or a slight scale-up on the selected piece,
+> would restore either cue without bringing a ring back.
+
+#### Layer order
+
+The board is six explicit layers, and the order is load-bearing rather than
+incidental:
+
+| z | Layer |
+|---|---|
+| 0 | Camp triangles |
+| 1 | Lattice lines |
+| 2 | Holes |
+| 3 | Move path |
+| 4 | Pieces |
+| 5 | Hop numbers |
+
+The move path deliberately sits **between holes and pieces**. Hopping over a
+piece should read as passing behind it, while the same line crossing an empty
+hole should stay visible — and since a hole is now opaque, a path drawn beneath
+one would simply vanish. The hop numbers sit above the path for the same
+reason: the line would otherwise cut straight through them.
+
+The destination is left unnumbered. It is already the end of the line, and the
+ghost fill marks it.
+
+#### Why pieces animate in lattice space
+
+`Piece.qml` eases its **lattice** coordinates, not its `x`/`y`. Animating
+screen position conflates two different kinds of movement: a piece hopping to a
+new hole (which should ease over `hopDuration`) and the board being rescaled
+because the window or the side panel changed width (which should be instant).
+A `Behavior on x` interpolates the second case too, so the pieces lag behind
+the lattice they are standing on and the board visibly sloshes whenever it
+resizes.
+
+Easing the lattice position instead means a resize only changes `originX` /
+`unitScale`, which feed straight through to `x`/`y` with no Behavior attached —
+the pieces track the board frame for frame — while a hop still eases, because
+that is the only thing that moves the lattice position.
 
 ### Sound
 
@@ -298,15 +464,19 @@ Sound is **opt-in** at construction (`GameController(sounds=True)`, which only
 that builds many controllers — the test suite builds dozens — otherwise piles
 them up until it stalls.
 
-**Volume** lives in the title bar: a speaker button whose glyph tracks the
-level, opening a popover with a mute button, a slider and a numeric readout.
-The pattern is the toolbar audio control from
-[Canva](https://mobbin.com/screens/ccf4d1b7-b786-402a-8b41-c91250e1bcc7) and
-[Adobe Express](https://mobbin.com/screens/06749d6e-7bfe-41ca-8301-024d647fd619).
-The slider stays *inside* a popover rather than sitting in the bar: the title
-bar is chrome, and a permanently visible slider would compete with the menus
-for a setting that is adjusted once and then left alone. Releasing the slider
-previews the sound once; raising the volume above zero also unmutes.
+**Volume** lives under **View ▸ Sounds**, which opens a dialog holding a mute
+button, a slider and a numeric readout on one row — the toolbar audio control
+from [Canva](https://mobbin.com/screens/ccf4d1b7-b786-402a-8b41-c91250e1bcc7)
+and [Adobe Express](https://mobbin.com/screens/06749d6e-7bfe-41ca-8301-024d647fd619),
+given a dialog now that it is reached from a menu rather than a bar button.
+Releasing the slider previews the sound once; raising the volume above zero
+also unmutes. Muting lives only in that dialog — a second entry in the menu
+would be a second place to change one setting.
+
+The dialog is fully keyboard-driven: **arrow keys** adjust the volume in 5%
+steps (previewing as they go), **Space** toggles mute, and **Enter** closes it.
+Those are `Shortcut`s rather than `Keys` handlers because a `Popup` is not in
+the focus chain and never sees the key itself.
 
 To diagnose audio end to end:
 
@@ -327,10 +497,10 @@ its own title bar, so the chrome matches the app rather than the platform.
 
 | Region | Contents |
 |---|---|
-| Left | Panel toggle (hides the side panel) |
-| Menus | **File** — New Game, Save, Load, Exit · **Edit** — Undo, Confirm, Cancel · **View** — panel, mute · **Window** — minimise, maximise, close · **Help** — About |
+| Left | Panel toggle (hides the left side panel) |
+| Menus | **File** — New Game, Save, Load, Exit · **Edit** — Undo, Confirm, Cancel · **View** — panel, Sounds · **Window** — minimise, maximise, close · **Help** — About |
 | Centre | Game context, and the drag region that moves the window |
-| Right | Sound control, then minimise / maximise / close |
+| Right | Minimise / maximise / close |
 
 Dragging the bar calls `startSystemMove()` and double-clicking toggles
 maximise, so native behaviours (aero snap, multi-monitor) survive. A frameless
@@ -340,11 +510,81 @@ snapping and the declared minimum size working.
 
 Menus are built from a plain model rather than `QtQuick.Controls.Menu`, for the
 same reason the dialogs are: the Basic style's menu inherits the platform
-palette instead of the app's.
+palette instead of the app's. The same rule covers the scroll bars
+(`PanelScrollBar.qml`): the Basic default picks its handle colour from
+`palette.mid`/`palette.dark` and branches on
+`Qt.styleHints.accessibility.contrastPreference`, none of which this app
+controls. **No Basic-style internals are left unstyled anywhere in the UI.**
 
-Caption glyphs and the panel-toggle icon are drawn as shapes. The bundled
-typeface has no window-control characters, and the *Segoe MDL2 Assets* font
-they usually come from is not something a cross-platform build can rely on.
+### Diagnosing runtime QML problems
+
+```bash
+python debug_qml.py
+```
+
+Runs the app with every Qt/QML message printed with its source location, plus a
+tally on exit so a binding that re-fires every frame is summarised instead of
+burying the log.
+
+#### Icons
+
+Icons come from [QtAwesome](https://qtawesome.readthedocs.io), which bundles its
+own fonts — the reason to use it rather than drawing each glyph as a QML
+`Shape`, which is what the caption marks and chevrons used to be. The text
+typeface has no window-control or arrow characters, and the *Segoe MDL2 Assets*
+font they normally come from is not something a cross-platform build can assume.
+
+The caption buttons use Microsoft's own **Codicons** (`msc.chrome-minimize`,
+`msc.chrome-maximize`, `msc.chrome-restore`, `msc.chrome-close`), so the title
+bar draws the same shapes the shell does.
+
+QML reaches them through an image provider registered by `app/icons.py`:
+
+```qml
+Icon { name: "msc.chevron-up"; size: 14; color: Theme.text }
+```
+
+which resolves to `image://qta/msc.chevron-up/1B1B1B`. The colour is passed
+without its leading `#`, since that character would terminate the URL, and the
+image is requested at device resolution so it stays crisp on a scaled display.
+
+The **app and taskbar icon** is `fa6s.diamond` in systemRed, rendered at every
+size the shell asks for (16 through 256). A plain rhombus was chosen over the
+detailed gem cuts (`mdi6.diamond-stone`, `fa6s.gem`) because those lose all
+definition at 16px.
+
+#### Rejoining the shell
+
+`Qt.FramelessWindowHint` makes the window a `WS_POPUP`, which the shell treats
+as a transient thing rather than an application window. Three behaviours are
+lost with it, and `app/window_chrome.py` puts all three back:
+
+| Behaviour | Fixed by |
+|---|---|
+| Rounded corners | `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` |
+| Minimise / restore animation | `WS_MINIMIZEBOX \| WS_MAXIMIZEBOX \| WS_SYSMENU \| WS_THICKFRAME` |
+| Taskbar click-to-minimise | the same style bits |
+| Accent band across the top | `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` |
+
+That last one is a consequence of the others. With *show accent colour on title
+bars and window borders* enabled — the Windows 11 default — DWM paints the
+active window's outline in the accent colour. On an ordinary window that reads
+as a highlight framing the title bar; here there is no native title bar to
+frame, so it lands as a coloured band across the top of our own chrome.
+Measured, it is a 2px strip above the content. Switching the border colour off
+removes it; the 1px border the app draws in `Main.qml` is the one that should
+be visible.
+
+Asking DWM for the rounding beats clipping the corners in QML: the radius then
+matches the platform's own, follows it if the user changes preferences, and
+keeps the drop shadow a self-clipped translucent window loses.
+
+The style bits imply a frame that is never drawn — Qt is still painting the
+window frameless, and `WS_CAPTION` is deliberately *not* among them, so no
+native title bar reappears. Only the behaviour comes back.
+
+Everything degrades to a no-op off Windows, on Windows 10 (where the corner
+attribute predates the OS), or if the APIs cannot be reached.
 
 The reference console's back/forward arrows are deliberately **not** copied:
 there is nothing to navigate in a single-screen console, and a permanently

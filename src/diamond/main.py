@@ -14,6 +14,12 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from .agents.random_agent import RandomAgent
 from .app.controller import GameController
 from .app.fonts import load_bundled_fonts
+from .app.icons import PROVIDER_ID, IconImageProvider, app_icon
+from .app.window_chrome import (
+    apply_native_rounding,
+    enable_shell_integration,
+    remove_native_border,
+)
 from .game.state import DEFAULT_PLAYERS, PlayerKind
 
 QML_DIR = Path(__file__).parent / "qml"
@@ -52,6 +58,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def build_engine(controller, font_family: str) -> QQmlApplicationEngine:
+    """Create the QML engine with everything Main.qml expects.
+
+    Shared with `debug_qml.py` on purpose: the two drifted once already, and a
+    harness missing the image provider renders every icon as a broken image
+    while the real app looks fine.
+    """
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(QML_DIR))  # makes `import Style` resolvable
+    engine.addImageProvider(PROVIDER_ID, IconImageProvider())
+    engine.rootContext().setContextProperty("controller", controller)
+    engine.rootContext().setContextProperty("appFontFamily", font_family)
+    return engine
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -63,18 +84,24 @@ def main(argv: list[str] | None = None) -> int:
     # Must happen before the QML loads: Theme reads `appFontFamily` at import.
     font_family = load_bundled_fonts()
     app.setFont(QFont(font_family))
+    app.setWindowIcon(app_icon())
 
     controller = build_controller(seed=args.seed, thinking_delay_ms=args.thinking_delay)
 
-    engine = QQmlApplicationEngine()
-    engine.addImportPath(str(QML_DIR))  # makes `import Style` resolvable
-    engine.rootContext().setContextProperty("controller", controller)
-    engine.rootContext().setContextProperty("appFontFamily", font_family)
+    engine = build_engine(controller, font_family)
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
 
     if not engine.rootObjects():
         print("failed to load QML", file=sys.stderr)
         return 1
+
+    # A frameless window is a WS_POPUP as far as the shell is concerned, which
+    # costs it the minimise/restore animation, taskbar click-to-minimise and
+    # the rounded corners. Put all three back.
+    root_window = engine.rootObjects()[0]
+    enable_shell_integration(root_window)
+    apply_native_rounding(root_window)
+    remove_native_border(root_window)
 
     app.aboutToQuit.connect(controller.shutdown)
     exit_code = app.exec()

@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import QtQuick.Shapes
 import QtQuick.Window
 import Style
 
@@ -26,6 +25,7 @@ Rectangle {
     signal newGameRequested()
     signal saveRequested()
     signal loadRequested()
+    signal soundsRequested()
     signal aboutRequested()
 
     readonly property bool maximised: window.visibility === Window.Maximized
@@ -77,23 +77,15 @@ Rectangle {
                 color: burgerHover.hovered ? Theme.systemGray6 : "transparent"
             }
 
-            Column {
+            Icon {
                 anchors.centerIn: parent
-                spacing: 3
-                Repeater {
-                    model: 3
-                    Rectangle {
-                        width: 14; height: 1.5; radius: 1
-                        color: Theme.text
-                    }
-                }
+                name: "msc.menu"
+                size: 16
+                color: Theme.text
             }
 
             HoverHandler { id: burgerHover; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: panelToggle.on = !panelToggle.on }
-
-            ToolTip.visible: burgerHover.hovered
-            ToolTip.text: panelToggle.on ? "Hide side panel" : "Show side panel"
         }
 
         // -- menus --------------------------------------------------------
@@ -146,18 +138,16 @@ Rectangle {
                     action: "panel"
                 },
                 { separator: true },
-                {
-                    label: root.controller.soundEnabled ? "Mute move sound"
-                                                        : "Unmute move sound",
-                    action: "mute",
-                    enabled: root.controller.soundAvailable
-                }
+                // Muting lives in the Sounds dialog alongside the volume; a
+                // second entry here would be a second place to change one
+                // setting.
+                { label: "Sounds…", action: "sounds" }
             ]
             onTriggered: function (action) {
                 if (action === "panel")
                     panelToggle.on = !panelToggle.on
-                else if (action === "mute")
-                    root.controller.setSoundEnabled(!root.controller.soundEnabled)
+                else if (action === "sounds")
+                    root.soundsRequested()
             }
         }
 
@@ -203,12 +193,6 @@ Rectangle {
                 width: Math.min(implicitWidth, parent.width - Theme.spacingLarge)
                 horizontalAlignment: Text.AlignHCenter
             }
-        }
-
-        // -- sound --------------------------------------------------------
-        SoundControl {
-            controller: root.controller
-            Layout.rightMargin: 4
         }
 
         // -- caption buttons ----------------------------------------------

@@ -116,14 +116,32 @@ def test_no_winner_in_the_initial_position(board):
 # -- match setup: seat count and turn order ---------------------------------
 
 
-def test_two_player_match_uses_opposite_camps(board):
-    """Head-to-head seats must face each other, so each aims at the other's home."""
+def test_two_player_match_reuses_two_of_the_three_seats(board):
+    """A 2-player match leaves the yellow seat empty rather than moving anyone,
+    so the board geometry is identical whatever the seat count."""
     from diamond.game.state import build_players
 
+    two = build_players(2)
+    three = build_players(3)
+    assert len(two) == 2
+
+    three_by_camp = {spec.camp for spec in three}
+    assert {spec.camp for spec in two} <= three_by_camp
+
+    # ...and the two seats are the 120-degree-apart pair, not opposites.
+    assert two[0].camp is not two[1].target_camp
+    assert two[1].camp is not two[0].target_camp
+
+
+def test_two_player_targets_are_empty_of_the_owner_at_the_start(board):
+    """Both aim at camps nobody starts in, so neither has to evict the other."""
+    from diamond.game.state import build_players, initial_state
+
     players = build_players(2)
-    assert len(players) == 2
-    assert players[0].camp is players[1].target_camp
-    assert players[1].camp is players[0].target_camp
+    state = initial_state(players, board)
+    for spec in players:
+        for pid in board.camp_positions(spec.target_camp):
+            assert state.occupant(pid) != spec.id
 
 
 def test_turn_order_is_the_seat_list_order(board):

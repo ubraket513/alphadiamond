@@ -26,11 +26,11 @@ AppDialog {
     acceptText: "Start match"
     implicitWidth: 520
 
-    onAboutToShow: reset()
+    onAboutToShow: syncFromController()
 
     // Re-seed from the live controller setup each time the dialog opens, so it
     // always reflects the match actually running.
-    function reset() {
+    function syncFromController() {
         playerCount = controller.playerCount
         order = controller.turnOrder.slice()
         var seats = controller.aiSeats
@@ -104,7 +104,7 @@ AppDialog {
             Text {
                 Layout.fillWidth: true
                 text: root.playerCount === 2
-                      ? "Head to head: both camps sit opposite each other."
+                      ? "Red and green, 120° apart. The yellow seat sits out."
                       : "Three camps, 120° apart, on alternating sides of the hexagon."
                 color: Theme.textFaint
                 font.family: Theme.fontFamily

@@ -1,18 +1,18 @@
 import QtQuick
-import QtQuick.Shapes
 import Style
 
-// A small square button carrying a drawn chevron.
+// A small square button carrying a chevron.
 //
-// The glyph is drawn rather than typed: Google Sans Flex has no arrow
-// characters, and a font-dependent icon is one missing codepoint away from
-// rendering as a tofu box.
+// The glyph comes from QtAwesome's bundled Codicons rather than the text
+// typeface, which has no arrow characters at all.
 Item {
     id: root
 
     property bool up: true
-    property bool enabled: true
     signal clicked()
+
+    // `enabled` is inherited from Item; redeclaring it here shadowed the base
+    // property and left the pointer handlers reading a different one.
 
     implicitWidth: 30
     implicitHeight: 28
@@ -27,25 +27,12 @@ Item {
         opacity: root.enabled ? 1.0 : 0.45
     }
 
-    Shape {
+    Icon {
         anchors.centerIn: parent
-        width: 10
-        height: 6
+        name: root.up ? "msc.chevron-up" : "msc.chevron-down"
+        size: 14
+        color: Theme.text
         opacity: root.enabled ? 1.0 : 0.35
-
-        ShapePath {
-            strokeColor: Theme.text
-            strokeWidth: 1.6
-            capStyle: ShapePath.RoundCap
-            joinStyle: ShapePath.RoundJoin
-            fillColor: "transparent"
-
-            // Chevron: down-pointing is the up-pointing one mirrored.
-            startX: 0
-            startY: root.up ? 6 : 0
-            PathLine { x: 5; y: root.up ? 0 : 6 }
-            PathLine { x: 10; y: root.up ? 6 : 0 }
-        }
     }
 
     TapHandler {

@@ -23,6 +23,14 @@ ApplicationWindow {
     // `controller` is injected as a context property from Python.
     readonly property var ctrl: controller
 
+    // Qt shortcuts are application-wide and outrank an item's `Keys` handlers,
+    // so a modal dialog would never see Return/Esc unless the board's own
+    // shortcuts stand down while one is open.
+    readonly property bool dialogOpen:
+        newGameDialog.visible || gameOverDialog.visible || placeDialog.visible
+        || aboutDialog.visible || soundDialog.visible
+        || saveDialog.visible || loadDialog.visible
+
     // A frameless window paints its own surround. `color: "transparent"` above
     // lets this rounded/bordered rectangle define the window edge instead of a
     // hard system rectangle.
@@ -40,6 +48,7 @@ ApplicationWindow {
         onNewGameRequested: newGameDialog.open()
         onSaveRequested: saveDialog.open()
         onLoadRequested: loadDialog.open()
+        onSoundsRequested: soundDialog.open()
         onAboutRequested: aboutDialog.open()
     }
 
@@ -49,6 +58,38 @@ ApplicationWindow {
         anchors.margins: Theme.spacingLarge
         spacing: Theme.spacingLarge
 
+        // Collapsing animates the laid-out width, so the board grows into the
+        // space in the same frames rather than snapping afterwards. `visible`
+        // only drops once the panel is actually gone, which keeps it out of
+        // hit-testing and focus while leaving it on screen for the animation.
+        SidePanel {
+            id: sidePanel
+            controller: window.ctrl
+            clip: true
+            visible: Layout.preferredWidth > 0.5
+            opacity: titleBar.panelVisible ? 1 : 0
+            Layout.preferredWidth: titleBar.panelVisible ? Theme.panelWidth : 0
+            Layout.maximumWidth: Theme.panelWidth
+            Layout.fillHeight: true
+
+            Behavior on Layout.preferredWidth {
+                NumberAnimation {
+                    duration: Theme.panelDuration
+                    easing.type: Easing.Bezier
+                    easing.bezierCurve: Theme.easeEmphasized
+                }
+            }
+            // Fades a little faster than it slides, so the content is gone
+            // before the panel is narrow enough to squash it.
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: Math.round(Theme.panelDuration * 0.6)
+                    easing.type: Easing.Bezier
+                    easing.bezierCurve: Theme.easeStandard
+                }
+            }
+        }
+
         Board {
             id: board
             controller: window.ctrl
@@ -56,18 +97,6 @@ ApplicationWindow {
             Layout.fillHeight: true
             Layout.minimumWidth: 420
         }
-
-        SidePanel {
-            controller: window.ctrl
-            visible: titleBar.panelVisible
-            Layout.preferredWidth: Theme.panelWidth
-            Layout.maximumWidth: Theme.panelWidth
-            Layout.fillHeight: true
-        }
-    }
-
-    footer: StatusBar {
-        controller: window.ctrl
     }
 
     // -- keyboard shortcuts ----------------------------------------------
@@ -75,22 +104,22 @@ ApplicationWindow {
     // something the current phase does not allow.
     Shortcut {
         sequence: "Return"
-        enabled: window.ctrl.canConfirm
+        enabled: !window.dialogOpen && window.ctrl.canConfirm
         onActivated: window.ctrl.confirmProposal()
     }
     Shortcut {
         sequence: "Enter"
-        enabled: window.ctrl.canConfirm
+        enabled: !window.dialogOpen && window.ctrl.canConfirm
         onActivated: window.ctrl.confirmProposal()
     }
     Shortcut {
         sequence: "Escape"
-        enabled: window.ctrl.canCancel
+        enabled: !window.dialogOpen && window.ctrl.canCancel
         onActivated: window.ctrl.cancelProposal()
     }
     Shortcut {
         sequences: [StandardKey.Undo]
-        enabled: window.ctrl.canUndo
+        enabled: !window.dialogOpen && window.ctrl.canUndo
         onActivated: window.ctrl.undoLastMove()
     }
     Shortcut {
@@ -202,6 +231,12 @@ ApplicationWindow {
                  + " sits out the rest of the match while the remaining places are decided."
         acceptText: "Continue"
         showReject: false
+    }
+
+    SoundDialog {
+        id: soundDialog
+        objectName: "soundDialog"
+        controller: window.ctrl
     }
 
     AppDialog {

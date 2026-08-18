@@ -50,7 +50,6 @@ QtObject {
     // pieces are the only saturated things on the board.
     readonly property color lattice:         "#D3D3D8"
     readonly property color hole:            "#B8B8BF"
-    readonly property color holeRing:        "#FFFFFF"
     readonly property color campNeutral:     systemGray5
 
     // -- text (HIG label hierarchy) ---------------------------------------
@@ -62,8 +61,9 @@ QtObject {
     // -- interaction accents ----------------------------------------------
     readonly property color accent:     systemBlue
     readonly property color selection:  systemBlue
-    readonly property color legalStep:  systemBlue
-    readonly property color legalJump:  systemIndigo
+    // Step and jump share one treatment; the distinction stays in the engine
+    // but is not worth a second colour on the board.
+    readonly property color legalMove:  systemBlue
     readonly property color pathLine:   systemBlue
     readonly property color proposal:   systemBlue
     readonly property color lastMove:   systemGray2
@@ -73,19 +73,25 @@ QtObject {
 
     // -- geometry ---------------------------------------------------------
     readonly property real  boardPadding:   28
-    readonly property real  holeRatio:      0.13   // of one lattice edge
-    readonly property real  pieceRatio:     0.36
+    // A piece exactly fills a hole, so one radius governs both: the hole is a
+    // hollow socket and an occupied one is that socket filled with the owner's
+    // colour. In lattice units, against a spacing of 1.0.
+    readonly property real  socketRatio:    0.32
+    readonly property real  socketStroke:   0.035  // ring weight, lattice units
     readonly property real  latticeWidth:   1.0
 
+    // Pieces carry their state in opacity alone -- selected reads solid, every
+    // other piece sits back. No ring, no second marker.
+    readonly property real  pieceOpacity:         0.5
+    readonly property real  pieceOpacitySelected: 1.0
+
+    // A legal destination is the empty socket filled with translucent accent:
+    // a ghost of the piece that would land there.
+    readonly property real  ghostAlpha:     0.32
+
     // Camp regions: a wash, not a fill.  Low alpha keeps a piece standing in
-    // its own camp legible against it, and the whole camp layer is composited
-    // at this opacity in one pass so overlapping camps never double up.
+    // its own camp legible against it; the layer sits behind everything else.
     readonly property real  campFillAlpha:  0.16
-    // A camp region is the union of discs of this radius (in lattice units)
-    // centred on the camp's own holes.  Above 0.5 the discs merge into one
-    // continuous hull; the surplus is how far the wash reaches past the
-    // outermost pieces, so it should stay a little over the piece radius.
-    readonly property real  campDiscRadius: 0.72
 
     // Custom window chrome (the window is frameless; see TitleBar.qml).
     readonly property real  titleBarHeight: 44
@@ -125,6 +131,29 @@ QtObject {
     readonly property int    weightBold:    Font.Bold
 
     // -- motion -----------------------------------------------------------
-    readonly property int hopDuration:   120
-    readonly property int fadeDuration:  120
+    //
+    // Two curves, used everywhere, so movement across the app feels like one
+    // system rather than a set of unrelated tweens:
+    //
+    //   standard    - symmetric ease for things that move between two states
+    //   emphasized  - leaves fast and settles slowly, for things entering or
+    //                 taking over the screen
+    //
+    // Both are cubic beziers rather than a named easing type, because Qt's
+    // built-in curves stop short of the long, soft tail that reads as
+    // "considered" instead of "animated".
+    readonly property var easeStandard:   [0.4, 0.0, 0.2, 1.0, 1.0, 1.0]
+    readonly property var easeEmphasized: [0.2, 0.0, 0.0, 1.0, 1.0, 1.0]
+    // Overshoots slightly, for the one moment that should feel physical.
+    readonly property var easeSpring:     [0.34, 1.4, 0.64, 1.0, 1.0, 1.0]
+
+    readonly property int durationFast:   140
+    readonly property int durationBase:   220
+    readonly property int durationSlow:   300
+
+    // A hop must finish inside HOP_DURATION_MS in app/controller.py, which is
+    // what paces the multi-hop animation; overrun and the piece lags the tick.
+    readonly property int hopDuration:   130
+    readonly property int fadeDuration:  160
+    readonly property int panelDuration: 260
 }

@@ -30,6 +30,8 @@ Item {
         radius: Theme.radiusSmall
         color: popup.opened ? Theme.systemGray5
                             : (hover.hovered ? Theme.systemGray6 : "transparent")
+
+        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
     }
 
     Text {
@@ -53,6 +55,32 @@ Item {
         modal: false
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+
+        // Drops into place from just above, rather than blinking on.
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation {
+                    property: "opacity"; from: 0.0; to: 1.0
+                    duration: Theme.durationFast
+                    easing.type: Easing.Bezier
+                    easing.bezierCurve: Theme.easeEmphasized
+                }
+                NumberAnimation {
+                    property: "y"; from: root.height - 6; to: root.height
+                    duration: Theme.durationFast
+                    easing.type: Easing.Bezier
+                    easing.bezierCurve: Theme.easeEmphasized
+                }
+            }
+        }
+        exit: Transition {
+            NumberAnimation {
+                property: "opacity"; from: 1.0; to: 0.0
+                duration: 90
+                easing.type: Easing.Bezier
+                easing.bezierCurve: Theme.easeStandard
+            }
+        }
 
         background: Rectangle {
             color: Theme.surface

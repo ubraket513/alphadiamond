@@ -122,17 +122,71 @@ def test_confirm_commits_and_advances_the_turn(ctrl):
     assert not ctrl.hasProposal
 
 
-def test_board_input_is_locked_while_a_proposal_is_pending(ctrl):
-    move = first_legal(ctrl)
-    ctrl.selectPosition(move.source)
-    ctrl.selectPosition(move.destination)
-    other = next(p for p in ctrl.session.state.positions_of(1) if p != move.source)
+def _piece_with_two_destinations(controller):
+    """A piece of the player to move that has at least two legal destinations."""
+    for source in controller.session.state.positions_of(controller.currentPlayerId):
+        moves = controller.session.moves_from(source)
+        if len(moves) >= 2:
+            return source, sorted(moves)
+    raise AssertionError("no piece with two destinations in this position")
+
+
+def test_clicking_another_destination_re_aims_the_proposal(ctrl):
+    """A pending proposal is a draft: picking a different candidate switches it
+    rather than demanding a cancel first."""
+    source, destinations = _piece_with_two_destinations(ctrl)
+    first, second = destinations[0], destinations[1]
+    before = ctrl.session.state
+
+    ctrl.selectPosition(source)
+    ctrl.selectPosition(first)
+    assert ctrl.phase == str(Phase.HUMAN_MOVE_PROPOSED)
+
+    errors = []
+    ctrl.errorRaised.connect(errors.append)
+    ctrl.selectPosition(second)
+
+    assert not errors
+    assert ctrl.phase == str(Phase.HUMAN_MOVE_PROPOSED)
+    assert ctrl.proposalSummary == ctrl.session.moves_from(source)[second].short_text()
+    assert ctrl.canConfirm
+    assert ctrl.session.state == before  # still nothing committed
+
+
+def test_clicking_another_own_piece_restarts_the_selection(ctrl):
+    source, destinations = _piece_with_two_destinations(ctrl)
+    ctrl.selectPosition(source)
+    ctrl.selectPosition(destinations[0])
+
+    other = next(p for p in ctrl.session.state.positions_of(1) if p != source)
     errors = []
     ctrl.errorRaised.connect(errors.append)
     ctrl.selectPosition(other)
+
+    assert not errors
+    assert ctrl.phase == str(Phase.WAITING_FOR_HUMAN)
+    assert ctrl.selectedPosition == other
+    assert not ctrl.hasProposal
+
+
+def test_an_illegal_hole_still_keeps_the_proposal(ctrl):
+    source, destinations = _piece_with_two_destinations(ctrl)
+    ctrl.selectPosition(source)
+    ctrl.selectPosition(destinations[0])
+    summary = ctrl.proposalSummary
+
+    illegal = next(
+        pid
+        for pid in range(PLAYABLE_HOLES)
+        if ctrl.session.state.is_empty(pid) and pid not in ctrl.session.moves_from(source)
+    )
+    errors = []
+    ctrl.errorRaised.connect(errors.append)
+    ctrl.selectPosition(illegal)
+
     assert errors
     assert ctrl.phase == str(Phase.HUMAN_MOVE_PROPOSED)
-    assert ctrl.proposalSummary == move.short_text()
+    assert ctrl.proposalSummary == summary
 
 
 def test_confirm_without_a_proposal_does_nothing(ctrl):

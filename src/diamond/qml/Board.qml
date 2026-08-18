@@ -17,13 +17,21 @@ Item {
     property var _holePoints: []
 
     // Scale so the whole star fits, preserving lattice geometry and spacing.
-    readonly property real _spanX: _bounds.maxX - _bounds.minX
-    readonly property real _spanY: _bounds.maxY - _bounds.minY
+    //
+    // `_bounds` covers hole *centres*, but a socket reaches a further
+    // `socketRatio` units beyond the outermost one. Adding that overhang to the
+    // span is what keeps the edge sockets inside the panel rather than clipping
+    // against it. The camp triangles stop at hole centres, so they add nothing.
+    readonly property real _overhang: 2 * Theme.socketRatio
+    readonly property real _spanX: (_bounds.maxX - _bounds.minX) + _overhang
+    readonly property real _spanY: (_bounds.maxY - _bounds.minY) + _overhang
     readonly property real unitScale: Math.max(1, Math.min(
         (width  - 2 * Theme.boardPadding) / _spanX,
         (height - 2 * Theme.boardPadding) / _spanY))
-    readonly property real _originX: (width  - _spanX * unitScale) / 2 - _bounds.minX * unitScale
-    readonly property real _originY: (height - _spanY * unitScale) / 2 - _bounds.minY * unitScale
+    readonly property real _originX: (width  - _spanX * unitScale) / 2
+                                     + (_overhang / 2 - _bounds.minX) * unitScale
+    readonly property real _originY: (height - _spanY * unitScale) / 2
+                                     + (_overhang / 2 - _bounds.minY) * unitScale
 
     function mapX(ux) { return _originX + ux * unitScale }
     function mapY(uy) { return _originY + uy * unitScale }
@@ -60,93 +68,54 @@ Item {
         radius: Theme.radiusLarge
     }
 
-    // Camp regions.
+    // Camp regions: a sharp triangle per camp, vertices sitting exactly on the
+    // camp's three corner holes.
     //
-    // Drawn on their own canvas at full opacity and composited once via the
-    // item's `opacity`. Painting them translucent individually would double the
-    // alpha wherever two camps overlap -- and adjacent camps always overlap,
-    // because they share a hexagon corner hole -- leaving a hard dark notch at
-    // every junction. One translucent layer has no seam.
+    // Because adjacent camps share precisely one hexagon-corner hole, their
+    // triangles meet at that single vertex and never overlap by area — so the
+    // junction needs no special treatment and no colour has to win over
+    // another. That is what lets these be plain mitred triangles rather than
+    // the offset hulls they used to be.
     //
-    // Corners are rounded rather than mitred: sharp vertices read as diagram
-    // furniture, and the rounding also pulls neighbouring camps apart at the
-    // corner they share, so the junction resolves into a soft gap instead of a
-    // collision.
+    // The layer sits at the very back and is composited once through the item's
+    // own `opacity`; everything else on the board is drawn over it.
+    // Stacking order is load-bearing here, so every layer states its own z:
+    //
+    //   0 camp triangles   1 lattice   2 holes   3 move path   4 pieces   5 hop numbers
+    //
+    // The path runs *over* empty holes and *under* pieces: hopping over a piece
+    // should read as passing behind it, while a landing on an empty hole should
+    // stay visible. The hop numbers sit above the path so the line cannot cut
+    // through them.
     Canvas {
         id: campCanvas
+        z: 0
         anchors.fill: parent
         antialiasing: true
         renderStrategy: Canvas.Cooperative
         opacity: Theme.campFillAlpha
-
-        // Convex hull (monotone chain) of the camp's hole centres.
-        function hull(points) {
-            if (points.length < 3)
-                return points.slice()
-            const pts = points.slice().sort(function (a, b) {
-                return a.x === b.x ? a.y - b.y : a.x - b.x
-            })
-            const cross = function (o, a, b) {
-                return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-            }
-            const lower = []
-            for (let i = 0; i < pts.length; ++i) {
-                while (lower.length >= 2
-                       && cross(lower[lower.length - 2], lower[lower.length - 1], pts[i]) <= 0)
-                    lower.pop()
-                lower.push(pts[i])
-            }
-            const upper = []
-            for (let i = pts.length - 1; i >= 0; --i) {
-                while (upper.length >= 2
-                       && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0)
-                    upper.pop()
-                upper.push(pts[i])
-            }
-            lower.pop()
-            upper.pop()
-            return lower.concat(upper)
-        }
 
         onPaint: {
             const ctx = getContext("2d")
             ctx.reset()
             ctx.clearRect(0, 0, width, height)
 
-            // The region is the camp's hull grown outward by this much. Filling
-            // the hull and stroking its outline with a round-joined pen of
-            // twice the width is a Minkowski sum with a disc: a smooth rounded
-            // shape offset from the real hole set, with no vertices to mitre
-            // and none of the scalloping a union of separate discs would leave.
-            const r = Theme.campDiscRadius * root.unitScale
-
-            ctx.lineJoin = "round"
-            ctx.lineCap = "round"
-            ctx.lineWidth = 2 * r
-
             for (let c = 0; c < root._camps.length; ++c) {
                 const camp = root._camps[c]
-                const holes = camp.holes
-                if (!holes || holes.length === 0)
+                const pts = camp.points
+                if (!pts || pts.length < 3)
                     continue
 
-                const screen = []
-                for (let i = 0; i < holes.length; ++i)
-                    screen.push({ x: root.mapX(holes[i].x), y: root.mapY(holes[i].y) })
-
-                const outline = campCanvas.hull(screen)
-                const paint = camp.inPlay ? camp.color : Theme.campNeutral
-
                 ctx.beginPath()
-                ctx.moveTo(outline[0].x, outline[0].y)
-                for (let i = 1; i < outline.length; ++i)
-                    ctx.lineTo(outline[i].x, outline[i].y)
+                for (let i = 0; i < 3; ++i) {
+                    const px = root.mapX(pts[i].x)
+                    const py = root.mapY(pts[i].y)
+                    if (i === 0) ctx.moveTo(px, py)
+                    else ctx.lineTo(px, py)
+                }
                 ctx.closePath()
-
-                ctx.fillStyle = paint
-                ctx.strokeStyle = paint
+                ctx.fillStyle = camp.inPlay ? camp.color : Theme.campNeutral
                 ctx.fill()
-                ctx.stroke()
             }
         }
     }
@@ -155,6 +124,7 @@ Item {
     // region boundaries.
     Canvas {
         id: latticeCanvas
+        z: 1
         anchors.fill: parent
         antialiasing: true
         renderStrategy: Canvas.Cooperative
@@ -167,11 +137,29 @@ Item {
             ctx.strokeStyle = Theme.lattice
             ctx.lineWidth = Theme.latticeWidth
             ctx.lineCap = "round"
+
+            // Each segment is trimmed back by a socket radius at both ends, so
+            // it runs *between* two sockets instead of straight through them.
+            // Untrimmed, every empty socket reads as a hole with an X drawn
+            // across it.
+            const trim = Theme.socketRatio * root.unitScale
+
             ctx.beginPath()
             for (let e = 0; e < root._edges.length; ++e) {
                 const edge = root._edges[e]
-                ctx.moveTo(root.mapX(edge.x1), root.mapY(edge.y1))
-                ctx.lineTo(root.mapX(edge.x2), root.mapY(edge.y2))
+                const x1 = root.mapX(edge.x1)
+                const y1 = root.mapY(edge.y1)
+                const x2 = root.mapX(edge.x2)
+                const y2 = root.mapY(edge.y2)
+                const dx = x2 - x1
+                const dy = y2 - y1
+                const len = Math.sqrt(dx * dx + dy * dy)
+                if (len <= 2 * trim)
+                    continue          // sockets already meet; no line to draw
+                const ux = dx / len
+                const uy = dy / len
+                ctx.moveTo(x1 + ux * trim, y1 + uy * trim)
+                ctx.lineTo(x2 - ux * trim, y2 - uy * trim)
             }
             ctx.stroke()
         }
@@ -180,6 +168,7 @@ Item {
     // Proposed / AI move path drawn above the lattice, below the pieces.
     Canvas {
         id: pathCanvas
+        z: 3
         anchors.fill: parent
         antialiasing: true
         renderStrategy: Canvas.Cooperative
@@ -221,6 +210,7 @@ Item {
             required property real unitX
             required property real unitY
 
+            z: 2
             unitScale: root.unitScale
             interactive: root.controller.canSelect
             width: root.unitScale
@@ -232,23 +222,66 @@ Item {
         }
     }
 
+    // Numbered landings of a jump chain, so the order can be read. Drawn above
+    // the path line rather than inside Hole.qml, which sits below it.
+    // The destination is deliberately left unnumbered — it is already the end
+    // of the line, and the ghost fill marks it.
     Repeater {
-        model: root.controller.pieceModel
-        delegate: Piece {
-            required property real   unitX
-            required property real   unitY
-            required property string color
-            required property int    positionId
+        model: root.controller.boardModel
 
-            pieceColor: color
-            unitScale: root.unitScale
-            active: playerId === root.controller.currentPlayerId
-                    && !root.controller.isGameOver
-            highlighted: positionId === root.controller.selectedPosition
+        delegate: Item {
+            required property real unitX
+            required property real unitY
+            required property bool isPathNode
+            required property int  pathIndex
+            required property bool isProposalDest
+
+            z: 5
+            visible: isPathNode && pathIndex > 0 && !isProposalDest
             width: root.unitScale
             height: root.unitScale
             x: root.mapX(unitX) - width / 2
             y: root.mapY(unitY) - height / 2
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: root.unitScale * Theme.socketRatio * 1.05
+                height: width
+                radius: width / 2
+                color: Theme.surface
+                border.width: 1
+                border.color: Theme.proposal
+                antialiasing: true
+
+                Text {
+                    anchors.centerIn: parent
+                    text: parent.parent.pathIndex
+                    color: Theme.proposal
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Math.max(8, parent.width * 0.7)
+                    font.weight: Theme.weightBold
+                }
+            }
+        }
+    }
+
+    Repeater {
+        model: root.controller.pieceModel
+        delegate: Piece {
+            required property string color
+            required property int    positionId
+
+            z: 4
+            pieceColor: color
+            // The mapping is handed over rather than applied here, so the piece
+            // can ease its lattice position while tracking board rescaling
+            // instantly. See the note in Piece.qml.
+            originX: root._originX
+            originY: root._originY
+            unitScale: root.unitScale
+            highlighted: positionId === root.controller.selectedPosition
+            width: root.unitScale
+            height: root.unitScale
         }
     }
 }
