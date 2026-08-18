@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from queue import Queue
+from queue import Empty, Queue
+from threading import Event
 from time import monotonic
 
 from diamond.alphazero.evaluator.base import EvalResult
@@ -53,8 +54,27 @@ class RecordingEvaluator:
         )
 
 
+class BlockingEvaluator(RecordingEvaluator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+
+    def evaluate(self, requests: tuple[InferenceRequest, ...]) -> tuple[InferenceResponse, ...]:
+        self.started.set()
+        self.release.wait(timeout=1.0)
+        return super().evaluate(requests)
+
+
 def _responses(reply_queue: Queue[object], count: int) -> list[object]:
     return [reply_queue.get(timeout=1.0) for _ in range(count)]
+
+
+def _response_or_none(reply_queue: Queue[object]) -> object | None:
+    try:
+        return reply_queue.get(timeout=0.2)
+    except Empty:
+        return None
 
 
 def test_coordinator_flushes_a_full_single_key_batch() -> None:
@@ -142,6 +162,32 @@ def test_coordinator_returns_a_correlated_failure_when_its_request_queue_is_full
     assert failure.error_type == "Full"
 
 
+def test_capacity_includes_requests_already_dequeued_for_evaluation() -> None:
+    evaluator = BlockingEvaluator()
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(max_batch_size=1, max_wait_ms=500, request_queue_capacity=1),
+    )
+    first_replies: Queue[object] = Queue()
+    second_replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        coordinator.submit(_request(1), first_replies)
+        assert evaluator.started.wait(timeout=1.0)
+
+        coordinator.submit(_request(2), second_replies)
+        evaluator.release.set()
+
+        assert isinstance(first_replies.get(timeout=1.0), InferenceResponse)
+        failure = second_replies.get(timeout=1.0)
+        assert isinstance(failure, InferenceFailure)
+        assert failure.correlation_id == ("client", "request-2")
+        assert failure.error_type == "Full"
+    finally:
+        evaluator.release.set()
+        coordinator.stop()
+
+
 def test_coordinator_returns_a_correlated_failure_for_a_malformed_request() -> None:
     evaluator = RecordingEvaluator()
     coordinator = InferenceCoordinator(
@@ -160,6 +206,67 @@ def test_coordinator_returns_a_correlated_failure_for_a_malformed_request() -> N
         assert failure.correlation_id == malformed.correlation_id
         assert failure.error_type == "ValueError"
         assert evaluator.batches == []
+    finally:
+        coordinator.stop()
+
+
+def test_coordinator_accepts_a_canonical_request_payload_mapping() -> None:
+    coordinator = InferenceCoordinator(
+        RecordingEvaluator(),
+        InferenceConfig(max_batch_size=1, max_wait_ms=500, request_queue_capacity=1),
+    )
+    replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        coordinator.submit(_request(1).to_payload(), replies)
+
+        response = _response_or_none(replies)
+
+        assert isinstance(response, InferenceResponse)
+        assert response.correlation_id == ("client", "request-1")
+    finally:
+        coordinator.stop()
+
+
+def test_malformed_payload_with_recoverable_identity_returns_correlated_failure() -> None:
+    coordinator = InferenceCoordinator(
+        RecordingEvaluator(),
+        InferenceConfig(max_batch_size=1, max_wait_ms=500, request_queue_capacity=1),
+    )
+    replies: Queue[object] = Queue()
+    payload = _request(1).to_payload()
+    payload["node_features"] = []
+    coordinator.start()
+    try:
+        coordinator.submit(payload, replies)
+
+        failure = _response_or_none(replies)
+
+        assert isinstance(failure, InferenceFailure)
+        assert failure.correlation_id == ("client", "request-1")
+        assert failure.error_type == "ValueError"
+    finally:
+        coordinator.stop()
+
+
+def test_uncorrelated_malformed_transport_returns_fallback_error_and_releases_capacity() -> None:
+    coordinator = InferenceCoordinator(
+        RecordingEvaluator(),
+        InferenceConfig(max_batch_size=1, max_wait_ms=500, request_queue_capacity=1),
+    )
+    malformed_replies: Queue[object] = Queue()
+    valid_replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        coordinator.submit({}, malformed_replies)
+
+        fallback = _response_or_none(malformed_replies)
+        coordinator.submit(_request(2), valid_replies)
+        response = _response_or_none(valid_replies)
+
+        assert isinstance(fallback, ValueError)
+        assert "uncorrelated" in str(fallback)
+        assert isinstance(response, InferenceResponse)
     finally:
         coordinator.stop()
 
@@ -218,7 +325,7 @@ def test_coordinator_rejects_an_entire_batch_when_any_worker_response_is_malform
         coordinator.stop()
 
 
-def test_coordinator_stop_flushes_pending_work_and_joins_its_worker() -> None:
+def test_coordinator_stop_fails_pending_work_and_joins_its_worker() -> None:
     evaluator = RecordingEvaluator()
     coordinator = InferenceCoordinator(
         evaluator, InferenceConfig(max_batch_size=2, max_wait_ms=500, request_queue_capacity=1)
@@ -229,6 +336,59 @@ def test_coordinator_stop_flushes_pending_work_and_joins_its_worker() -> None:
 
     coordinator.stop()
 
-    assert isinstance(replies.get_nowait(), InferenceResponse)
-    assert len(evaluator.batches) == 1
+    failure = replies.get_nowait()
+    assert isinstance(failure, InferenceFailure)
+    assert failure.correlation_id == ("client", "request-1")
+    assert "closed" in failure.message
+    assert evaluator.batches == []
     assert not coordinator.is_running
+
+
+def test_stop_fails_prestart_backlog_and_rejects_later_submissions() -> None:
+    coordinator = InferenceCoordinator(
+        RecordingEvaluator(),
+        InferenceConfig(max_batch_size=1, max_wait_ms=500, request_queue_capacity=1),
+    )
+    accepted_replies: Queue[object] = Queue()
+    rejected_replies: Queue[object] = Queue()
+    coordinator.submit(_request(1), accepted_replies)
+
+    coordinator.stop()
+    coordinator.submit(_request(2), rejected_replies)
+
+    accepted_failure = _response_or_none(accepted_replies)
+    rejected_failure = _response_or_none(rejected_replies)
+    assert isinstance(accepted_failure, InferenceFailure)
+    assert accepted_failure.correlation_id == ("client", "request-1")
+    assert isinstance(rejected_failure, InferenceFailure)
+    assert rejected_failure.correlation_id == ("client", "request-2")
+    assert "closed" in rejected_failure.message
+
+
+def test_stop_timeout_fails_inflight_work_without_waiting_for_a_hung_evaluator() -> None:
+    evaluator = BlockingEvaluator()
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(
+            max_batch_size=1,
+            max_wait_ms=500,
+            request_queue_capacity=1,
+            response_timeout_s=0.05,
+        ),
+    )
+    replies: Queue[object] = Queue()
+    coordinator.start()
+    coordinator.submit(_request(1), replies)
+    assert evaluator.started.wait(timeout=1.0)
+
+    started = monotonic()
+    coordinator.stop()
+    elapsed = monotonic() - started
+
+    failure = _response_or_none(replies)
+    evaluator.release.set()
+    coordinator.stop()
+    assert elapsed < 0.25
+    assert isinstance(failure, InferenceFailure)
+    assert failure.correlation_id == ("client", "request-1")
+    assert "closed" in failure.message

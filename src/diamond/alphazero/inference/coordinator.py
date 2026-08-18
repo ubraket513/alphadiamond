@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from queue import Empty, Full, Queue
-from threading import Lock, Thread
+from threading import BoundedSemaphore, Lock, Thread
 from time import monotonic
 from typing import Protocol
 
@@ -41,25 +42,40 @@ class InferenceMetrics:
     total_queue_latency_s: float = 0.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _QueuedRequest:
     request: object
     reply_queue: Queue[object]
     submitted_at: float
+    admitted: bool
+    client_id: str | None
+    request_id: str | None
+    model_key: ModelKey | None
+    completed: bool = False
 
 
 _STOP = object()
 
 
 class InferenceCoordinator:
-    """Batch requests for one model key without allowing unbounded backlog."""
+    """Batch ``InferenceRequest`` objects or mapping payloads with bounded admission.
+
+    Malformed transports with recoverable client, request, and model identities
+    receive ``InferenceFailure``. If any failure-envelope identity is unavailable,
+    the reply queue receives a coordinator-level ``ValueError`` instead.
+    """
 
     def __init__(self, evaluator: BatchEvaluator, config: InferenceConfig) -> None:
         self.evaluator = evaluator
         self.config = config
         self._requests: Queue[object] = Queue(maxsize=config.request_queue_capacity)
+        self._admission = BoundedSemaphore(config.request_queue_capacity)
         self._metrics = InferenceMetrics()
         self._metrics_lock = Lock()
+        self._state_lock = Lock()
+        self._closed = False
+        self._stop_sent = False
+        self._outstanding: dict[int, _QueuedRequest] = {}
         self._worker: Thread | None = None
 
     @property
@@ -72,26 +88,64 @@ class InferenceCoordinator:
         return self._worker is not None and self._worker.is_alive()
 
     def start(self) -> None:
-        if self.is_running:
-            return
-        self._worker = Thread(target=self._run, name="alphazero-inference", daemon=True)
-        self._worker.start()
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("inference coordinator is closed")
+            if self.is_running:
+                return
+            self._worker = Thread(target=self._run, name="alphazero-inference", daemon=True)
+            self._worker.start()
 
     def stop(self) -> None:
-        worker = self._worker
+        with self._state_lock:
+            self._closed = True
+            worker = self._worker
+            should_signal = worker is not None and worker.is_alive() and not self._stop_sent
+        if should_signal:
+            try:
+                self._requests.put(_STOP, timeout=self.config.response_timeout_s)
+                with self._state_lock:
+                    self._stop_sent = True
+            except Full:
+                pass
+
+        self._fail_outstanding(RuntimeError("inference coordinator is closed"))
         if worker is None:
+            self._drain_closed_queue()
             return
         if worker.is_alive():
-            self._requests.put(_STOP)
-            worker.join()
-        self._worker = None
+            worker.join(timeout=self.config.response_timeout_s)
+        if not worker.is_alive():
+            with self._state_lock:
+                if self._worker is worker:
+                    self._worker = None
 
     def submit(self, request: object, reply_queue: Queue[object]) -> None:
-        item = _QueuedRequest(request=request, reply_queue=reply_queue, submitted_at=monotonic())
-        try:
-            self._requests.put_nowait(item)
-        except Full:
-            self._reply_failure(item, Full("inference request queue is full"))
+        client_id, request_id, model_key = self._extract_identity(request)
+        item = _QueuedRequest(
+            request=request,
+            reply_queue=reply_queue,
+            submitted_at=monotonic(),
+            admitted=False,
+            client_id=client_id,
+            request_id=request_id,
+            model_key=model_key,
+        )
+        rejection: Exception | None = None
+        with self._state_lock:
+            if self._closed:
+                rejection = RuntimeError("inference coordinator is closed")
+            elif not self._admission.acquire(blocking=False):
+                rejection = Full("inference request capacity is full")
+            else:
+                item.admitted = True
+                self._outstanding[id(item)] = item
+                try:
+                    self._requests.put_nowait(item)
+                except Full as error:
+                    rejection = error
+        if rejection is not None:
+            self._reply_failure(item, rejection)
 
     def _run(self) -> None:
         pending: dict[ModelKey, list[_QueuedRequest]] = {}
@@ -123,30 +177,37 @@ class InferenceCoordinator:
                 stopping = True
                 continue
             assert isinstance(item, _QueuedRequest)
+            if self._is_closed():
+                self._reply_failure(item, RuntimeError("inference coordinator is closed"))
+                continue
             request = self._validated_request(item)
             if request is None:
                 continue
+            item.request = request
             batch = pending.setdefault(request.model_key, [])
             batch.append(item)
             if len(batch) == self.config.max_batch_size:
                 self._flush(pending.pop(request.model_key))
 
         for batch in pending.values():
-            self._flush(batch)
+            for item in batch:
+                self._reply_failure(item, RuntimeError("inference coordinator is closed"))
 
     def _validated_request(self, item: _QueuedRequest) -> InferenceRequest | None:
         request = item.request
         try:
-            if not isinstance(request, InferenceRequest):
-                raise ValueError("inference request must be an InferenceRequest")
-            return InferenceRequest(
-                client_id=request.client_id,
-                request_id=request.request_id,
-                model_key=request.model_key,
-                node_features=request.node_features,
-                legal_action_ids=request.legal_action_ids,
-                canonical_player_ids=request.canonical_player_ids,
-            )
+            if isinstance(request, InferenceRequest):
+                return InferenceRequest(
+                    client_id=request.client_id,
+                    request_id=request.request_id,
+                    model_key=request.model_key,
+                    node_features=request.node_features,
+                    legal_action_ids=request.legal_action_ids,
+                    canonical_player_ids=request.canonical_player_ids,
+                )
+            if isinstance(request, Mapping):
+                return InferenceRequest.from_payload(request)
+            raise ValueError("inference transport must be an InferenceRequest or mapping")
         except Exception as error:
             self._reply_failure(item, error)
             return None
@@ -165,8 +226,10 @@ class InferenceCoordinator:
                 if response.correlation_id != request.correlation_id or response.model_key != request.model_key:
                     raise ValueError("inference worker returned a mismatched response")
                 validated.append(response)
+            if self._is_closed():
+                raise RuntimeError("inference coordinator is closed")
             for item, response in zip(batch, validated, strict=True):
-                item.reply_queue.put(response)
+                self._complete(item, response)
             self._record_batch(batch)
         except Exception as error:
             for item in batch:
@@ -174,18 +237,84 @@ class InferenceCoordinator:
             self._record_batch(batch)
 
     def _reply_failure(self, item: _QueuedRequest, error: Exception) -> None:
-        request = item.request
-        if not isinstance(request, InferenceRequest) or not isinstance(request.model_key, ModelKey):
+        if item.client_id is None or item.request_id is None or item.model_key is None:
+            self._complete(
+                item,
+                ValueError(
+                    "uncorrelated inference request could not produce an InferenceFailure: "
+                    f"{str(error) or type(error).__name__}"
+                ),
+            )
             return
-        item.reply_queue.put(
+        self._complete(
+            item,
             InferenceFailure(
-                client_id=request.client_id,
-                request_id=request.request_id,
-                model_key=request.model_key,
+                client_id=item.client_id,
+                request_id=item.request_id,
+                model_key=item.model_key,
                 error_type=type(error).__name__,
                 message=str(error) or type(error).__name__,
-            )
+            ),
         )
+
+    @staticmethod
+    def _extract_identity(request: object) -> tuple[str | None, str | None, ModelKey | None]:
+        if isinstance(request, InferenceRequest):
+            raw_client_id = request.client_id
+            raw_request_id = request.request_id
+            raw_model_key: object = request.model_key
+        elif isinstance(request, Mapping):
+            raw_client_id = request.get("client_id")
+            raw_request_id = request.get("request_id")
+            raw_model_key = request.get("model_key")
+        else:
+            return None, None, None
+
+        client_id = (
+            raw_client_id
+            if isinstance(raw_client_id, str) and raw_client_id.strip()
+            else None
+        )
+        request_id = (
+            raw_request_id if isinstance(raw_request_id, str) and raw_request_id.strip() else None
+        )
+        if isinstance(raw_model_key, ModelKey):
+            model_key = raw_model_key
+        else:
+            try:
+                model_key = ModelKey.from_payload(raw_model_key)
+            except ValueError:
+                model_key = None
+        return client_id, request_id, model_key
+
+    def _complete(self, item: _QueuedRequest, response: object) -> None:
+        with self._state_lock:
+            if item.completed:
+                return
+            item.completed = True
+            item.reply_queue.put(response)
+            if item.admitted:
+                self._outstanding.pop(id(item), None)
+                self._admission.release()
+
+    def _is_closed(self) -> bool:
+        with self._state_lock:
+            return self._closed
+
+    def _fail_outstanding(self, error: Exception) -> None:
+        with self._state_lock:
+            outstanding = tuple(self._outstanding.values())
+        for item in outstanding:
+            self._reply_failure(item, error)
+
+    def _drain_closed_queue(self) -> None:
+        while True:
+            try:
+                item = self._requests.get_nowait()
+            except Empty:
+                return
+            if isinstance(item, _QueuedRequest):
+                self._reply_failure(item, RuntimeError("inference coordinator is closed"))
 
     def _record_batch(self, batch: list[_QueuedRequest]) -> None:
         latency = sum(monotonic() - item.submitted_at for item in batch)
