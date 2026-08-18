@@ -4,7 +4,7 @@ import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.game.rules import IllegalMoveError
-from diamond.game.state import build_players
+from diamond.game.state import EMPTY, GameState, build_players, initial_state
 
 
 @pytest.mark.parametrize("player_count", [2, 3])
@@ -50,3 +50,39 @@ def test_search_adapter_uses_canonical_actions_without_changing_semantics(
     assert request.canonical_player_ids[0] == state.current_player_id
     next_state = search.apply_action(state, request.legal_action_ids[0])
     assert next_state.turn_number == 2
+
+
+def test_adapter_can_start_from_an_authoritative_setup_state() -> None:
+    players = build_players(2, order=(2, 1))
+    setup = initial_state(players)
+    game = AlphaZeroGameAdapter(players, initial=setup)
+
+    assert game.initial_state() is setup
+
+
+def test_soo_terminal_search_perspective_advances_to_the_loser() -> None:
+    players = build_players(2)
+    board = AlphaZeroGameAdapter(players).board
+    winner = players[0]
+    target = board.camp_positions(winner.target_camp)
+    destination = target[-1]
+    entry = next(
+        neighbour
+        for neighbour in board.neighbours(destination)
+        if neighbour is not None and neighbour not in target
+    )
+    occupancy = [EMPTY] * len(board)
+    for position in target[:-1]:
+        occupancy[position] = winner.id
+    occupancy[entry] = winner.id
+    setup = GameState(tuple(occupancy), winner.id, 40)
+    game = AlphaZeroGameAdapter(players, board=board, initial=setup)
+    search = DiamondSearchAdapter(game)
+    physical = game.codec.encode(entry, destination)
+    canonical = game.encoder.to_canonical_action(physical, players, winner.id)
+
+    terminal = search.apply_action(setup, canonical)
+
+    assert search.is_terminal(terminal)
+    assert search.current_player_id(terminal) == players[1].id
+    assert search.terminal_scalar_value(terminal, players[1].id) == -1.0

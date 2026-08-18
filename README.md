@@ -882,6 +882,11 @@ Undo works normally after a load.
 
 ## Future AlphaZero integration point
 
+The implemented Python/PyTorch Milestone-1 reference and its verification
+commands are documented in [docs/alphazero.md](docs/alphazero.md). The named
+learned models are **Soo** (2-player) and **Min** (3-player), with independent
+versions and checkpoint compatibility contracts.
+
 The single seam is `agents/base.py`:
 
 ```python

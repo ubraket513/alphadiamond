@@ -15,11 +15,19 @@ from ..game.state import GameState, GameStatus, PlayerSpec, initial_state
 class AlphaZeroGameAdapter:
     """Expose search-friendly operations without duplicating game rules."""
 
-    def __init__(self, players: tuple[PlayerSpec, ...], board: Board | None = None) -> None:
+    def __init__(
+        self,
+        players: tuple[PlayerSpec, ...],
+        board: Board | None = None,
+        initial: GameState | None = None,
+    ) -> None:
         if len(players) not in (2, 3):
             raise ValueError("AlphaZero supports exactly 2 or 3 players")
         self.players = tuple(players)
         self.board = board or standard_board()
+        self._initial = initial if initial is not None else initial_state(self.players, self.board)
+        if len(self._initial.occupancy) != len(self.board):
+            raise ValueError("initial state does not match board topology")
         self.codec = ActionCodec(
             ActionSpaceSpec(
                 board_size=len(self.board),
@@ -29,7 +37,7 @@ class AlphaZeroGameAdapter:
         self.encoder = CanonicalEncoder(self.board, self.codec)
 
     def initial_state(self) -> GameState:
-        return initial_state(self.players, self.board)
+        return self._initial
 
     def legal_moves(self, state: GameState) -> tuple[Move, ...]:
         return legal_moves(self.board, state)
@@ -80,7 +88,20 @@ class DiamondSearchAdapter:
     def players(self) -> tuple[PlayerSpec, ...]:
         return self.game.players
 
+    def initial_state(self) -> GameState:
+        return self.game.initial_state()
+
     def current_player_id(self, state: GameState) -> int:
+        if (
+            len(self.players) == 2
+            and self.game.is_terminal(state)
+            and len(state.finish_order) == 2
+        ):
+            # The authoritative session keeps the last mover in
+            # ``current_player_id`` when everybody is skipped at game end.
+            # Soo's terminal leaf still needs the would-be opponent
+            # perspective so scalar backup flips exactly once across the edge.
+            return state.finish_order[1]
         return state.current_player_id
 
     def legal_action_ids(self, state: GameState) -> tuple[int, ...]:
@@ -123,6 +144,9 @@ class DiamondSearchAdapter:
             raise ValueError("placement utility vectors are only defined for 3P")
         order = self.game.final_order(state)
         return dict(zip(order, (1.0, 0.0, -1.0)))
+
+    def final_order(self, state: GameState) -> tuple[int, ...]:
+        return self.game.final_order(state)
 
 
 __all__ = ["AlphaZeroGameAdapter", "DiamondSearchAdapter"]

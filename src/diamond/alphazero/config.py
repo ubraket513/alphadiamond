@@ -40,12 +40,16 @@ class TrainingConfig:
     batch_size: int = 128
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
+    device: str = "cpu"
+    seed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class ArenaConfig:
     games: int = 20
     seed: int = 0
+    max_moves: int = 2000
+    promotion_threshold: float = 0.55
 
 
 def config_dict(config: object) -> dict[str, Any]:
