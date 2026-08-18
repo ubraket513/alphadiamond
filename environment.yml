@@ -7,3 +7,5 @@ dependencies:
   - pytest>=7.4
   - pytorch>=2.5
   - pip
+  - pip:
+      - trueskill>=0.4.5,<0.5
