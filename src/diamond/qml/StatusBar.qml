@@ -2,15 +2,12 @@ import QtQuick
 import QtQuick.Layouts
 import Style
 
-// Footer: last committed move on the left, controller actions on the right.
+// Footer: last committed move and the current status message on the left, Undo
+// on the right. File actions moved to the title bar's File menu.
 Rectangle {
     id: root
 
     required property var controller
-
-    signal newGameRequested()
-    signal saveRequested()
-    signal loadRequested()
 
     implicitHeight: 56
     color: Theme.surface
@@ -59,22 +56,12 @@ Rectangle {
             elide: Text.ElideRight
         }
 
+        // File actions and the sound control live in the title bar now; what
+        // stays here is the one action tied to the move in progress.
         ActionButton {
             text: "Undo  (Ctrl+Z)"
             enabled: root.controller.canUndo
             onClicked: root.controller.undoLastMove()
-        }
-        ActionButton {
-            text: "Save  (Ctrl+S)"
-            onClicked: root.saveRequested()
-        }
-        ActionButton {
-            text: "Load"
-            onClicked: root.loadRequested()
-        }
-        ActionButton {
-            text: "New Game  (Ctrl+N)"
-            onClicked: root.newGameRequested()
         }
     }
 }

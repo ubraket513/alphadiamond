@@ -3,47 +3,98 @@ import QtQuick
 
 // Every colour, size and duration in the UI comes from here.
 // Components must not introduce their own colour literals.
+//
+// Palette: the Apple Human Interface Guidelines system colours, light
+// appearance (https://developer.apple.com/design/human-interface-guidelines/color).
+// Apple asks apps to read these through system APIs rather than hard-code them,
+// because the values shift between releases -- but this is a Qt desktop app
+// with no such API to read, so the documented values are pinned here and kept
+// in this one file.
+//
+// Roles:
+//   * systemBlue is the single UI accent -- selection, focus, the confirming
+//     action, the proposed move path.  No player is blue, so "blue means the
+//     interface" never collides with "this colour means a player".
+//   * Player identity is red / yellow / green, defined once in SEAT_LAYOUTS
+//     (game/state.py) and delivered to QML through the models.
+//   * Greys carry structure; saturated colour is reserved for meaning.
 QtObject {
+    // -- Apple system colours (light appearance) --------------------------
+    readonly property color systemRed:    "#FF3B30"
+    readonly property color systemOrange: "#FF9500"
+    readonly property color systemYellow: "#FFCC00"
+    readonly property color systemGreen:  "#34C759"
+    readonly property color systemTeal:   "#30B0C7"
+    readonly property color systemBlue:   "#007AFF"
+    readonly property color systemIndigo: "#5856D6"
+    readonly property color systemGray:   "#8E8E93"
+    readonly property color systemGray2:  "#AEAEB2"
+    readonly property color systemGray3:  "#C7C7CC"
+    readonly property color systemGray4:  "#D1D1D6"
+    readonly property color systemGray5:  "#E5E5EA"
+    readonly property color systemGray6:  "#F2F2F7"
+
+    // Player colours are NOT defined here: they depend on the seat layout
+    // (see SEAT_LAYOUTS in game/state.py) and reach QML through the models.
+
     // -- surfaces ---------------------------------------------------------
-    readonly property color background:   "#EEEEE9"
+    readonly property color background:   systemGray6
     readonly property color surface:      "#FFFFFF"
-    readonly property color surfaceAlt:   "#F6F6F2"
-    readonly property color border:       "#DBDBD4"
-    readonly property color borderStrong: "#BFBFB7"
+    readonly property color surfaceAlt:   "#FAFAFC"
+    readonly property color border:       systemGray5
+    readonly property color borderStrong: systemGray3
 
     // -- board ------------------------------------------------------------
     readonly property color boardBackground: "#FFFFFF"
-    readonly property color lattice:         "#1B1B1B"
-    readonly property color hole:            "#121212"
-    readonly property color campNeutral:     "#D5D7DA"
+    // The lattice is structure, not content: grey, so the coloured camps and
+    // pieces are the only saturated things on the board.
+    readonly property color lattice:         "#D3D3D8"
+    readonly property color hole:            "#B8B8BF"
+    readonly property color holeRing:        "#FFFFFF"
+    readonly property color campNeutral:     systemGray5
 
-    // -- text -------------------------------------------------------------
-    readonly property color text:       "#15171A"
-    readonly property color textMuted:  "#6B7077"
-    readonly property color textFaint:  "#9AA0A6"
+    // -- text (HIG label hierarchy) ---------------------------------------
+    readonly property color text:       "#000000"
+    readonly property color textMuted:  "#6C6C70"   // secondaryLabel, flattened
+    readonly property color textFaint:  "#A1A1A6"   // tertiaryLabel, flattened
     readonly property color textOnDark: "#FFFFFF"
 
-    // -- interaction accents (restrained, no glow) ------------------------
-    readonly property color selection:  "#1F1F1F"
-    readonly property color legalStep:  "#2E7D57"
-    readonly property color legalJump:  "#B0731A"
-    readonly property color pathLine:   "#2F6FA8"
-    readonly property color proposal:   "#2F6FA8"
-    readonly property color lastMove:   "#9AA0A6"
-    readonly property color danger:     "#B3261E"
-    readonly property color thinking:   "#8A6D1F"
+    // -- interaction accents ----------------------------------------------
+    readonly property color accent:     systemBlue
+    readonly property color selection:  systemBlue
+    readonly property color legalStep:  systemBlue
+    readonly property color legalJump:  systemIndigo
+    readonly property color pathLine:   systemBlue
+    readonly property color proposal:   systemBlue
+    readonly property color lastMove:   systemGray2
+    readonly property color danger:     systemRed
+    readonly property color thinking:   systemOrange
+    readonly property color success:    systemGreen
 
     // -- geometry ---------------------------------------------------------
     readonly property real  boardPadding:   28
-    readonly property real  holeRatio:      0.17   // of one lattice edge
+    readonly property real  holeRatio:      0.13   // of one lattice edge
     readonly property real  pieceRatio:     0.36
-    readonly property real  latticeWidth:   1.1
-    // Camp triangles are tinted rather than fully saturated so that a piece
-    // standing in its own camp still reads clearly against the fill.
-    readonly property real  campFillAlpha:  0.40
+    readonly property real  latticeWidth:   1.0
+
+    // Camp regions: a wash, not a fill.  Low alpha keeps a piece standing in
+    // its own camp legible against it, and the whole camp layer is composited
+    // at this opacity in one pass so overlapping camps never double up.
+    readonly property real  campFillAlpha:  0.16
+    // A camp region is the union of discs of this radius (in lattice units)
+    // centred on the camp's own holes.  Above 0.5 the discs merge into one
+    // continuous hull; the surplus is how far the wash reaches past the
+    // outermost pieces, so it should stay a little over the piece radius.
+    readonly property real  campDiscRadius: 0.72
+
+    // Custom window chrome (the window is frameless; see TitleBar.qml).
+    readonly property real  titleBarHeight: 44
+    readonly property real  resizeMargin:   6
+
     readonly property real  panelWidth:     356
-    readonly property real  radiusSmall:    3
-    readonly property real  radiusMedium:   5
+    readonly property real  radiusSmall:    6
+    readonly property real  radiusMedium:   10
+    readonly property real  radiusLarge:    14
     readonly property real  spacing:        10
     readonly property real  spacingLarge:   16
 

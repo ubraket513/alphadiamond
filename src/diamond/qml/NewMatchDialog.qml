@@ -64,11 +64,12 @@ AppDialog {
         order = next
     }
 
+    // Colours come from the engine, which owns SEAT_LAYOUTS: seat 2 is yellow
+    // in a 3-player match but green head-to-head, so they depend on the count.
+    readonly property var seatColors: controller.seatColorsFor(playerCount)
+
     function seatColor(seat) {
-        // Mirrors SEAT_LAYOUTS in game/state.py.
-        if (playerCount === 2)
-            return seat === 1 ? "#D1394F" : "#3E88A8"
-        return seat === 1 ? "#D1394F" : seat === 2 ? "#D9CF1E" : "#3E88A8"
+        return seatColors[seat - 1] || Theme.textFaint
     }
 
     onAccepted: confirmed(order, aiSeat > 0 ? [aiSeat] : [])

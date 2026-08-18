@@ -24,7 +24,8 @@ Item {
     readonly property bool isLegal: isLegalStep || isLegalJump
     readonly property real holeRadius: unitScale * Theme.holeRatio
 
-    // Base node: a solid black circle, per the reference board art.
+    // Base node: a small neutral dot. Quiet on purpose — an empty hole is
+    // structure, and only pieces and interaction states carry colour.
     Rectangle {
         id: node
         anchors.centerIn: parent
@@ -32,6 +33,21 @@ Item {
         height: width
         radius: width / 2
         color: Theme.hole
+        opacity: root.isLegal ? 0 : 1   // the legal marker replaces it
+        antialiasing: true
+
+        Behavior on opacity { NumberAnimation { duration: Theme.fadeDuration } }
+    }
+
+    // Legal destination: a filled accent dot, so a candidate hole reads as a
+    // target rather than as another ring competing with the selection.
+    Rectangle {
+        anchors.centerIn: parent
+        visible: root.isLegal
+        width: root.holeRadius * (root.isLegalJump ? 2.0 : 1.6)
+        height: width
+        radius: width / 2
+        color: root.isLegalJump ? Theme.legalJump : Theme.legalStep
         antialiasing: true
     }
 
@@ -49,16 +65,18 @@ Item {
         antialiasing: true
     }
 
-    // Legal destination marker. Step and jump are visually distinguished.
+    // A jump also gets a halo ring, so step and jump stay distinguishable
+    // without relying on the accent/indigo hue difference alone.
     Rectangle {
         anchors.centerIn: parent
-        visible: root.isLegal
-        width: root.holeRadius * (root.isLegalJump ? 3.6 : 2.9)
+        visible: root.isLegalJump
+        width: root.holeRadius * 3.4
         height: width
         radius: width / 2
         color: "transparent"
-        border.width: Math.max(1.5, root.unitScale * (root.isLegalJump ? 0.075 : 0.05))
-        border.color: root.isLegalJump ? Theme.legalJump : Theme.legalStep
+        border.width: Math.max(1.5, root.unitScale * 0.05)
+        border.color: Theme.legalJump
+        opacity: 0.55
         antialiasing: true
     }
 

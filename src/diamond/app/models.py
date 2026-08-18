@@ -511,6 +511,18 @@ class BoardGeometry(QObject):
         self._camps = []
         for camp in Camp:
             corners = board.camp_corners(camp)
+            # Holes this camp does *not* share with a neighbour.  The renderer
+            # builds each camp region as the union of discs around these, which
+            # gives a soft hull with no straight edges and no mitred corners.
+            # Leaving the shared hexagon-corner holes out means two adjacent
+            # camps stop just short of each other instead of overlapping, so
+            # the junction resolves into a neutral gap rather than a seam where
+            # one colour abruptly clips the other.
+            exclusive = [
+                pid
+                for pid in board.camp_positions(camp)
+                if len(board.position(pid).camps) == 1
+            ]
             self._camps.append(
                 {
                     "key": camp.value,
@@ -519,6 +531,13 @@ class BoardGeometry(QObject):
                     "points": [
                         {"x": board.position(c).unit_xy()[0], "y": board.position(c).unit_xy()[1]}
                         for c in corners
+                    ],
+                    "holes": [
+                        {
+                            "x": board.position(pid).unit_xy()[0],
+                            "y": board.position(pid).unit_xy()[1],
+                        }
+                        for pid in exclusive
                     ],
                 }
             )

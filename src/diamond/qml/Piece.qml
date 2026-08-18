@@ -16,26 +16,36 @@ Item {
     Behavior on x { NumberAnimation { duration: Theme.hopDuration; easing.type: Easing.InOutQuad } }
     Behavior on y { NumberAnimation { duration: Theme.hopDuration; easing.type: Easing.InOutQuad } }
 
+    // Selection ring, in the UI accent rather than the piece's own colour: it
+    // marks interface state, not identity, so it must read the same on every
+    // player's pieces.
+    Rectangle {
+        anchors.centerIn: parent
+        visible: root.highlighted
+        width: root.unitScale * Theme.pieceRatio * 2 + root.unitScale * 0.26
+        height: width
+        radius: width / 3
+        color: "transparent"
+        border.width: Math.max(2, root.unitScale * 0.08)
+        border.color: Theme.accent
+        antialiasing: true
+    }
+
     Rectangle {
         anchors.centerIn: parent
         width: root.unitScale * Theme.pieceRatio * 2
         height: width
         radius: width / 2
         color: root.pieceColor
-        border.width: Math.max(1, root.unitScale * (root.active ? 0.07 : 0.03))
-        border.color: Theme.lattice
-        opacity: root.active ? 1.0 : 0.88
+        // The rim is the piece's own colour, darkened — it defines the edge
+        // without adding a second hue, and works for red, yellow and green
+        // alike where one fixed grey would not.
+        border.width: Math.max(1, root.unitScale * 0.035)
+        border.color: Qt.darker(root.pieceColor, 1.3)
+        // Pieces that cannot move this turn recede rather than disappear.
+        opacity: root.active ? 1.0 : 0.72
         antialiasing: true
 
-        Rectangle {
-            anchors.centerIn: parent
-            visible: root.highlighted
-            width: parent.width * 0.42
-            height: width
-            radius: width / 2
-            color: Theme.lattice
-            opacity: 0.65
-            antialiasing: true
-        }
+        Behavior on opacity { NumberAnimation { duration: Theme.fadeDuration } }
     }
 }

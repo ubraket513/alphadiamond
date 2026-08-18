@@ -38,9 +38,13 @@ class PlayerSpec:
     color: str
 
 
-RED = "#D1394F"
-YELLOW = "#D9CF1E"
-BLUE = "#3E88A8"
+# Apple HIG system colours, light appearance.  This is the only place player
+# colours are defined; QML receives them through the models and never restates
+# them.  Blue is deliberately absent: it is reserved as the UI accent, so no
+# player can ever be mistaken for a control.
+RED = "#FF3B30"
+YELLOW = "#FFCC00"
+GREEN = "#34C759"
 
 # Which camps are in play depends on how many seats there are, because every
 # player must aim at the camp directly across the board:
@@ -51,12 +55,12 @@ BLUE = "#3E88A8"
 #       "+" camps are *not* opposite each other, so a 2-player match cannot
 #       just take two of the 3-player seats.
 #
-# Colours follow the reference board art, where a camp and its opposite share
-# one colour; the head-to-head layout breaks that tie so the two sides stay
-# tellable apart.
+# Seat 1 is red in both layouts.  Seat 2 is not the same colour in both: a
+# head-to-head match uses red vs green, the pair that stays furthest apart,
+# rather than dragging yellow in as a second colour.
 SEAT_LAYOUTS: dict[int, tuple[tuple[Camp, str], ...]] = {
-    2: ((Camp.Z_POS, RED), (Camp.Z_NEG, BLUE)),
-    3: ((Camp.Z_POS, RED), (Camp.Y_POS, YELLOW), (Camp.X_POS, BLUE)),
+    2: ((Camp.Z_POS, RED), (Camp.Z_NEG, GREEN)),
+    3: ((Camp.Z_POS, RED), (Camp.Y_POS, YELLOW), (Camp.X_POS, GREEN)),
 }
 
 SUPPORTED_PLAYER_COUNTS: tuple[int, ...] = tuple(sorted(SEAT_LAYOUTS))

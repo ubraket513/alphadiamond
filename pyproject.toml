@@ -34,6 +34,7 @@ diamond = [
     "qml/Style/qmldir",
     "assets/fonts/*.ttf",
     "assets/fonts/OFL.txt",
+    "assets/sounds/*.m4a",
 ]
 
 [tool.pytest.ini_options]

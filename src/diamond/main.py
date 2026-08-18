@@ -20,7 +20,9 @@ QML_DIR = Path(__file__).parent / "qml"
 
 
 def build_controller(
-    seed: int | None = None, thinking_delay_ms: int | None = None
+    seed: int | None = None,
+    thinking_delay_ms: int | None = None,
+    sounds: bool = True,
 ) -> GameController:
     agents = {
         spec.id: RandomAgent(seed=seed)
@@ -28,7 +30,10 @@ def build_controller(
         if spec.kind is PlayerKind.AI
     }
     return GameController(
-        DEFAULT_PLAYERS, agents=agents, thinking_delay_ms=thinking_delay_ms
+        DEFAULT_PLAYERS,
+        agents=agents,
+        thinking_delay_ms=thinking_delay_ms,
+        sounds=sounds,
     )
 
 

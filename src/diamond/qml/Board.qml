@@ -33,20 +33,126 @@ Item {
         _edges = geo.edges()
         _camps = geo.camps()
         _holePoints = geo.holes()
+        campCanvas.requestPaint()
         latticeCanvas.requestPaint()
     }
 
-    onUnitScaleChanged: { latticeCanvas.requestPaint(); pathCanvas.requestPaint() }
+    onUnitScaleChanged: {
+        campCanvas.requestPaint()
+        latticeCanvas.requestPaint()
+        pathCanvas.requestPaint()
+    }
+
+    // A new match can change the seat colours, so the wash must be repainted.
+    Connections {
+        target: root.geo
+        function onChanged() {
+            root._camps = root.geo.camps()
+            campCanvas.requestPaint()
+        }
+    }
 
     Rectangle {
         anchors.fill: parent
         color: Theme.boardBackground
         border.width: 1
         border.color: Theme.border
-        radius: Theme.radiusMedium
+        radius: Theme.radiusLarge
     }
 
-    // Camp fills + lattice lines. Flat colour, thin strokes, no shading.
+    // Camp regions.
+    //
+    // Drawn on their own canvas at full opacity and composited once via the
+    // item's `opacity`. Painting them translucent individually would double the
+    // alpha wherever two camps overlap -- and adjacent camps always overlap,
+    // because they share a hexagon corner hole -- leaving a hard dark notch at
+    // every junction. One translucent layer has no seam.
+    //
+    // Corners are rounded rather than mitred: sharp vertices read as diagram
+    // furniture, and the rounding also pulls neighbouring camps apart at the
+    // corner they share, so the junction resolves into a soft gap instead of a
+    // collision.
+    Canvas {
+        id: campCanvas
+        anchors.fill: parent
+        antialiasing: true
+        renderStrategy: Canvas.Cooperative
+        opacity: Theme.campFillAlpha
+
+        // Convex hull (monotone chain) of the camp's hole centres.
+        function hull(points) {
+            if (points.length < 3)
+                return points.slice()
+            const pts = points.slice().sort(function (a, b) {
+                return a.x === b.x ? a.y - b.y : a.x - b.x
+            })
+            const cross = function (o, a, b) {
+                return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+            }
+            const lower = []
+            for (let i = 0; i < pts.length; ++i) {
+                while (lower.length >= 2
+                       && cross(lower[lower.length - 2], lower[lower.length - 1], pts[i]) <= 0)
+                    lower.pop()
+                lower.push(pts[i])
+            }
+            const upper = []
+            for (let i = pts.length - 1; i >= 0; --i) {
+                while (upper.length >= 2
+                       && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0)
+                    upper.pop()
+                upper.push(pts[i])
+            }
+            lower.pop()
+            upper.pop()
+            return lower.concat(upper)
+        }
+
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.reset()
+            ctx.clearRect(0, 0, width, height)
+
+            // The region is the camp's hull grown outward by this much. Filling
+            // the hull and stroking its outline with a round-joined pen of
+            // twice the width is a Minkowski sum with a disc: a smooth rounded
+            // shape offset from the real hole set, with no vertices to mitre
+            // and none of the scalloping a union of separate discs would leave.
+            const r = Theme.campDiscRadius * root.unitScale
+
+            ctx.lineJoin = "round"
+            ctx.lineCap = "round"
+            ctx.lineWidth = 2 * r
+
+            for (let c = 0; c < root._camps.length; ++c) {
+                const camp = root._camps[c]
+                const holes = camp.holes
+                if (!holes || holes.length === 0)
+                    continue
+
+                const screen = []
+                for (let i = 0; i < holes.length; ++i)
+                    screen.push({ x: root.mapX(holes[i].x), y: root.mapY(holes[i].y) })
+
+                const outline = campCanvas.hull(screen)
+                const paint = camp.inPlay ? camp.color : Theme.campNeutral
+
+                ctx.beginPath()
+                ctx.moveTo(outline[0].x, outline[0].y)
+                for (let i = 1; i < outline.length; ++i)
+                    ctx.lineTo(outline[i].x, outline[i].y)
+                ctx.closePath()
+
+                ctx.fillStyle = paint
+                ctx.strokeStyle = paint
+                ctx.fill()
+                ctx.stroke()
+            }
+        }
+    }
+
+    // Lattice lines, above the camp wash so the grid stays continuous across
+    // region boundaries.
     Canvas {
         id: latticeCanvas
         anchors.fill: parent
@@ -58,30 +164,9 @@ Item {
             ctx.reset()
             ctx.clearRect(0, 0, width, height)
 
-            for (let c = 0; c < root._camps.length; ++c) {
-                const camp = root._camps[c]
-                const pts = camp.points
-                if (!pts || pts.length < 3)
-                    continue
-                // Expand the triangle slightly so the fill reaches past the
-                // outermost node centres, as in the reference art.
-                const cx = (pts[0].x + pts[1].x + pts[2].x) / 3
-                const cy = (pts[0].y + pts[1].y + pts[2].y) / 3
-                const grow = 1.18
-                ctx.beginPath()
-                for (let i = 0; i < 3; ++i) {
-                    const px = root.mapX(cx + (pts[i].x - cx) * grow)
-                    const py = root.mapY(cy + (pts[i].y - cy) * grow)
-                    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
-                }
-                ctx.closePath()
-                const tint = Qt.color(camp.color)
-                ctx.fillStyle = Qt.rgba(tint.r, tint.g, tint.b, Theme.campFillAlpha)
-                ctx.fill()
-            }
-
             ctx.strokeStyle = Theme.lattice
             ctx.lineWidth = Theme.latticeWidth
+            ctx.lineCap = "round"
             ctx.beginPath()
             for (let e = 0; e < root._edges.length; ++e) {
                 const edge = root._edges[e]

@@ -24,6 +24,9 @@ touching the GUI or the controller** — see
 | Turn order | Chosen at match setup; any permutation of the seats |
 | Agent | `RandomAgent` (uniform over legal moves, seedable) on any one seat, or none |
 | Typeface | Google Sans Flex, bundled under the OFL |
+| Palette | Apple HIG system colours — red/yellow/green players, blue as the only UI accent |
+| Audio | Move sound per hop, with volume control in the title bar |
+| Chrome | Frameless window with a custom title bar (menus + caption buttons) |
 | GUI | PySide6 / Qt 6 / Qt Quick / QML |
 | Engine | Pure Python, no Qt imports, fully unit-tested headless |
 
@@ -77,6 +80,7 @@ src/diamond/
 │   ├── models.py        BoardModel, PieceModel, MoveHistoryModel,
 │   │                    PlayerModel, BoardGeometry
 │   ├── fonts.py         registers the bundled typeface with Qt
+│   ├── sounds.py        move sound effect (best-effort, mutable)
 │   └── ai_worker.py     async agent boundary + generation tokens
 ├── game/
 │   ├── coordinates.py   cube lattice coordinates and the 6 directions
@@ -89,7 +93,9 @@ src/diamond/
 ├── agents/
 │   ├── base.py          Agent protocol, MoveRequest, MoveProposal
 │   └── random_agent.py  RandomAgent
-├── assets/fonts/        bundled Google Sans Flex (OFL) + licence
+├── assets/
+│   ├── fonts/           bundled Google Sans Flex (OFL) + licence
+│   └── sounds/          move.m4a
 └── qml/
     ├── Main.qml  Board.qml  Hole.qml  Piece.qml
     ├── SidePanel.qml  GamePanel.qml  PlayerPanel.qml
@@ -98,6 +104,10 @@ src/diamond/
     ├── AppDialog.qml        the one styled shell every pop-up uses
     ├── NewMatchDialog.qml   seat count, turn order, agent seat
     ├── ResultDialog.qml     final standings
+    ├── TitleBar.qml         custom window chrome: menus + caption buttons
+    ├── TitleMenu.qml        one flat menu in the title bar
+    ├── WindowButton.qml     minimise / maximise / close
+    ├── SoundControl.qml     speaker button + volume popover
     ├── SegmentedControl.qml ReorderButton.qml
     └── Style/Theme.qml   ← every colour, size and duration lives here
 ```
@@ -147,8 +157,9 @@ Two consequences the rules and the renderer both live with:
   move out. Nothing in the code may assume camps are disjoint.
 
 QML receives logical coordinates and converts them to screen space itself; the
-lattice, camp fills and move paths are drawn procedurally on a `Canvas`, so the
-board stays sharp at any window size.
+lattice, camp regions and move paths are drawn procedurally on a `Canvas`, so
+the board stays sharp at any window size. How the camp regions are shaped — and
+why they are not triangles — is covered under [Board rendering](#board-rendering).
 
 ---
 
@@ -200,6 +211,144 @@ UI patterns were taken from comparable production interfaces on
   and [Transit's contributor board](https://mobbin.com/screens/d1aa00b6-6263-41d9-9ac3-2c9a1a881f0d),
   rather than a podium graphic — this is an operator console, so density beats
   celebration furniture.
+
+### Colour
+
+The palette is the [Apple HIG system colours](https://developer.apple.com/design/human-interface-guidelines/color),
+light appearance, pinned in `qml/Style/Theme.qml`. Apple asks apps to read
+these through system APIs rather than hard-code them, since the values move
+between releases — a Qt desktop app has no such API, so they are written down
+once, in that one file, and nowhere else.
+
+Two rules do most of the work:
+
+* **Blue is the interface.** `systemBlue` is the *only* accent: selection,
+  focus, legal destinations, the proposed move path, the confirming button. No
+  player is blue, so "blue means the app is talking to you" never collides with
+  "this colour is a player".
+* **Colour is reserved for meaning.** Greys carry all structure — the lattice,
+  empty holes, borders, panel chrome. The only saturated things on the board
+  are pieces, camp washes and the accent.
+
+Player identity is red / yellow / green, defined once in `SEAT_LAYOUTS`
+(`game/state.py`) and delivered to QML through the models — QML never restates
+a player colour, because seat 2 is yellow in a 3-player match but green in a
+head-to-head one.
+
+> **Accessibility caveat.** Red and green are the classic confusion pair for
+> red–green colour vision deficiency (~8% of men), and on the board colour is
+> currently the *only* thing separating two players' pieces. The HIG is
+> explicit about this: *"provide the same information in alternative ways… use
+> text labels or glyph shapes."* Off-board the information is redundant already
+> — seat number, name, colour swatch and `P1/P2/P3` tags in the move history —
+> but the board itself is not. Mitigations, in increasing cost: swap green for
+> `systemTeal` or `systemIndigo`; or mark each player's pieces with a distinct
+> glyph. Neither is implemented.
+
+### Board rendering
+
+The camp regions are the part most worth explaining, because the obvious
+implementation looks wrong in two specific ways.
+
+They are **not** filled triangles. Each camp region is the convex hull of that
+camp's own hole centres, filled *and* stroked with a round-joined pen of twice
+the offset width — a Minkowski sum with a disc, which yields a smooth rounded
+region offset from the real hole set. There are no vertices to mitre, and none
+of the scalloping that a plain union of discs leaves behind.
+
+Two problems this solves:
+
+* **Sharp edges.** A triangle through the corner holes has three hard vertices
+  and straight edges that slice between rows of holes. The offset hull is all
+  curves and follows the holes that are actually in the camp.
+* **The shared node.** Adjacent camps share a hexagon corner hole, so filled
+  triangles always overlapped there — one colour abruptly clipping the other
+  along a straight seam, with the alpha doubling up. The hull is built from
+  each camp's *exclusive* holes, so neighbouring camps stop just short of one
+  another and the shared node resolves into a clean neutral gap. Nothing
+  overlaps, so nothing has to be resolved.
+
+The whole camp layer is drawn on its own `Canvas` at full opacity and
+composited once through the item's `opacity`. Painting each region translucent
+individually would double the alpha anywhere two regions met.
+
+### Sound
+
+`assets/sounds/move.m4a` plays **once per hop** — a single step ticks once, a
+chain of jumps ticks once per landing, so the audio tracks what the piece is
+actually doing rather than firing once per turn. The ticks are driven by the
+animation, so they stay in step with the piece on screen; with animation off
+the whole move lands at once and gets a single sound.
+
+It fires for human and agent moves alike, from the single commit path in
+`GameController._commit`, so there is no way to advance the game silently.
+
+Audio is best-effort: a machine with no device, no codec or a locked-down
+backend degrades to silence rather than raising, and the match plays on. Every
+failure is recorded in `MovePlayer.status` and surfaced by the controller —
+*silently* best-effort was a trap, because a broken backend and a missing
+feature looked identical from the outside.
+
+`setSource()` loads asynchronously, so a move confirmed in the first moments of
+a match would be dropped; the request is held and replayed once the media is
+ready rather than discarded.
+
+Sound is **opt-in** at construction (`GameController(sounds=True)`, which only
+`main.py` passes). Each `QMediaPlayer` reserves an audio backend, and a process
+that builds many controllers — the test suite builds dozens — otherwise piles
+them up until it stalls.
+
+**Volume** lives in the title bar: a speaker button whose glyph tracks the
+level, opening a popover with a mute button, a slider and a numeric readout.
+The pattern is the toolbar audio control from
+[Canva](https://mobbin.com/screens/ccf4d1b7-b786-402a-8b41-c91250e1bcc7) and
+[Adobe Express](https://mobbin.com/screens/06749d6e-7bfe-41ca-8301-024d647fd619).
+The slider stays *inside* a popover rather than sitting in the bar: the title
+bar is chrome, and a permanently visible slider would compete with the menus
+for a setting that is adjusted once and then left alone. Releasing the slider
+previews the sound once; raising the volume above zero also unmutes.
+
+To diagnose audio end to end:
+
+```bash
+python check_sound.py
+```
+
+It prints the detected output devices, whether the file loaded, whether
+playback actually reached `PlayingState`, and what the controller reports —
+then plays the sound once.
+
+### Window chrome
+
+The window is **frameless** (`Qt.Window | Qt.FramelessWindowHint`) and draws
+its own title bar, so the chrome matches the app rather than the platform.
+
+`TitleBar.qml` owns everything the OS would normally provide:
+
+| Region | Contents |
+|---|---|
+| Left | Panel toggle (hides the side panel) |
+| Menus | **File** — New Game, Save, Load, Exit · **Edit** — Undo, Confirm, Cancel · **View** — panel, mute · **Window** — minimise, maximise, close · **Help** — About |
+| Centre | Game context, and the drag region that moves the window |
+| Right | Sound control, then minimise / maximise / close |
+
+Dragging the bar calls `startSystemMove()` and double-clicking toggles
+maximise, so native behaviours (aero snap, multi-monitor) survive. A frameless
+window also loses the OS resize border, so `Main.qml` re-creates all eight
+edges and corners, each handing off to `startSystemResize()` — which keeps
+snapping and the declared minimum size working.
+
+Menus are built from a plain model rather than `QtQuick.Controls.Menu`, for the
+same reason the dialogs are: the Basic style's menu inherits the platform
+palette instead of the app's.
+
+Caption glyphs and the panel-toggle icon are drawn as shapes. The bundled
+typeface has no window-control characters, and the *Segoe MDL2 Assets* font
+they usually come from is not something a cross-platform build can rely on.
+
+The reference console's back/forward arrows are deliberately **not** copied:
+there is nothing to navigate in a single-screen console, and a permanently
+dead control is worse than an absent one.
 
 ### Pop-ups
 
@@ -279,21 +428,31 @@ pip install -e ".[dev]"     # runtime + pytest
 
 ## How to run
 
-```bash
-python -m diamond
-```
-
-or, after installation:
+The package lives under `src/`, so `python -m diamond` only resolves once the
+project is on the import path. Either install it:
 
 ```bash
-diamond
+pip install -e .
+diamond                 # or: python -m diamond
 ```
+
+...or run it straight from the checkout without installing:
+
+```bash
+PYTHONPATH=src python -m diamond          # bash / WSL
+$env:PYTHONPATH="src"; python -m diamond  # PowerShell
+```
+
+> If `python -m diamond` from the repo root reports *No module named diamond*,
+> neither step above has been done — and if it runs but looks out of date, an
+> older copy is installed and shadowing the checkout. `pip uninstall
+> diamond-console` then `pip install -e .` pins it to this source tree.
 
 Options:
 
 ```bash
-python -m diamond --seed 42            # reproducible RandomAgent
-python -m diamond --thinking-delay 0   # skip the artificial pause
+PYTHONPATH=src python -m diamond --seed 42            # reproducible RandomAgent
+PYTHONPATH=src python -m diamond --thinking-delay 0   # skip the artificial pause
 ```
 
 The window opens at 1440 × 900 and stays usable down to 980 × 640; the board

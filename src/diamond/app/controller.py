@@ -33,8 +33,8 @@ from ..game.state import (
     player_by_id,
 )
 from .ai_worker import AiWorker
-from .sounds import MovePlayer
 from .models import BoardGeometry, BoardModel, MoveHistoryModel, PieceModel, PlayerModel
+from .sounds import MovePlayer
 
 HOP_DURATION_MS = 140
 """Wall time per lattice hop while animating a committed move."""
@@ -83,7 +83,7 @@ class GameController(QObject):
         thinking_delay_ms: int | None = None,
         animate: bool = True,
         initial_state: GameState | None = None,
-        sounds: bool = True,
+        sounds: bool = False,
     ) -> None:
         super().__init__(parent)
         self._session = GameSession(players, initial=initial_state)
@@ -92,9 +92,13 @@ class GameController(QObject):
             spec.id: RandomAgent() for spec in players if spec.kind is PlayerKind.AI
         }
         self._animate = animate
-        # Audio is best-effort and silent on failure; tests pass sounds=False
-        # so a headless run never touches an audio backend.
+        # Opt-in, not opt-out: constructing a QMediaPlayer reserves an audio
+        # backend, and a process that builds many controllers (the test suite)
+        # would pile them up until it stalls.  Only the GUI entry point, which
+        # builds exactly one controller, asks for sound.
         self._sound = MovePlayer(self) if sounds else None
+        if self._sound is not None:
+            self._sound.statusChanged.connect(self._on_sound_status)
 
         board = self._session.board
         agent_names = {pid: agent.name for pid, agent in self._agents.items()}
@@ -207,6 +211,21 @@ class GameController(QObject):
     def _get_winner_name(self) -> str:
         winner = self._session.state.winner_id
         return player_by_id(self._players, winner).name if winner else ""
+
+    def _get_sound_enabled(self) -> bool:
+        return self._sound is not None and self._sound.available and not self._sound.muted
+
+    def _get_sound_available(self) -> bool:
+        return self._sound is not None and self._sound.available
+
+    def _get_sound_volume(self) -> float:
+        return self._sound.volume if self._sound is not None else 0.0
+
+    def _get_sound_status(self) -> str:
+        """Empty when audio is healthy, otherwise why it is not."""
+        if self._sound is None:
+            return "Sound is disabled for this session."
+        return self._sound.status
 
     def _get_player_count(self) -> int:
         return len(self._players)
@@ -339,6 +358,10 @@ class GameController(QObject):
     winnerId = Property(int, _get_winner_id, notify=changed)
     winnerName = Property(str, _get_winner_name, notify=changed)
     playerCount = Property(int, _get_player_count, notify=changed)
+    soundEnabled = Property(bool, _get_sound_enabled, notify=changed)
+    soundAvailable = Property(bool, _get_sound_available, notify=changed)
+    soundStatus = Property(str, _get_sound_status, notify=changed)
+    soundVolume = Property(float, _get_sound_volume, notify=changed)
     turnOrder = Property("QVariantList", _get_turn_order, notify=changed)
     aiSeats = Property("QVariantList", _get_ai_seats, notify=changed)
     standings = Property("QVariantList", _get_standings, notify=changed)
@@ -539,6 +562,43 @@ class GameController(QObject):
         self._enter_turn()
         return True
 
+    @Slot(int, result="QVariantList")
+    def seatColorsFor(self, count: int) -> list[str]:
+        """Seat colours for a match of ``count`` players, in seat order.
+
+        The setup dialog previews seats for a count that is not running yet, so
+        it cannot read colours off the live player model.  Answering from
+        :func:`build_players` keeps ``SEAT_LAYOUTS`` the only place colours are
+        defined -- seat 2 is yellow in a 3-player match but green head-to-head,
+        so a hard-coded QML copy would be wrong half the time.
+        """
+        try:
+            return [spec.color for spec in build_players(count)]
+        except ValueError:
+            return []
+
+    @Slot(float)
+    def setSoundVolume(self, volume: float) -> None:
+        """Set playback level, 0.0-1.0.  Raising it above zero also unmutes."""
+        if self._sound is None:
+            return
+        self._sound.set_volume(volume)
+        if volume > 0 and self._sound.muted:
+            self._sound.set_muted(False)
+        self._emit()
+
+    @Slot()
+    def previewSound(self) -> None:
+        """Play the move sound once, so a volume change can be heard."""
+        if self._sound is not None:
+            self._sound.play()
+
+    @Slot(bool)
+    def setSoundEnabled(self, enabled: bool) -> None:
+        if self._sound is not None:
+            self._sound.set_muted(not enabled)
+            self._emit()
+
     @Slot()
     def requestAiMove(self) -> None:
         if self._phase is Phase.WAITING_FOR_HUMAN and self._get_is_current_ai():
@@ -553,6 +613,13 @@ class GameController(QObject):
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+    def _on_sound_status(self) -> None:
+        status = self._sound.status if self._sound is not None else ""
+        if status:
+            self._fail(f"Move sound unavailable: {status}")
+        else:
+            self._emit()
+
     def _emit(self) -> None:
         self.changed.emit()
 
@@ -647,13 +714,18 @@ class GameController(QObject):
         )
         self._ai_status = "Ready"
         self._status_message = ""
-        if self._sound is not None:
-            self._sound.play()
         self._start_animation(row, move)
 
     # -- animation -------------------------------------------------------
+    def _play_hop_sound(self) -> None:
+        if self._sound is not None:
+            self._sound.play()
+
     def _start_animation(self, row: int, move: Move) -> None:
         if not self._animate or row < 0:
+            # Nothing is animating, so there are no hops to follow: the whole
+            # move lands at once and gets a single sound.
+            self._play_hop_sound()
             self._piece_model.rebuild(self._session.state.occupancy)
             self._finish_move()
             return
@@ -672,6 +744,9 @@ class GameController(QObject):
             self._finish_move()
             return
         last_hop = self._anim_index == len(self._anim_path) - 1
+        # One sound per hop: a single step ticks once, a chain of jumps ticks
+        # once per landing, so the audio tracks what the piece is doing.
+        self._play_hop_sound()
         self._piece_model.move_piece(
             self._anim_row, self._anim_path[self._anim_index], moving=not last_hop
         )
