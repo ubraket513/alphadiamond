@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import itertools
+from collections import Counter
 from dataclasses import dataclass
 
 import pytest
 
-from diamond.alphazero.arena import MinArena, SooArena
+from diamond.alphazero.arena import MinArena, SooArena, _balanced_matchups
 from diamond.alphazero.config import ArenaConfig, MCTSConfig
 from diamond.alphazero.evaluator.base import EvalRequest
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
@@ -68,12 +69,12 @@ def test_soo_arena_balances_candidate_seat_and_turn_order() -> None:
         candidate=DummyEvaluator(0.0),
         baseline=DummyEvaluator(0.0),
         mcts_config=MCTSConfig(simulations=2, dirichlet_epsilon=0.25),
-        arena_config=ArenaConfig(games=2, seed=8),
+        arena_config=ArenaConfig(games=4, seed=8),
     ).run(factory)
 
-    assert observed_orders == [(1, 2), (2, 1)]
-    assert result.wins == 1
-    assert result.losses == 1
+    assert observed_orders == [(1, 2), (1, 2), (2, 1), (2, 1)]
+    assert result.wins == 2
+    assert result.losses == 2
     assert result.aborted_games == 0
     assert result.win_rate == pytest.approx(0.5)
 
@@ -89,12 +90,49 @@ def test_min_arena_rotates_candidate_and_all_turn_orders() -> None:
         candidate=DummyEvaluator((0.0, 0.0, 0.0)),
         baseline=DummyEvaluator((0.0, 0.0, 0.0)),
         mcts_config=MCTSConfig(simulations=2, dirichlet_epsilon=0.25),
-        arena_config=ArenaConfig(games=6, seed=4),
+        arena_config=ArenaConfig(games=18, seed=4),
     ).run(factory)
 
-    assert observed_orders == list(itertools.permutations((1, 2, 3)))
-    assert result.first_places == 2
-    assert result.second_places == 2
-    assert result.third_places == 2
+    assert observed_orders == [
+        order
+        for order in itertools.permutations((1, 2, 3))
+        for _candidate in (1, 2, 3)
+    ]
+    assert result.first_places == 6
+    assert result.second_places == 6
+    assert result.third_places == 6
     assert result.aborted_games == 0
     assert result.mean_utility == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("player_ids", [(1, 2), (1, 2, 3)])
+def test_balanced_matchups_cross_every_seat_with_every_turn_order(player_ids) -> None:
+    matchups = _balanced_matchups(player_ids)
+
+    expected_orders = set(itertools.permutations(player_ids))
+    assert {order for order, _candidate in matchups} == expected_orders
+    assert Counter(candidate for _order, candidate in matchups) == {
+        player_id: len(expected_orders) for player_id in player_ids
+    }
+    assert Counter(order.index(candidate) for order, candidate in matchups) == {
+        position: len(matchups) // len(player_ids)
+        for position in range(len(player_ids))
+    }
+
+
+def test_arenas_reject_partial_balance_cycles() -> None:
+    with pytest.raises(ValueError, match="multiple of 4"):
+        SooArena(
+            candidate=DummyEvaluator(0.0),
+            baseline=DummyEvaluator(0.0),
+            mcts_config=MCTSConfig(),
+            arena_config=ArenaConfig(games=3),
+        )
+
+    with pytest.raises(ValueError, match="multiple of 18"):
+        MinArena(
+            candidate=DummyEvaluator((0.0, 0.0, 0.0)),
+            baseline=DummyEvaluator((0.0, 0.0, 0.0)),
+            mcts_config=MCTSConfig(),
+            arena_config=ArenaConfig(games=5),
+        )

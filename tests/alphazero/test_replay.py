@@ -72,7 +72,44 @@ def test_collation_constructs_dense_policy_only_for_the_batch() -> None:
 
     batch = replay.collate(replay.samples, action_size=16)
 
+    assert batch.compatibility == spec
     assert len(batch.node_features) == 2
     assert batch.policy_targets[0][4:6] == (0.75, 0.25)
     assert sum(batch.policy_targets[0]) == pytest.approx(1.0)
     assert batch.value_targets == ((1.0,), (1.0,))
+
+
+@pytest.mark.parametrize(
+    "spec,value_target",
+    [
+        (
+            CheckpointCompatibilitySpec.soo(
+                model_version="0.1.0", network_config=NetworkConfig()
+            ),
+            (0.0,),
+        ),
+        (
+            CheckpointCompatibilitySpec.soo(
+                model_version="0.1.0", network_config=NetworkConfig()
+            ),
+            (2.5,),
+        ),
+        (
+            CheckpointCompatibilitySpec.min(
+                model_version="0.1.0", network_config=NetworkConfig()
+            ),
+            (1.0, 1.0, 1.0),
+        ),
+    ],
+)
+def test_training_sample_rejects_values_outside_model_semantics(
+    spec, value_target
+) -> None:
+    with pytest.raises(ReplayCompatibilityError, match="value target semantics"):
+        TrainingSample(
+            compatibility=spec,
+            node_features=((0.0,) * (spec.identity.player_count * 2),) * 73,
+            canonical_player_ids=tuple(range(1, spec.identity.player_count + 1)),
+            sparse_policy=((1, 1.0),),
+            value_target=value_target,
+        )

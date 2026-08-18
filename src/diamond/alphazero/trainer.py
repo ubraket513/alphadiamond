@@ -11,7 +11,7 @@ from torch import nn
 
 from .config import TrainingConfig
 from .identity import CheckpointCompatibilitySpec, ModelIdentity
-from .replay import ReplayBatch
+from .replay import ReplayBatch, validate_value_target
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,13 +49,15 @@ class AlphaZeroTrainer:
         self.training_step = 0
 
     def train_batch(self, batch: ReplayBatch) -> TrainingMetrics:
+        if batch.compatibility != self.compatibility:
+            raise ValueError("training batch compatibility does not match trainer")
         if not batch.node_features:
             raise ValueError("training batch must not be empty")
         batch_size = len(batch.node_features)
         if len(batch.policy_targets) != batch_size or len(batch.value_targets) != batch_size:
             raise ValueError("training batch components have different sizes")
-        if any(len(target) != self.value_size for target in batch.value_targets):
-            raise ValueError("value target shape does not match model semantics")
+        for target in batch.value_targets:
+            validate_value_target(target, self.compatibility.identity.player_count)
 
         features = torch.tensor(batch.node_features, dtype=torch.float32, device=self.device)
         policy_targets = torch.tensor(

@@ -46,7 +46,8 @@ class TrainingConfig:
 
 @dataclass(frozen=True, slots=True)
 class ArenaConfig:
-    games: int = 20
+    # 36 is divisible by the complete Soo (4) and Min (18) balance cycles.
+    games: int = 36
     seed: int = 0
     max_moves: int = 2000
     promotion_threshold: float = 0.55

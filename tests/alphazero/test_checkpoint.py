@@ -15,12 +15,14 @@ from diamond.alphazero.replay import ReplayBatch
 from diamond.alphazero.trainer import AlphaZeroTrainer
 
 
-def training_batch(player_count: int) -> ReplayBatch:
+def training_batch(spec: CheckpointCompatibilitySpec) -> ReplayBatch:
+    player_count = spec.identity.player_count
     features = player_count * 2
     policy = [0.0] * 5329
     policy[73] = 1.0
     value = (1.0,) if player_count == 2 else (1.0, 0.0, -1.0)
     return ReplayBatch(
+        compatibility=spec,
         node_features=(tuple((0.0,) * features for _ in range(73)),),
         policy_targets=(tuple(policy),),
         value_targets=(value,),
@@ -40,7 +42,7 @@ def test_checkpoint_round_trips_model_optimizer_step_and_config(tmp_path, model_
         model = MinModel(network, model_version="7.1.2")
         spec = CheckpointCompatibilitySpec.min(model_version="7.1.2", network_config=network)
     trainer = AlphaZeroTrainer(model, spec, training)
-    trainer.train_batch(training_batch(spec.identity.player_count))
+    trainer.train_batch(training_batch(spec))
     expected_parameters = tuple(parameter.detach().clone() for parameter in model.parameters())
 
     path = save_checkpoint(tmp_path / f"{model_kind}.pt", trainer)
@@ -55,8 +57,10 @@ def test_checkpoint_round_trips_model_optimizer_step_and_config(tmp_path, model_
 
     assert info.training_step == 1
     assert info.training_config == training
+    assert restored.config == training
     assert restored.training_step == 1
     assert restored.optimizer.state_dict()["state"]
+    assert restored.optimizer.param_groups[0]["lr"] == training.learning_rate
     assert all(
         torch.equal(expected, actual)
         for expected, actual in zip(expected_parameters, restored_model.parameters())
@@ -118,3 +122,70 @@ def test_checkpoint_rejects_missing_or_corrupted_payload(tmp_path) -> None:
 
     with pytest.raises(CheckpointError):
         load_checkpoint(path, trainer, expected=spec)
+
+
+def test_malformed_optimizer_state_does_not_partially_mutate_model(tmp_path) -> None:
+    network = NetworkConfig(width=16, residual_blocks=1)
+    spec = CheckpointCompatibilitySpec.soo(model_version="0.1.0", network_config=network)
+    source = AlphaZeroTrainer(SooModel(network), spec, TrainingConfig(batch_size=1))
+    source.train_batch(training_batch(spec))
+    path = save_checkpoint(tmp_path / "malformed-optimizer.pt", source)
+    payload = torch.load(path, weights_only=True)
+    payload["optimizer_state_dict"] = {"state": {}, "param_groups": []}
+    torch.save(payload, path)
+
+    destination = AlphaZeroTrainer(
+        SooModel(network), spec, TrainingConfig(batch_size=1, learning_rate=9e-3)
+    )
+    before = tuple(parameter.detach().clone() for parameter in destination.model.parameters())
+
+    with pytest.raises(CheckpointError, match="state is incompatible"):
+        load_checkpoint(path, destination, expected=spec)
+
+    assert destination.training_step == 0
+    assert destination.config.learning_rate == 9e-3
+    assert all(
+        torch.equal(expected, actual)
+        for expected, actual in zip(before, destination.model.parameters())
+    )
+
+
+def test_unpicklable_checkpoint_uses_checkpoint_error_contract(tmp_path) -> None:
+    path = tmp_path / "garbage.pt"
+    path.write_bytes(b"not a torch checkpoint")
+    network = NetworkConfig(width=16, residual_blocks=1)
+    spec = CheckpointCompatibilitySpec.soo(model_version="0.1.0", network_config=network)
+    trainer = AlphaZeroTrainer(SooModel(network), spec, TrainingConfig())
+
+    with pytest.raises(CheckpointError, match="cannot read checkpoint"):
+        load_checkpoint(path, trainer, expected=spec)
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("device", "cuda", "device"),
+        ("learning_rate", 9e-3, "optimizer learning_rate"),
+    ],
+)
+def test_checkpoint_rejects_training_config_inconsistent_with_runtime_state(
+    tmp_path, field: str, value: object, error: str
+) -> None:
+    network = NetworkConfig(width=16, residual_blocks=1)
+    spec = CheckpointCompatibilitySpec.soo(model_version="0.1.0", network_config=network)
+    source = AlphaZeroTrainer(SooModel(network), spec, TrainingConfig(batch_size=1))
+    path = save_checkpoint(tmp_path / "inconsistent-config.pt", source)
+    payload = torch.load(path, weights_only=True)
+    payload["training_config"][field] = value
+    torch.save(payload, path)
+    destination = AlphaZeroTrainer(SooModel(network), spec, TrainingConfig(batch_size=1))
+    before = tuple(parameter.detach().clone() for parameter in destination.model.parameters())
+
+    with pytest.raises(CheckpointError, match=error):
+        load_checkpoint(path, destination, expected=spec)
+
+    assert destination.config == TrainingConfig(batch_size=1)
+    assert all(
+        torch.equal(expected, actual)
+        for expected, actual in zip(before, destination.model.parameters())
+    )

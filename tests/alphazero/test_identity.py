@@ -5,6 +5,8 @@ import pytest
 from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.identity import (
     MIN_VALUE_SEMANTICS_VERSION,
+    RULESET_FINGERPRINT,
+    SEAT_LAYOUT_VERSION,
     SOO_VALUE_SEMANTICS_VERSION,
     CheckpointCompatibilityError,
     CheckpointCompatibilitySpec,
@@ -38,8 +40,10 @@ def test_checkpoint_metadata_contains_every_compatibility_gate() -> None:
         "player_count": 2,
         "ruleset_version": "diamond-authoritative-rules-v1",
         "board_topology_version": "diamond73-v1",
+        "ruleset_fingerprint": RULESET_FINGERPRINT,
         "encoder_version": "diamond-camp-relative-v1",
         "action_space_version": "diamond73-srcdst-v1",
+        "seat_layout_version": SEAT_LAYOUT_VERSION,
         "value_semantics_version": "current-player-scalar-winloss-v1",
         "network_config": {"width": 64, "residual_blocks": 3},
     }
@@ -53,8 +57,10 @@ def test_checkpoint_metadata_contains_every_compatibility_gate() -> None:
         ("player_count", 3),
         ("ruleset_version", "other-rules"),
         ("board_topology_version", "diamond121-v1"),
+        ("ruleset_fingerprint", "sha256:different"),
         ("encoder_version", "different-encoder"),
         ("action_space_version", "different-actions"),
+        ("seat_layout_version", "different-seats"),
         ("value_semantics_version", MIN_VALUE_SEMANTICS_VERSION),
         ("network_config", {"width": 128, "residual_blocks": 3}),
     ],
@@ -82,3 +88,19 @@ def test_missing_checkpoint_metadata_is_rejected() -> None:
 
     with pytest.raises(CheckpointCompatibilityError, match="encoder_version"):
         expected.assert_compatible(metadata)
+
+
+def test_ruleset_fingerprint_is_a_stable_sha256_identity() -> None:
+    assert RULESET_FINGERPRINT.startswith("sha256:")
+    assert len(RULESET_FINGERPRINT) == len("sha256:") + 64
+
+
+def test_model_version_accepts_full_semver_prerelease_and_build_metadata() -> None:
+    identity = ModelIdentity.soo("1.0.0-rc.1+build.5")
+    assert identity.model_version == "1.0.0-rc.1+build.5"
+
+
+@pytest.mark.parametrize("version", ["1.0.0-01", "1.0.0+", "01.0.0"])
+def test_model_version_rejects_invalid_semver(version: str) -> None:
+    with pytest.raises(ValueError, match="semantic version"):
+        ModelIdentity.min(version)

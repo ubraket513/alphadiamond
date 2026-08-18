@@ -2,23 +2,58 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .config import NetworkConfig, config_dict
+from ..game.board import standard_board
+from ..game.coordinates import DIRECTIONS
+from ..game.state import SEAT_LAYOUTS
 
 RULESET_VERSION = "diamond-authoritative-rules-v1"
 BOARD_TOPOLOGY_VERSION = "diamond73-v1"
 ENCODER_VERSION = "diamond-camp-relative-v1"
 ACTION_SPACE_VERSION = "diamond73-srcdst-v1"
+SEAT_LAYOUT_VERSION = "diamond-seat-layout-v1"
 
 SOO_MODEL_NAME = "Soo"
 MIN_MODEL_NAME = "Min"
 SOO_VALUE_SEMANTICS_VERSION = "current-player-scalar-winloss-v1"
 MIN_VALUE_SEMANTICS_VERSION = "canonical-placement-utility-1-0-minus1-v1"
 
-_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$")
+
+def _derive_ruleset_fingerprint() -> str:
+    board = standard_board()
+    payload = {
+        "positions": [
+            {
+                "cube": [position.cube.x, position.cube.y, position.cube.z],
+                "camps": [camp.value for camp in position.camps],
+                "neighbours": list(board.neighbours(position.id)),
+            }
+            for position in board.positions
+        ],
+        "directions": [[direction.x, direction.y, direction.z] for direction in DIRECTIONS],
+        "seat_layouts": {
+            str(player_count): [camp.value for camp, _color in layout]
+            for player_count, layout in sorted(SEAT_LAYOUTS.items())
+        },
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+RULESET_FINGERPRINT = _derive_ruleset_fingerprint()
+
+_SEMVER = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
 
 
 class CheckpointCompatibilityError(ValueError):
@@ -74,8 +109,10 @@ class CheckpointCompatibilitySpec:
     network_config: NetworkConfig
     ruleset_version: str = RULESET_VERSION
     board_topology_version: str = BOARD_TOPOLOGY_VERSION
+    ruleset_fingerprint: str = RULESET_FINGERPRINT
     encoder_version: str = ENCODER_VERSION
     action_space_version: str = ACTION_SPACE_VERSION
+    seat_layout_version: str = SEAT_LAYOUT_VERSION
 
     @classmethod
     def soo(
@@ -96,8 +133,10 @@ class CheckpointCompatibilitySpec:
             "player_count": self.identity.player_count,
             "ruleset_version": self.ruleset_version,
             "board_topology_version": self.board_topology_version,
+            "ruleset_fingerprint": self.ruleset_fingerprint,
             "encoder_version": self.encoder_version,
             "action_space_version": self.action_space_version,
+            "seat_layout_version": self.seat_layout_version,
             "value_semantics_version": self.identity.value_semantics_version,
             "network_config": config_dict(self.network_config),
         }
@@ -124,7 +163,9 @@ __all__ = [
     "MIN_MODEL_NAME",
     "MIN_VALUE_SEMANTICS_VERSION",
     "ModelIdentity",
+    "RULESET_FINGERPRINT",
     "RULESET_VERSION",
+    "SEAT_LAYOUT_VERSION",
     "SOO_MODEL_NAME",
     "SOO_VALUE_SEMANTICS_VERSION",
 ]

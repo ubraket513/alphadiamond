@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -63,7 +65,7 @@ def load_checkpoint(
         raise ValueError("expected checkpoint compatibility must match the trainer")
     try:
         payload = torch.load(source, map_location=trainer.device, weights_only=True)
-    except (OSError, RuntimeError, EOFError) as exc:
+    except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as exc:
         raise CheckpointError(f"cannot read checkpoint {source}: {exc}") from exc
     if not isinstance(payload, Mapping):
         raise CheckpointError("checkpoint root must be a mapping")
@@ -92,15 +94,54 @@ def load_checkpoint(
         training_config = TrainingConfig(**dict(training_payload))
     except (TypeError, ValueError) as exc:
         raise CheckpointError(f"invalid checkpoint training_config: {exc}") from exc
+    if (
+        training_config.learning_rate <= 0
+        or training_config.batch_size <= 0
+        or training_config.weight_decay < 0
+    ):
+        raise CheckpointError("invalid checkpoint training_config values")
+    try:
+        checkpoint_device = torch.device(training_config.device)
+    except (RuntimeError, ValueError) as exc:
+        raise CheckpointError(f"invalid checkpoint training device: {exc}") from exc
+    if checkpoint_device != trainer.device:
+        raise CheckpointError(
+            f"checkpoint training device {checkpoint_device} does not match "
+            f"trainer device {trainer.device}"
+        )
     if not isinstance(payload["model_state_dict"], Mapping):
         raise CheckpointError("checkpoint model_state_dict must be a mapping")
     if not isinstance(payload["optimizer_state_dict"], Mapping):
         raise CheckpointError("checkpoint optimizer_state_dict must be a mapping")
+    parameter_groups = payload["optimizer_state_dict"].get("param_groups")
+    if not isinstance(parameter_groups, list) or not parameter_groups:
+        raise CheckpointError(
+            "checkpoint state is incompatible: optimizer param_groups are malformed"
+        )
+    for group in parameter_groups:
+        if not isinstance(group, Mapping):
+            raise CheckpointError(
+                "checkpoint state is incompatible: optimizer param_groups are malformed"
+            )
+        if group.get("lr") != training_config.learning_rate:
+            raise CheckpointError("checkpoint optimizer learning_rate mismatch")
+        if group.get("weight_decay") != training_config.weight_decay:
+            raise CheckpointError("checkpoint optimizer weight_decay mismatch")
+
+    # Validate both states against isolated copies before mutating the live
+    # trainer. A malformed optimizer must not leave checkpoint model weights
+    # installed in an otherwise rejected destination.
     try:
-        trainer.model.load_state_dict(payload["model_state_dict"], strict=True)
-        trainer.optimizer.load_state_dict(payload["optimizer_state_dict"])
+        staged_model = copy.deepcopy(trainer.model)
+        staged_optimizer = copy.deepcopy(trainer.optimizer)
+        staged_model.load_state_dict(payload["model_state_dict"], strict=True)
+        staged_optimizer.load_state_dict(payload["optimizer_state_dict"])
     except (RuntimeError, ValueError, KeyError) as exc:
         raise CheckpointError(f"checkpoint state is incompatible: {exc}") from exc
+
+    trainer.model.load_state_dict(payload["model_state_dict"], strict=True)
+    trainer.optimizer.load_state_dict(payload["optimizer_state_dict"])
+    trainer.config = training_config
     trainer.training_step = step
     return CheckpointInfo(
         path=source,

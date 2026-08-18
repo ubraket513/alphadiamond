@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
+from typing import Any
+
+import torch
 
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, save_checkpoint
@@ -150,12 +154,14 @@ def run_selfplay_smoke() -> dict[str, dict[str, object]]:
     }
 
 
-def _training_batch(player_count: int) -> ReplayBatch:
+def _training_batch(compatibility: CheckpointCompatibilitySpec) -> ReplayBatch:
+    player_count = compatibility.identity.player_count
     features = player_count * 2
     policy = [0.0] * 5329
     policy[73] = 1.0
     value = (1.0,) if player_count == 2 else (1.0, 0.0, -1.0)
     return ReplayBatch(
+        compatibility=compatibility,
         node_features=(tuple((0.0,) * features for _ in range(73)),),
         policy_targets=(tuple(policy),),
         value_targets=(value,),
@@ -181,7 +187,7 @@ def run_training_smoke() -> dict[str, dict[str, float | int]]:
     result: dict[str, dict[str, float | int]] = {}
     for name, trainer in _new_trainers().items():
         metrics = trainer.train_batch(
-            _training_batch(trainer.compatibility.identity.player_count)
+            _training_batch(trainer.compatibility)
         )
         result[name] = {
             "training_step": trainer.training_step,
@@ -195,8 +201,13 @@ def run_checkpoint_smoke() -> dict[str, dict[str, object]]:
     with TemporaryDirectory() as directory:
         for name, trainer in _new_trainers().items():
             trainer.train_batch(
-                _training_batch(trainer.compatibility.identity.player_count)
+                _training_batch(trainer.compatibility)
             )
+            expected_parameters = tuple(
+                parameter.detach().clone() for parameter in trainer.model.parameters()
+            )
+            expected_optimizer = trainer.optimizer.state_dict()
+            expected_config = trainer.config
             path = save_checkpoint(f"{directory}/{name}.pt", trainer)
             network = trainer.compatibility.network_config
             restored_model = (
@@ -211,8 +222,33 @@ def run_checkpoint_smoke() -> dict[str, dict[str, object]]:
             result[name] = {
                 "model_version": info.metadata["model_version"],
                 "training_step": info.training_step,
+                "parameters_restored": all(
+                    torch.equal(expected, actual)
+                    for expected, actual in zip(
+                        expected_parameters, restored.model.parameters()
+                    )
+                ),
+                "optimizer_restored": _state_equal(
+                    expected_optimizer, restored.optimizer.state_dict()
+                ),
+                "config_restored": restored.config == expected_config,
             }
     return result
+
+
+def _state_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
+        return torch.equal(left, right)
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _state_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
+        return len(left) == len(right) and all(
+            _state_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return bool(left == right)
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,13 +305,13 @@ def run_arena_smoke() -> dict[str, dict[str, int]]:
         candidate=DummyEvaluator(0.0),
         baseline=DummyEvaluator(0.0),
         mcts_config=search,
-        arena_config=ArenaConfig(games=2),
+        arena_config=ArenaConfig(games=4),
     ).run(lambda order: _ArenaGame(order, (1, 2)))
     min_result = MinArena(
         candidate=DummyEvaluator((0.0, 0.0, 0.0)),
         baseline=DummyEvaluator((0.0, 0.0, 0.0)),
         mcts_config=search,
-        arena_config=ArenaConfig(games=6),
+        arena_config=ArenaConfig(games=18),
     ).run(lambda order: _ArenaGame(order, (1, 2, 3)))
     return {
         "Soo": {
@@ -292,6 +328,41 @@ def run_arena_smoke() -> dict[str, dict[str, int]]:
     }
 
 
+def smoke_succeeded(result: dict[str, Any]) -> bool:
+    try:
+        expected_models = {"Soo", "Min"}
+        if any(
+            set(result[section]) != expected_models
+            for section in ("selfplay", "training", "checkpoint")
+        ):
+            return False
+        selfplay_ok = all(
+            entry["completed"] and entry["samples"] > 0
+            for entry in result["selfplay"].values()
+        )
+        training_ok = all(
+            entry["training_step"] == 1
+            and math.isfinite(entry["total_loss"])
+            and entry["total_loss"] > 0
+            for entry in result["training"].values()
+        )
+        checkpoint_ok = all(
+            entry["training_step"] == 1
+            and entry["parameters_restored"]
+            and entry["optimizer_restored"]
+            and entry["config_restored"]
+            for entry in result["checkpoint"].values()
+        )
+        arena_ok = (
+            result["arena"]["Soo"] == {"wins": 2, "losses": 2, "aborted": 0}
+            and result["arena"]["Min"]
+            == {"first": 6, "second": 6, "third": 6, "aborted": 0}
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return selfplay_ok and training_ok and checkpoint_ok and arena_ok
+
+
 def main() -> int:
     result = {
         "selfplay": run_selfplay_smoke(),
@@ -300,9 +371,7 @@ def main() -> int:
         "arena": run_arena_smoke(),
     }
     print(json.dumps(result, indent=2))
-    return 0 if all(
-        entry["completed"] for entry in result["selfplay"].values()
-    ) else 1
+    return 0 if smoke_succeeded(result) else 1
 
 
 if __name__ == "__main__":
@@ -314,4 +383,5 @@ __all__ = [
     "run_checkpoint_smoke",
     "run_selfplay_smoke",
     "run_training_smoke",
+    "smoke_succeeded",
 ]

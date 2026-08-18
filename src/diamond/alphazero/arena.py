@@ -14,6 +14,17 @@ from .mcts.search_3p import MCTS3P
 GameFactory = Callable[[tuple[int, ...]], Any]
 
 
+def _balanced_matchups(
+    player_ids: tuple[int, ...],
+) -> tuple[tuple[tuple[int, ...], int], ...]:
+    """Cross every fixed seat assignment with every possible turn order."""
+    return tuple(
+        (order, candidate_player)
+        for order in itertools.permutations(player_ids)
+        for candidate_player in player_ids
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SooArenaResult:
     wins: int
@@ -54,13 +65,15 @@ class SooArena:
         self.candidate = candidate
         self.baseline = baseline
         self.mcts_config = _validate_configs(mcts_config, arena_config)
+        if arena_config.games % len(_balanced_matchups((1, 2))) != 0:
+            raise ValueError("Soo arena games must be a multiple of 4")
         self.arena_config = arena_config
 
     def run(self, game_factory: GameFactory) -> SooArenaResult:
         wins = losses = aborted = 0
+        matchups = _balanced_matchups((1, 2))
         for game_index in range(self.arena_config.games):
-            order = (1, 2) if game_index % 2 == 0 else (2, 1)
-            candidate_player = 1 if game_index % 2 == 0 else 2
+            order, candidate_player = matchups[game_index % len(matchups)]
             game = game_factory(order)
             state = game.initial_state()
             moves = 0
@@ -107,15 +120,16 @@ class MinArena:
         self.candidate = candidate
         self.baseline = baseline
         self.mcts_config = _validate_configs(mcts_config, arena_config)
+        if arena_config.games % len(_balanced_matchups((1, 2, 3))) != 0:
+            raise ValueError("Min arena games must be a multiple of 18")
         self.arena_config = arena_config
 
     def run(self, game_factory: GameFactory) -> MinArenaResult:
-        orders = tuple(itertools.permutations((1, 2, 3)))
+        matchups = _balanced_matchups((1, 2, 3))
         placements = [0, 0, 0]
         aborted = 0
         for game_index in range(self.arena_config.games):
-            order = orders[game_index % len(orders)]
-            candidate_player = game_index % 3 + 1
+            order, candidate_player = matchups[game_index % len(matchups)]
             game = game_factory(order)
             state = game.initial_state()
             moves = 0

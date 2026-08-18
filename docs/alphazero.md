@@ -17,8 +17,9 @@ Soo and Min versions are unrelated. A Soo `0.4.0` release does not imply that
 Min has or needs a `0.4.0` release.
 
 Checkpoint loading exact-matches `model_name`, `model_version`, player count,
-ruleset, board topology, encoder, action space, value semantics, and network
-configuration. A matching model version never overrides another mismatch.
+ruleset, board topology, a deterministic ruleset fingerprint, encoder, action
+space, seat layout, value semantics, and network configuration. A matching
+model version never overrides another mismatch.
 
 ## Package boundary
 
@@ -29,10 +30,13 @@ configuration. A matching model version never overrides another mismatch.
   eager PyTorch evaluator.
 - `mcts/`: framework-neutral scalar Soo and vector Min PUCT.
 - `selfplay/`, `replay.py`, and `trainer.py`: single-process data generation,
-  sparse CPU replay, and FP32 AdamW training.
+  sparse CPU replay, compatibility-bearing batches, exact Soo/Min target
+  validation, and FP32 AdamW training.
 - `checkpoint.py`: strict atomic checkpoint persistence.
 - `arena.py`: deterministic candidate/baseline evaluation with balanced
-  seating and turn orders.
+  seating and turn orders. A complete balance cycle is 4 games for Soo and 18
+  games for Min; partial cycles are rejected, and the shared default of 36
+  games completes both cycles.
 
 The GUI remains separate and continues to use the existing `Agent` protocol.
 Milestone 1 does not route Soo or Min into the GUI.
@@ -76,8 +80,20 @@ That command performs:
 - a one-move authoritative Soo self-play finish;
 - a two-move authoritative Min finish through full three-place ranking;
 - one real FP32 AdamW update for Soo and Min;
-- checkpoint model/optimizer/training-step round trips;
+- exact checkpoint model/optimizer/config/training-step round trips;
 - deterministic balanced Soo and Min arena orchestration.
+
+Its exit status covers every check above; success is not based on self-play
+alone.
+
+Checkpoint resume also rejects a serialized training device that differs from
+the destination trainer and optimizer hyperparameters that disagree with the
+serialized `TrainingConfig`.
+
+`TrainingConfig.seed` controls PyTorch randomness after the model is supplied
+to the trainer. For reproducible initial weights, set the PyTorch seed before
+constructing `SooModel` or `MinModel`; the trainer deliberately does not reset
+or reinitialize a caller-supplied model.
 
 Individual smoke functions can also be run directly:
 
