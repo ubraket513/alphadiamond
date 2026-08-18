@@ -23,9 +23,6 @@ Rectangle {
         anchors.margins: Theme.spacingLarge
         spacing: Theme.spacing
 
-        // The section title is right-aligned while its content stays left, so
-        // the titles form a quiet right-hand rail down the panel instead of
-        // competing with the content for the same starting edge.
         Text {
             Layout.fillWidth: true
             visible: root.title !== ""
@@ -35,7 +32,7 @@ Rectangle {
             font.pixelSize: Theme.fontSmall
             font.letterSpacing: 1.2
             font.weight: Theme.weightBold
-            horizontalAlignment: Text.AlignRight
+            horizontalAlignment: Text.AlignLeft
         }
 
         ColumnLayout {

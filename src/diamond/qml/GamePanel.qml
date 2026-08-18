@@ -11,7 +11,7 @@ import Style
 PanelSection {
     id: root
     required property var controller
-    title: "GAME"
+    title: "Game"
 
     RowLayout {
         Layout.fillWidth: true

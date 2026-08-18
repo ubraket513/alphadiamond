@@ -7,7 +7,7 @@ import Style
 PanelSection {
     id: root
     required property var controller
-    title: "AI AGENT"
+    title: "AI Agent"
 
     readonly property bool proposedByAi:
         root.controller.hasProposal && root.controller.proposalIsAi

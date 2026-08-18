@@ -18,6 +18,9 @@ dependencies = [
 dev = [
     "pytest>=7.4",
 ]
+alphazero = [
+    "torch>=2.5",
+]
 
 [project.scripts]
 diamond = "diamond.main:main"

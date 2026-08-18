@@ -6,7 +6,7 @@ import Style
 PanelSection {
     id: root
     required property var controller
-    title: "MOVE HISTORY"
+    title: "Move History"
 
     ListView {
         id: list

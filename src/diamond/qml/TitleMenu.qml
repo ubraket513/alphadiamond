@@ -31,7 +31,14 @@ Item {
         color: popup.opened ? Theme.systemGray5
                             : (hover.hovered ? Theme.systemGray6 : "transparent")
 
-        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+        // Keep adjacent menu items from snapping between hover states.
+        Behavior on color {
+            ColorAnimation {
+                duration: Theme.durationBase
+                easing.type: Easing.Bezier
+                easing.bezierCurve: Theme.easeStandard
+            }
+        }
     }
 
     Text {
