@@ -1,4 +1,4 @@
-"""Replayable Soo Elo registry with atomic JSON persistence."""
+"""Replayable, protocol-scoped Soo Elo and Min TrueSkill registries."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from typing import Any
 from ..config import NetworkConfig
 from ..identity import CheckpointCompatibilitySpec, MIN_MODEL_NAME, SOO_MODEL_NAME
 from .elo import rate_soo_match
-from .events import SooRatingEvent
+from .events import MinRatingEvent, SooRatingEvent
+from .min_trueskill import MinRating, initial_min_ratings, rate_min_event
 from .participants import CheckpointParticipant
-from .protocol import BenchmarkProtocol, EloConfig
+from .protocol import BenchmarkProtocol, EloConfig, TrueSkillConfig
 
 _FORMAT_VERSION = 1
 
@@ -27,6 +28,18 @@ class SooLeaderboardEntry:
     display_name: str
     rating: float
     games: int
+
+
+@dataclass(frozen=True, slots=True)
+class MinLeaderboardEntry:
+    """One Min participant's current replayed TrueSkill values."""
+
+    participant_id: str
+    display_name: str
+    mu: float
+    sigma: float
+    exposure: float
+    rated_games: int
 
 
 def _json_value(value: object) -> object:
@@ -118,9 +131,8 @@ def _participant_from_payload(payload: object) -> CheckpointParticipant:
         raise ValueError(f"invalid registry participant: {exc}") from exc
 
 
-def _event_payload(event: SooRatingEvent) -> dict[str, object]:
-    return {
-        "event_type": "soo",
+def _event_payload(event: SooRatingEvent | MinRatingEvent) -> dict[str, object]:
+    payload = {
         "sequence_index": event.sequence_index,
         "protocol_id": event.protocol_id,
         "participant_ids": event.participant_ids,
@@ -128,68 +140,119 @@ def _event_payload(event: SooRatingEvent) -> dict[str, object]:
         "turn_order": event.turn_order,
         "opening_id": event.opening_id,
         "completed": event.completed,
-        "winner_id": event.winner_id,
-        "loser_id": event.loser_id,
+    }
+    if isinstance(event, SooRatingEvent):
+        return {
+            "event_type": "soo",
+            **payload,
+            "winner_id": event.winner_id,
+            "loser_id": event.loser_id,
+        }
+    return {
+        "event_type": "min",
+        **payload,
+        "final_ranking": event.final_ranking,
     }
 
 
-def _event_from_payload(payload: object) -> SooRatingEvent:
+def _event_from_payload(payload: object) -> SooRatingEvent | MinRatingEvent:
     if not isinstance(payload, Mapping):
         raise ValueError("registry event must be a mapping")
-    if payload.get("event_type") != "soo":
-        raise ValueError("Task 3 registry accepts only Soo events")
     try:
-        return SooRatingEvent(
-            sequence_index=payload["sequence_index"],
-            protocol_id=payload["protocol_id"],
-            participant_ids=tuple(payload["participant_ids"]),
-            seat_assignment=tuple(payload["seat_assignment"]),
-            turn_order=tuple(payload["turn_order"]),
-            opening_id=payload["opening_id"],
-            completed=payload["completed"],
-            winner_id=payload.get("winner_id"),
-            loser_id=payload.get("loser_id"),
-        )
+        common = {
+            "sequence_index": payload["sequence_index"],
+            "protocol_id": payload["protocol_id"],
+            "participant_ids": tuple(payload["participant_ids"]),
+            "seat_assignment": tuple(payload["seat_assignment"]),
+            "turn_order": tuple(payload["turn_order"]),
+            "opening_id": payload["opening_id"],
+            "completed": payload["completed"],
+        }
+        if payload.get("event_type") == "soo":
+            return SooRatingEvent(
+                **common,
+                winner_id=payload.get("winner_id"),
+                loser_id=payload.get("loser_id"),
+            )
+        if payload.get("event_type") == "min":
+            ranking = payload.get("final_ranking")
+            return MinRatingEvent(
+                **common,
+                final_ranking=tuple(ranking) if ranking is not None else None,
+            )
+        raise ValueError("registry event type must be 'soo' or 'min'")
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid registry event: {exc}") from exc
 
 
 class RatingRegistry:
-    """An append-only, protocol-scoped Soo Elo event registry."""
+    """An append-only, protocol-scoped checkpoint rating event registry."""
 
     def __init__(self, protocol: BenchmarkProtocol) -> None:
         if not isinstance(protocol, BenchmarkProtocol):
             raise ValueError("protocol must be a BenchmarkProtocol")
-        if protocol.compatibility.identity.model_name != SOO_MODEL_NAME:
+        model_name = protocol.compatibility.identity.model_name
+        if (
+            protocol.rating_system_version == EloConfig().rating_system_version
+            and model_name != SOO_MODEL_NAME
+        ):
             raise ValueError("Task 3 registry requires a Soo compatibility protocol")
-        if protocol.rating_system_version != EloConfig().rating_system_version:
-            raise ValueError("Task 3 registry requires the soo-elo-v1 rating system")
-        try:
-            self._elo_config = EloConfig(**dict(protocol.rating_parameters))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"invalid Soo Elo rating parameters: {exc}") from exc
-        if self._elo_config.rating_system_version != protocol.rating_system_version:
-            raise ValueError("Elo rating parameters do not match the registry protocol")
+        if (
+            protocol.rating_system_version == TrueSkillConfig().rating_system_version
+            and model_name != MIN_MODEL_NAME
+        ):
+            raise ValueError("Min TrueSkill registry requires a Min compatibility protocol")
+        self._elo_config: EloConfig | None = None
+        self._trueskill_config: TrueSkillConfig | None = None
+        if model_name == SOO_MODEL_NAME:
+            if protocol.rating_system_version != EloConfig().rating_system_version:
+                raise ValueError("Task 3 registry requires the soo-elo-v1 rating system")
+            try:
+                self._elo_config = EloConfig(**dict(protocol.rating_parameters))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid Soo Elo rating parameters: {exc}") from exc
+            if self._elo_config.rating_system_version != protocol.rating_system_version:
+                raise ValueError("Elo rating parameters do not match the registry protocol")
+        elif model_name == MIN_MODEL_NAME:
+            if protocol.rating_system_version != TrueSkillConfig().rating_system_version:
+                raise ValueError("Min registry requires the min-trueskill-v1 rating system")
+            try:
+                self._trueskill_config = TrueSkillConfig(**dict(protocol.rating_parameters))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid Min TrueSkill rating parameters: {exc}") from exc
+            if self._trueskill_config.rating_system_version != protocol.rating_system_version:
+                raise ValueError("TrueSkill rating parameters do not match the registry protocol")
+        else:
+            raise ValueError("registry requires a Soo or Min compatibility protocol")
 
         self.protocol = protocol
         self._participants: dict[str, CheckpointParticipant] = {}
-        self._events: list[SooRatingEvent] = []
+        self._events: list[SooRatingEvent | MinRatingEvent] = []
         self._ratings: dict[str, float] = {}
+        self._min_ratings: dict[str, MinRating] = {}
 
     @property
     def participants(self) -> Mapping[str, CheckpointParticipant]:
         return MappingProxyType(self._participants)
 
     @property
-    def events(self) -> tuple[SooRatingEvent, ...]:
+    def events(self) -> tuple[SooRatingEvent | MinRatingEvent, ...]:
         return tuple(self._events)
 
     @property
     def ratings(self) -> Mapping[str, float]:
         return MappingProxyType(self._ratings)
 
+    @property
+    def min_ratings(self) -> Mapping[str, MinRating]:
+        return MappingProxyType(self._min_ratings)
+
+    @property
+    def has_sufficient_min_history(self) -> bool:
+        return self._trueskill_config is not None and len(self._participants) >= 3
+
     def add_participant(self, participant: CheckpointParticipant) -> float:
-        """Register one compatible checkpoint and return its current Elo."""
+        """Register one compatible checkpoint and return its leaderboard value."""
         if not isinstance(participant, CheckpointParticipant):
             raise ValueError("participant must be a CheckpointParticipant")
         try:
@@ -201,22 +264,33 @@ class RatingRegistry:
         if existing is not None:
             if existing != participant:
                 raise ValueError("participant ID is already registered with different metadata")
-            return self._ratings[participant.participant_id]
+            if self._elo_config is not None:
+                return self._ratings[participant.participant_id]
+            return self._min_ratings[participant.participant_id].exposure
 
         self._participants[participant.participant_id] = participant
-        self._ratings[participant.participant_id] = self._elo_config.initial_rating
-        return self._elo_config.initial_rating
+        if self._elo_config is not None:
+            self._ratings[participant.participant_id] = self._elo_config.initial_rating
+            return self._elo_config.initial_rating
+        assert self._trueskill_config is not None
+        rating = initial_min_ratings((participant.participant_id,), self._trueskill_config)[
+            participant.participant_id
+        ]
+        self._min_ratings[participant.participant_id] = rating
+        return rating.exposure
 
-    def _validate_event(self, event: SooRatingEvent) -> None:
-        if not isinstance(event, SooRatingEvent):
+    def _validate_event(self, event: SooRatingEvent | MinRatingEvent) -> None:
+        if self._elo_config is not None and not isinstance(event, SooRatingEvent):
             raise ValueError("Task 3 registry accepts only Soo events")
+        if self._trueskill_config is not None and not isinstance(event, MinRatingEvent):
+            raise ValueError("Min registry accepts only Min events")
         if event.protocol_id != self.protocol.protocol_id:
             raise ValueError("event protocol does not match registry protocol")
         missing_participants = set(event.participant_ids) - self._participants.keys()
         if missing_participants:
             raise ValueError("event references unregistered participants")
 
-    def record_event(self, event: SooRatingEvent) -> bool:
+    def record_event(self, event: SooRatingEvent | MinRatingEvent) -> bool:
         """Append one event, returning ``False`` for an already-recorded event."""
         self._validate_event(event)
         if any(recorded.event_id == event.event_id for recorded in self._events):
@@ -227,25 +301,36 @@ class RatingRegistry:
 
     def rebuild(self) -> None:
         """Recompute cached ratings solely from registered participants and events."""
-        ratings = {
-            participant_id: self._elo_config.initial_rating
-            for participant_id in self._participants
-        }
+        if self._elo_config is not None:
+            ratings = {
+                participant_id: self._elo_config.initial_rating
+                for participant_id in self._participants
+            }
+            for event in self._events:
+                self._validate_event(event)
+                assert isinstance(event, SooRatingEvent)
+                if not event.completed:
+                    continue
+                assert event.winner_id is not None
+                assert event.loser_id is not None
+                winner_rating, loser_rating = rate_soo_match(
+                    ratings[event.winner_id],
+                    ratings[event.loser_id],
+                    True,
+                    self._elo_config,
+                )
+                ratings[event.winner_id] = winner_rating
+                ratings[event.loser_id] = loser_rating
+            self._ratings = ratings
+            return
+
+        assert self._trueskill_config is not None
+        ratings = initial_min_ratings(tuple(self._participants), self._trueskill_config)
         for event in self._events:
             self._validate_event(event)
-            if not event.completed:
-                continue
-            assert event.winner_id is not None
-            assert event.loser_id is not None
-            winner_rating, loser_rating = rate_soo_match(
-                ratings[event.winner_id],
-                ratings[event.loser_id],
-                True,
-                self._elo_config,
-            )
-            ratings[event.winner_id] = winner_rating
-            ratings[event.loser_id] = loser_rating
-        self._ratings = ratings
+            assert isinstance(event, MinRatingEvent)
+            ratings = rate_min_event(ratings, event, self._trueskill_config)
+        self._min_ratings = ratings
 
     def soo_leaderboard(self) -> tuple[SooLeaderboardEntry, ...]:
         """Return all Soo participants in deterministic descending-Elo order."""
@@ -265,6 +350,21 @@ class RatingRegistry:
         )
         return tuple(sorted(entries, key=lambda entry: (-entry.rating, entry.participant_id)))
 
+    def min_leaderboard(self) -> tuple[MinLeaderboardEntry, ...]:
+        """Return all Min participants in deterministic descending-exposure order."""
+        entries = (
+            MinLeaderboardEntry(
+                participant_id=participant_id,
+                display_name=participant.display_name,
+                mu=self._min_ratings[participant_id].mu,
+                sigma=self._min_ratings[participant_id].sigma,
+                exposure=self._min_ratings[participant_id].exposure,
+                rated_games=self._min_ratings[participant_id].rated_games,
+            )
+            for participant_id, participant in self._participants.items()
+        )
+        return tuple(sorted(entries, key=lambda entry: (-entry.exposure, entry.participant_id)))
+
     def save(self, path: str | Path) -> None:
         """Atomically persist event sources and a replaceable derived rating cache."""
         destination = Path(path)
@@ -274,6 +374,15 @@ class RatingRegistry:
             "participants": [_participant_payload(item) for item in self._participants.values()],
             "events": [_event_payload(event) for event in self._events],
             "ratings": self._ratings,
+            "min_ratings": {
+                participant_id: {
+                    "mu": rating.mu,
+                    "sigma": rating.sigma,
+                    "exposure": rating.exposure,
+                    "rated_games": rating.rated_games,
+                }
+                for participant_id, rating in self._min_ratings.items()
+            },
         }
         temporary = destination.with_name(f"{destination.name}.tmp")
         temporary.write_text(
@@ -308,4 +417,4 @@ class RatingRegistry:
         return registry
 
 
-__all__ = ["RatingRegistry", "SooLeaderboardEntry"]
+__all__ = ["MinLeaderboardEntry", "RatingRegistry", "SooLeaderboardEntry"]
