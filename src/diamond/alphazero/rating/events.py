@@ -41,12 +41,28 @@ def _validate_sequence_index(sequence_index: object) -> int:
 def _validate_participant_ids(participant_ids: object, count: int) -> tuple[str, ...]:
     if not isinstance(participant_ids, tuple) or len(participant_ids) != count:
         raise RatingEventError(f"participant_ids must contain exactly {count} participant IDs")
-    if any(not isinstance(participant_id, str) or not participant_id for participant_id in participant_ids):
+    if any(
+        not isinstance(participant_id, str) or not participant_id
+        for participant_id in participant_ids
+    ):
         raise RatingEventError("participant_ids must contain non-empty strings")
     if len(set(participant_ids)) != count:
         word = "two" if count == 2 else "three"
-        raise RatingEventError(f"participant_ids must contain exactly {word} distinct participant IDs")
+        raise RatingEventError(
+            f"participant_ids must contain exactly {word} distinct participant IDs"
+        )
     return participant_ids
+
+
+def _validate_seat_permutation(name: str, value: object, count: int) -> tuple[int, ...]:
+    if (
+        not isinstance(value, tuple)
+        or len(value) != count
+        or any(not isinstance(seat, int) or isinstance(seat, bool) for seat in value)
+        or set(value) != set(range(1, count + 1))
+    ):
+        raise RatingEventError(f"{name} must be an exact permutation of physical seats 1..{count}")
+    return value
 
 
 def _validate_completed(completed: object) -> bool:
@@ -62,6 +78,8 @@ class SooRatingEvent:
     sequence_index: int
     protocol_id: str
     participant_ids: tuple[str, str]
+    seat_assignment: tuple[int, int]
+    turn_order: tuple[int, int]
     opening_id: str
     completed: bool
     winner_id: str | None = None
@@ -72,6 +90,8 @@ class SooRatingEvent:
         _validate_sequence_index(self.sequence_index)
         _require_non_empty_string("protocol_id", self.protocol_id)
         participants = _validate_participant_ids(self.participant_ids, 2)
+        _validate_seat_permutation("seat_assignment", self.seat_assignment, 2)
+        _validate_seat_permutation("turn_order", self.turn_order, 2)
         _require_non_empty_string("opening_id", self.opening_id)
         completed = _validate_completed(self.completed)
 
@@ -82,7 +102,8 @@ class SooRatingEvent:
                 or {self.winner_id, self.loser_id} != set(participants)
             ):
                 raise RatingEventError(
-                    "completed Soo events require winner_id and loser_id to be a participant permutation"
+                    "completed Soo events require winner_id and loser_id "
+                    "to be a participant permutation"
                 )
         elif self.winner_id is not None or self.loser_id is not None:
             raise RatingEventError("aborted Soo events must not contain an outcome")
@@ -96,6 +117,8 @@ class SooRatingEvent:
                     "sequence_index": self.sequence_index,
                     "protocol_id": self.protocol_id,
                     "participant_ids": self.participant_ids,
+                    "seat_assignment": self.seat_assignment,
+                    "turn_order": self.turn_order,
                     "opening_id": self.opening_id,
                     "completed": self.completed,
                     "winner_id": self.winner_id,
@@ -112,6 +135,8 @@ class MinRatingEvent:
     sequence_index: int
     protocol_id: str
     participant_ids: tuple[str, str, str]
+    seat_assignment: tuple[int, int, int]
+    turn_order: tuple[int, int, int]
     opening_id: str
     completed: bool
     final_ranking: tuple[str, str, str] | None = None
@@ -121,6 +146,8 @@ class MinRatingEvent:
         _validate_sequence_index(self.sequence_index)
         _require_non_empty_string("protocol_id", self.protocol_id)
         participants = _validate_participant_ids(self.participant_ids, 3)
+        _validate_seat_permutation("seat_assignment", self.seat_assignment, 3)
+        _validate_seat_permutation("turn_order", self.turn_order, 3)
         _require_non_empty_string("opening_id", self.opening_id)
         completed = _validate_completed(self.completed)
 
@@ -128,11 +155,15 @@ class MinRatingEvent:
             if (
                 not isinstance(self.final_ranking, tuple)
                 or len(self.final_ranking) != 3
-                or any(not isinstance(participant_id, str) for participant_id in self.final_ranking)
+                or any(
+                    not isinstance(participant_id, str)
+                    for participant_id in self.final_ranking
+                )
                 or set(self.final_ranking) != set(participants)
             ):
                 raise RatingEventError(
-                    "completed Min events require final_ranking to be a full participant permutation"
+                    "completed Min events require final_ranking "
+                    "to be a full participant permutation"
                 )
         elif self.final_ranking is not None:
             raise RatingEventError("aborted Min events must not contain an outcome")
@@ -146,6 +177,8 @@ class MinRatingEvent:
                     "sequence_index": self.sequence_index,
                     "protocol_id": self.protocol_id,
                     "participant_ids": self.participant_ids,
+                    "seat_assignment": self.seat_assignment,
+                    "turn_order": self.turn_order,
                     "opening_id": self.opening_id,
                     "completed": self.completed,
                     "final_ranking": self.final_ranking,
