@@ -81,6 +81,9 @@ src/diamond/
 │   ├── models.py        BoardModel, PieceModel, MoveHistoryModel,
 │   │                    PlayerModel, BoardGeometry
 │   ├── fonts.py         registers the bundled typeface with Qt
+│   ├── icons.py         QtAwesome app icon + QML image provider
+│   ├── window_chrome.py DWM attributes, window styles, shell identity
+│   ├── native_chrome.py WM_NCCALCSIZE / WM_NCHITTEST: Snap Layouts
 │   ├── sounds.py        move sound effect (best-effort, mutable)
 │   └── ai_worker.py     async agent boundary + generation tokens
 ├── game/
@@ -556,24 +559,55 @@ definition at 16px.
 #### Rejoining the shell
 
 `Qt.FramelessWindowHint` makes the window a `WS_POPUP`, which the shell treats
-as a transient thing rather than an application window. Three behaviours are
-lost with it, and `app/window_chrome.py` puts all three back:
+as a transient thing rather than an application window. Several behaviours go
+with it, and `app/window_chrome.py` and `app/native_chrome.py` put them back:
 
-| Behaviour | Fixed by |
+| Behaviour | Restored by |
 |---|---|
 | Rounded corners | `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` |
-| Minimise / restore animation | `WS_MINIMIZEBOX \| WS_MAXIMIZEBOX \| WS_SYSMENU \| WS_THICKFRAME` |
+| Minimise / restore animation | `WS_MINIMIZEBOX` + `WS_SYSMENU` |
 | Taskbar click-to-minimise | the same style bits |
-| Accent band across the top | `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` |
+| No accent band across the top | `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` |
+| Maximise / restore **size animation** | `WS_THICKFRAME`, made safe by `WM_NCCALCSIZE` |
+| **Snap Layouts** flyout | answering `WM_NCHITTEST` with `HTMAXBUTTON` |
+| Its own taskbar icon | `SetCurrentProcessExplicitAppUserModelID` |
 
-That last one is a consequence of the others. With *show accent colour on title
-bars and window borders* enabled — the Windows 11 default — DWM paints the
-active window's outline in the accent colour. On an ordinary window that reads
-as a highlight framing the title bar; here there is no native title bar to
-frame, so it lands as a coloured band across the top of our own chrome.
-Measured, it is a 2px strip above the content. Switching the border colour off
-removes it; the 1px border the app draws in `Main.qml` is the one that should
-be visible.
+The accent band is worth explaining. With *show accent colour on title bars and
+window borders* enabled — the Windows 11 default — DWM paints the active
+window's outline in the accent colour. On an ordinary window that reads as a
+highlight framing the title bar; here there is no native title bar to frame, so
+it lands as a coloured band across the top of our own chrome. Measured, a 2px
+strip above the content. Switching the border colour off removes it; the 1px
+border the app draws in `Main.qml` is the one that should be visible.
+
+`WS_THICKFRAME` is what DWM wants before it will animate a resize, but on its
+own it makes Windows reserve non-client space — which is what put that band
+there and clipped the caption buttons at the edge. Answering `WM_NCCALCSIZE`
+with the full window rectangle reclaims that space, so the bit is only ever set
+when the native filter is running to do so. Measured on both states, the
+client inset is 0 on all four sides, and a maximised window matches the
+monitor's work area exactly.
+
+The **taskbar icon** needs an explicit AppUserModelID. Without one the shell
+falls back to the host executable — `python.exe` — so it shows Python's icon
+and groups the window with any other Python process, no matter what
+`setWindowIcon` says. It must be set before the first window exists.
+
+**Snap Layouts** is the flyout Windows 11 shows when you hover a maximise
+button. Windows offers it only to a window whose hit test answers
+`HTMAXBUTTON`, which a Qt window never does, because Qt reports its whole
+surface as client area. `NativeChrome` answers it for the button's rectangle
+and `HTCLIENT` everywhere else. Two consequences follow from Windows then
+owning that pointer: the button stops receiving Qt hover events, so the filter
+publishes a `maximiseHovered` property for it to bind to, and the click arrives
+as `WM_NCLBUTTONUP` rather than a `TapHandler`, so it is re-emitted as a
+signal. The title bar reports the button's rectangle back through the same
+object.
+
+`NativeChrome` is constructed *before* the QML loads so the context property is
+a real object from the outset. Bound to a placeholder, the title bar skipped
+reporting the rectangle at `Component.onCompleted` and never retried, leaving
+the hit test with nothing to match — the whole feature silently dead.
 
 Asking DWM for the rounding beats clipping the corners in QML: the radius then
 matches the platform's own, follows it if the user changes preferences, and

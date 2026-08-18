@@ -15,10 +15,12 @@ from .agents.random_agent import RandomAgent
 from .app.controller import GameController
 from .app.fonts import load_bundled_fonts
 from .app.icons import PROVIDER_ID, IconImageProvider, app_icon
+from .app.native_chrome import NativeChrome
 from .app.window_chrome import (
     apply_native_rounding,
     enable_shell_integration,
     remove_native_border,
+    set_app_user_model_id,
 )
 from .game.state import DEFAULT_PLAYERS, PlayerKind
 
@@ -58,6 +60,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def create_native_chrome() -> NativeChrome | None:
+    """The Windows non-client hook, for Snap Layouts and the size animation.
+
+    Created before the QML loads so the context property is a real object from
+    the outset; the window is attached afterwards.
+    """
+    return NativeChrome() if sys.platform == "win32" else None
+
+
 def build_engine(controller, font_family: str) -> QQmlApplicationEngine:
     """Create the QML engine with everything Main.qml expects.
 
@@ -76,6 +87,10 @@ def build_engine(controller, font_family: str) -> QQmlApplicationEngine:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
+    # Before any window exists: the shell reads this when the first top-level
+    # window appears, and without it the taskbar shows python.exe's icon.
+    set_app_user_model_id()
+
     app = QGuiApplication(sys.argv)
     app.setApplicationName("Diamond Controller")
     app.setOrganizationName("alphadiamond")
@@ -88,7 +103,10 @@ def main(argv: list[str] | None = None) -> int:
 
     controller = build_controller(seed=args.seed, thinking_delay_ms=args.thinking_delay)
 
+    chrome = create_native_chrome()
+
     engine = build_engine(controller, font_family)
+    engine.rootContext().setContextProperty("nativeChrome", chrome)
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
 
     if not engine.rootObjects():
@@ -99,7 +117,15 @@ def main(argv: list[str] | None = None) -> int:
     # costs it the minimise/restore animation, taskbar click-to-minimise and
     # the rounded corners. Put all three back.
     root_window = engine.rootObjects()[0]
-    enable_shell_integration(root_window)
+
+    # WS_THICKFRAME is what DWM wants before it will animate a resize, but it
+    # also reserves non-client space; the filter answers WM_NCCALCSIZE to take
+    # that space back, so the bit is only safe once the filter is running.
+    if chrome is not None:
+        chrome.attach(root_window)
+        app.installNativeEventFilter(chrome)
+
+    enable_shell_integration(root_window, sizing_frame=chrome is not None)
     apply_native_rounding(root_window)
     remove_native_border(root_window)
 

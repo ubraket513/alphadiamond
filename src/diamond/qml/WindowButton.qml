@@ -13,6 +13,12 @@ Item {
     property string kind: "close"
     property bool danger: kind === "close"
 
+    // Windows owns the pointer once the hit test reports HTMAXBUTTON, so Qt
+    // stops seeing hover over the maximise button. The filter reports it here.
+    property bool externalHover: false
+
+    readonly property bool hovered: hover.hovered || externalHover
+
     signal clicked()
 
     implicitWidth: 46
@@ -25,7 +31,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: !hover.hovered
+        color: !root.hovered
                ? "transparent"
                : (root.danger ? Theme.danger : Theme.systemGray5)
     }
@@ -34,7 +40,7 @@ Item {
         anchors.centerIn: parent
         name: root._glyph
         size: 14
-        color: root.danger && hover.hovered ? Theme.textOnDark : Theme.text
+        color: root.danger && root.hovered ? Theme.textOnDark : Theme.text
     }
 
     HoverHandler { id: hover }

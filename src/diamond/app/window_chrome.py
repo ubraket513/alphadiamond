@@ -48,6 +48,33 @@ DWMWCP_ROUNDSMALL = 3
 MIN_WINDOWS_BUILD = 22000
 
 
+APP_USER_MODEL_ID = "Diamond.ControllerConsole"
+"""Identity the Windows shell groups this app's windows under.
+
+Without one, the shell falls back to the host executable -- `python.exe` -- so
+the taskbar shows the Python icon and groups the window with any other Python
+process, no matter what `QGuiApplication.setWindowIcon` says.
+"""
+
+
+def set_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> bool:
+    """Give the process its own shell identity.
+
+    Must run before any window exists: the shell reads it when the first
+    top-level window is created and does not re-read it afterwards.
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+
+    try:
+        result = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except (OSError, AttributeError):  # pragma: no cover - platform dependent
+        return False
+    return result == 0
+
+
 def _supported() -> bool:
     if sys.platform != "win32":
         return False
@@ -109,7 +136,7 @@ def remove_native_border(window) -> bool:
     return _set_dwm_attribute(handle, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE)
 
 
-def enable_shell_integration(window) -> bool:
+def enable_shell_integration(window, *, sizing_frame: bool = False) -> bool:
     """Restore the shell behaviours a frameless window opts out of.
 
     ``Qt.FramelessWindowHint`` makes the window a ``WS_POPUP``, which the shell
@@ -118,10 +145,17 @@ def enable_shell_integration(window) -> bool:
     animating, and that clicking the taskbar button does not minimise the
     window the way it does for every other app.
 
-    Putting the ordinary style bits back -- minimise/maximise boxes, the system
-    menu and a sizing frame -- makes the shell treat it as a normal window
-    again.  The frame those bits imply is never drawn, because Qt is still
-    painting the window frameless; only the behaviour comes back.
+    Putting the minimise/maximise boxes and the system menu back makes the
+    shell treat it as a normal window again.
+
+    ``sizing_frame`` adds ``WS_THICKFRAME``, which DWM requires before it will
+    animate a maximise or restore.  Left off, that bit makes Windows reserve
+    non-client space -- a band of frame across the top, caption buttons clipped
+    at the edge -- so it may only be set by a caller that also answers
+    ``WM_NCCALCSIZE`` to reclaim that space.  See :mod:`diamond.app.native_chrome`.
+
+    Taskbar click-to-minimise and the minimise animation come from
+    ``WS_MINIMIZEBOX`` and ``WS_SYSMENU``, and need no frame at all.
     """
     if sys.platform != "win32":
         return False
@@ -143,7 +177,8 @@ def enable_shell_integration(window) -> bool:
 
     try:
         style = get_long(wintypes.HWND(handle), GWL_STYLE)
-        wanted = style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_THICKFRAME
+        wanted = style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+        wanted = (wanted | WS_THICKFRAME) if sizing_frame else (wanted & ~WS_THICKFRAME)
         if wanted != style:
             set_long(wintypes.HWND(handle), GWL_STYLE, wanted)
             user32.SetWindowPos(
@@ -156,10 +191,12 @@ def enable_shell_integration(window) -> bool:
 
 
 __all__ = [
+    "APP_USER_MODEL_ID",
     "DWMWA_COLOR_NONE",
     "DWMWCP_ROUND",
     "DWMWCP_ROUNDSMALL",
     "apply_native_rounding",
     "enable_shell_integration",
     "remove_native_border",
+    "set_app_user_model_id",
 ]

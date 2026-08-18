@@ -31,6 +31,24 @@ Rectangle {
     readonly property bool maximised: window.visibility === Window.Maximized
                                       || window.visibility === Window.FullScreen
 
+    readonly property bool nativeHover:
+        (typeof nativeChrome !== "undefined" && nativeChrome)
+        ? nativeChrome.maximiseHovered : false
+
+    // The OS swallows the click once it owns the button, so the toggle arrives
+    // as a signal instead of a TapHandler.
+    Connections {
+        target: (typeof nativeChrome !== "undefined") ? nativeChrome : null
+        ignoreUnknownSignals: true
+        function onMaximiseClicked() { root.toggleMaximised() }
+    }
+
+    // The button rides the right edge, so its position changes with the window.
+    Connections {
+        target: root.window
+        function onWidthChanged() { maximiseButton.reportRect() }
+    }
+
     implicitHeight: Theme.titleBarHeight
     color: Theme.surface
 
@@ -201,8 +219,26 @@ Rectangle {
             onClicked: root.window.showMinimized()
         }
         WindowButton {
+            id: maximiseButton
             kind: root.maximised ? "restore" : "maximise"
             onClicked: root.toggleMaximised()
+
+            // Snap Layouts: Windows only offers the flyout to a window whose
+            // hit test claims this button, so the filter has to know where it
+            // is. Reported in the window's logical coordinates.
+            externalHover: root.nativeHover
+
+            function reportRect() {
+                if (typeof nativeChrome === "undefined" || !nativeChrome)
+                    return
+                var p = mapToItem(null, 0, 0)
+                nativeChrome.setMaximiseButtonRect(p.x, p.y, width, height)
+            }
+
+            onWidthChanged: reportRect()
+            onHeightChanged: reportRect()
+            onXChanged: reportRect()
+            Component.onCompleted: reportRect()
         }
         WindowButton {
             kind: "close"
