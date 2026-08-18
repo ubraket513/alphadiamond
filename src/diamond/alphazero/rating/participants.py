@@ -14,7 +14,12 @@ from typing import Any
 import torch
 
 from ..config import NetworkConfig
-from ..identity import CheckpointCompatibilitySpec, ModelIdentity
+from ..identity import (
+    MIN_MODEL_NAME,
+    SOO_MODEL_NAME,
+    CheckpointCompatibilitySpec,
+    ModelIdentity,
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -40,15 +45,13 @@ def _compatibility_from_metadata(metadata: Mapping[str, Any]) -> CheckpointCompa
         network_payload = metadata["network_config"]
         if not isinstance(network_payload, Mapping):
             raise ValueError("checkpoint network_config must be a mapping")
-        compatibility = CheckpointCompatibilitySpec(
-            identity=identity,
+        factory = {
+            SOO_MODEL_NAME: CheckpointCompatibilitySpec.soo,
+            MIN_MODEL_NAME: CheckpointCompatibilitySpec.min,
+        }[identity.model_name]
+        compatibility = factory(
+            model_version=identity.model_version,
             network_config=NetworkConfig(**dict(network_payload)),
-            ruleset_version=metadata["ruleset_version"],
-            board_topology_version=metadata["board_topology_version"],
-            ruleset_fingerprint=metadata["ruleset_fingerprint"],
-            encoder_version=metadata["encoder_version"],
-            action_space_version=metadata["action_space_version"],
-            seat_layout_version=metadata["seat_layout_version"],
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid checkpoint compatibility metadata: {exc}") from exc

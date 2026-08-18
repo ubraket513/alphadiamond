@@ -6,19 +6,27 @@ import pytest
 import torch
 
 from diamond.alphazero.config import NetworkConfig
-from diamond.alphazero.identity import CheckpointCompatibilitySpec
+from diamond.alphazero.identity import (
+    CheckpointCompatibilityError,
+    CheckpointCompatibilitySpec,
+)
 from diamond.alphazero.rating.participants import CheckpointParticipant
 
 
 def _write_checkpoint(
     path,
     *,
+    model_name: str = "Soo",
     model_version: str = "1.2.3",
     training_step: int = 42,
 ) -> None:
-    compatibility = CheckpointCompatibilitySpec.soo(
-        model_version=model_version,
-        network_config=NetworkConfig(width=16, residual_blocks=1),
+    factory = (
+        CheckpointCompatibilitySpec.soo
+        if model_name == "Soo"
+        else CheckpointCompatibilitySpec.min
+    )
+    compatibility = factory(
+        model_version=model_version, network_config=NetworkConfig(width=16, residual_blocks=1)
     )
     torch.save(
         {
@@ -94,6 +102,31 @@ def test_checkpoint_participant_compatibility_metadata_is_immutable(tmp_path) ->
 
     with pytest.raises(TypeError):
         participant.compatibility_metadata["network_config"]["width"] = 32
+
+
+@pytest.mark.parametrize("model_name", ["Soo", "Min"])
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("ruleset_version", "tampered-rules"),
+        ("ruleset_fingerprint", "sha256:tampered"),
+        ("board_topology_version", "tampered-topology"),
+        ("encoder_version", "tampered-encoder"),
+        ("action_space_version", "tampered-actions"),
+        ("seat_layout_version", "tampered-seats"),
+    ],
+)
+def test_checkpoint_participant_rejects_tampered_authoritative_compatibility_gate(
+    tmp_path, model_name: str, field: str, bad_value: str
+) -> None:
+    path = tmp_path / f"{model_name.lower()}.pt"
+    _write_checkpoint(path, model_name=model_name)
+    payload = torch.load(path, weights_only=True)
+    payload["metadata"][field] = bad_value
+    torch.save(payload, path)
+
+    with pytest.raises(CheckpointCompatibilityError, match=field):
+        CheckpointParticipant.from_checkpoint(path)
 
 
 @pytest.mark.parametrize(

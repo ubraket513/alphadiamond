@@ -52,12 +52,16 @@ def test_benchmark_protocol_rejects_root_dirichlet_noise() -> None:
         _protocol(dirichlet_epsilon=0.25)
 
 
+def test_benchmark_protocol_rejects_nonzero_decision_temperature() -> None:
+    with pytest.raises(ValueError, match="decision_temperature"):
+        _protocol(decision_temperature=0.1)
+
+
 @pytest.mark.parametrize(
     "changes",
     [
         {"simulations": 201},
         {"c_puct": 1.6},
-        {"decision_temperature": 0.1},
         {"max_game_moves": 2_001},
         {"inference_numeric_mode": "bf16"},
     ],

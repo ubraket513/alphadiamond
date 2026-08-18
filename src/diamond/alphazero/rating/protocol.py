@@ -90,8 +90,8 @@ class BenchmarkProtocol:
             raise ValueError("c_puct must be a positive finite value")
         if self.dirichlet_epsilon != 0.0:
             raise ValueError("dirichlet_epsilon must be 0.0 for benchmark ratings")
-        if not math.isfinite(self.decision_temperature) or self.decision_temperature < 0.0:
-            raise ValueError("decision_temperature must be a non-negative finite value")
+        if self.decision_temperature != 0.0:
+            raise ValueError("decision_temperature must be 0.0 for benchmark ratings")
         if (
             not isinstance(self.max_game_moves, int)
             or isinstance(self.max_game_moves, bool)
