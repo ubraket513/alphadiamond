@@ -1,5 +1,4 @@
 guideline
-blueprint
 
 # Python build artifacts
 __pycache__/
