@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import io
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
+from torch import nn
 
 from .config import TrainingConfig, config_dict
 from .identity import CheckpointCompatibilitySpec
@@ -23,6 +26,7 @@ _REQUIRED_FIELDS = {
     "model_state_dict",
     "optimizer_state_dict",
 }
+_INFERENCE_REQUIRED_FIELDS = {"format_version", "metadata", "model_state_dict"}
 
 
 class CheckpointError(ValueError):
@@ -34,6 +38,15 @@ class CheckpointInfo:
     path: Path
     training_step: int
     training_config: TrainingConfig
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceCheckpointInfo:
+    """Validated immutable checkpoint data sufficient for model inference."""
+
+    path: Path
+    checkpoint_sha256: str
     metadata: dict[str, Any]
 
 
@@ -151,10 +164,65 @@ def load_checkpoint(
     )
 
 
+def load_inference_checkpoint(
+    path: str | Path,
+    model: nn.Module,
+    *,
+    expected: CheckpointCompatibilitySpec,
+    device: str | torch.device = "cpu",
+) -> InferenceCheckpointInfo:
+    """Strictly load model weights without requiring training-only state.
+
+    This intentionally has separate required fields from :func:`load_checkpoint`:
+    inference artifacts need semantic metadata and exact model weights, but not an
+    optimizer, training configuration, or live trainer.
+    """
+    source = Path(path)
+    try:
+        checkpoint_bytes = source.read_bytes()
+        payload = torch.load(
+            io.BytesIO(checkpoint_bytes), map_location=device, weights_only=True
+        )
+    except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as exc:
+        raise CheckpointError(f"cannot read checkpoint {source}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise CheckpointError("checkpoint root must be a mapping")
+    missing = sorted(_INFERENCE_REQUIRED_FIELDS - set(payload))
+    if missing:
+        raise CheckpointError(f"checkpoint is missing fields: {', '.join(missing)}")
+    if payload["format_version"] != CHECKPOINT_FORMAT_VERSION:
+        raise CheckpointError(
+            f"unsupported checkpoint format version: {payload['format_version']!r}"
+        )
+    metadata = payload["metadata"]
+    if not isinstance(metadata, Mapping):
+        raise CheckpointError("checkpoint metadata must be a mapping")
+
+    # Preserve the training loader's ordering: validate semantic identity before
+    # applying any state to the destination model.
+    expected.assert_compatible(metadata)
+    model_state = payload["model_state_dict"]
+    if not isinstance(model_state, Mapping):
+        raise CheckpointError("checkpoint model_state_dict must be a mapping")
+    try:
+        staged_model = copy.deepcopy(model)
+        staged_model.load_state_dict(model_state, strict=True)
+    except (RuntimeError, ValueError, KeyError) as exc:
+        raise CheckpointError(f"checkpoint state is incompatible: {exc}") from exc
+    model.load_state_dict(model_state, strict=True)
+    return InferenceCheckpointInfo(
+        path=source,
+        checkpoint_sha256=hashlib.sha256(checkpoint_bytes).hexdigest(),
+        metadata=dict(metadata),
+    )
+
+
 __all__ = [
     "CHECKPOINT_FORMAT_VERSION",
     "CheckpointError",
     "CheckpointInfo",
+    "InferenceCheckpointInfo",
     "load_checkpoint",
+    "load_inference_checkpoint",
     "save_checkpoint",
 ]
