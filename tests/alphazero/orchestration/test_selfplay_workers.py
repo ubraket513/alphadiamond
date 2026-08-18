@@ -1,0 +1,411 @@
+from __future__ import annotations
+
+from dataclasses import FrozenInstanceError
+from multiprocessing import active_children
+from pathlib import Path
+from queue import Queue
+import os
+import subprocess
+import sys
+
+import pytest
+
+from diamond.alphazero.config import MCTSConfig, NetworkConfig, SelfPlayConfig
+from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
+from diamond.alphazero.identity import CheckpointCompatibilitySpec
+from diamond.alphazero.inference.coordinator import InferenceConfig
+from diamond.alphazero.inference.protocol import ModelKey
+from diamond.alphazero.orchestration.selfplay_workers import (
+    EpisodeResult,
+    SelfPlayJob,
+    SelfPlayWorkerError,
+    SelfPlayWorkerPool,
+    WorkerFailure,
+    derive_game_id,
+    derive_game_seed,
+    run_selfplay_job,
+)
+from diamond.game.board import standard_board
+from diamond.game.rules import find_legal_move
+from diamond.game.state import (
+    EMPTY,
+    GameState,
+    PlayerSpec,
+    build_players,
+    initial_state,
+)
+
+
+def _soo_key(digest: str = "a" * 64) -> ModelKey:
+    return ModelKey("Soo", "1.2.3", digest)
+
+
+def _near_terminal_setup(
+    players: tuple[PlayerSpec, ...], finishers: int
+) -> tuple[GameState, tuple[tuple[int, int], ...]]:
+    board = standard_board()
+    occupied = [EMPTY] * len(board)
+    reserved_targets = {
+        position
+        for player in players[:finishers]
+        for position in board.camp_positions(player.target_camp)
+    }
+    used_entries: set[int] = set()
+    actions: list[tuple[int, int]] = []
+    entries: dict[int, int] = {}
+    destinations: dict[int, int] = {}
+
+    for player in players[:finishers]:
+        target = board.camp_positions(player.target_camp)
+        choice: tuple[int, int] | None = None
+        for destination in target:
+            for neighbour in board.neighbours(destination):
+                if (
+                    neighbour is not None
+                    and neighbour not in reserved_targets
+                    and neighbour not in used_entries
+                ):
+                    choice = (neighbour, destination)
+                    break
+            if choice is not None:
+                break
+        assert choice is not None
+        entry, destination = choice
+        used_entries.add(entry)
+        entries[player.id] = entry
+        destinations[player.id] = destination
+        for position in target:
+            if position != destination:
+                occupied[position] = player.id
+        occupied[entry] = player.id
+
+    state = GameState(tuple(occupied), players[0].id, 40)
+    game = AlphaZeroGameAdapter(players, board=board, initial=state)
+    for player in players[:finishers]:
+        move = find_legal_move(
+            board,
+            state,
+            entries[player.id],
+            destinations[player.id],
+            player_id=player.id,
+        )
+        assert move is not None
+        physical = game.codec.encode(move.source, move.destination)
+        actions.append(
+            (player.id, game.encoder.to_canonical_action(physical, players, player.id))
+        )
+    return state, tuple(actions)
+
+
+def _job(
+    player_count: int,
+    *,
+    game_index: int,
+    retry_id: str = "attempt-0",
+) -> tuple[SelfPlayJob, tuple[tuple[int, int], ...]]:
+    players = build_players(player_count)
+    state, actions = _near_terminal_setup(players, finishers=player_count - 1)
+    network = NetworkConfig(width=16, residual_blocks=1)
+    if player_count == 2:
+        compatibility = CheckpointCompatibilitySpec.soo(
+            model_version="1.2.3", network_config=network
+        )
+        key = _soo_key()
+    else:
+        compatibility = CheckpointCompatibilitySpec.min(
+            model_version="2.3.4", network_config=network
+        )
+        key = ModelKey("Min", "2.3.4", "b" * 64)
+    return (
+        SelfPlayJob(
+            run_seed=71,
+            iteration=4,
+            game_index=game_index,
+            retry_id=retry_id,
+            model_key=key,
+            compatibility=compatibility,
+            players=players,
+            initial_state=state,
+            mcts_config=MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
+            selfplay_config=SelfPlayConfig(max_moves=2, temperature_moves=0),
+        ),
+        actions,
+    )
+
+
+class ImmediateCoordinator:
+    config = InferenceConfig(
+        max_batch_size=2,
+        max_wait_ms=1,
+        request_queue_capacity=8,
+        response_timeout_s=2.0,
+    )
+
+    def __init__(self, actions: tuple[tuple[str, int, int], ...]) -> None:
+        self.actions = {
+            (model_name, player_id): action
+            for model_name, player_id, action in actions
+        }
+        self.requests = []
+
+    def submit(self, request, reply_queue: Queue[object]) -> None:
+        from diamond.alphazero.evaluator.base import EvalResult
+        from diamond.alphazero.inference.protocol import InferenceResponse
+
+        self.requests.append(request)
+        preferred = self.actions.get(
+            (request.model_key.model_name, request.canonical_player_ids[0]),
+            request.legal_action_ids[0],
+        )
+        priors = {
+            action: 1.0 if action == preferred else 0.0
+            for action in request.legal_action_ids
+        }
+        reply_queue.put(
+            InferenceResponse.from_eval_result(
+                request,
+                EvalResult(
+                    priors,
+                    0.0
+                    if request.model_key.player_count == 2
+                    else (0.0, 0.0, 0.0),
+                ),
+            )
+        )
+
+
+class FailingCoordinator:
+    config = ImmediateCoordinator.config
+
+    def submit(self, request, reply_queue: Queue[object]) -> None:
+        from diamond.alphazero.inference.protocol import InferenceFailure
+
+        reply_queue.put(
+            InferenceFailure(
+                client_id=request.client_id,
+                request_id=request.request_id,
+                model_key=request.model_key,
+                error_type="RuntimeError",
+                message="checkpoint unavailable",
+            )
+        )
+
+
+class SilentCoordinator:
+    config = InferenceConfig(
+        max_batch_size=1,
+        max_wait_ms=1,
+        request_queue_capacity=1,
+        response_timeout_s=10.0,
+    )
+
+    def submit(self, request, reply_queue: Queue[object]) -> None:
+        pass
+
+
+def _identity(*, retry_id: str = "attempt-0") -> dict[str, object]:
+    return {
+        "run_seed": 71,
+        "iteration": 4,
+        "game_index": 19,
+        "model_key": _soo_key(),
+        "retry_id": retry_id,
+    }
+
+
+def test_orchestration_package_exports_task_8_interfaces() -> None:
+    from diamond.alphazero import orchestration
+
+    assert orchestration.SelfPlayJob is SelfPlayJob
+    assert orchestration.EpisodeResult is EpisodeResult
+    assert orchestration.SelfPlayWorkerPool is SelfPlayWorkerPool
+
+
+def test_game_identity_and_seed_are_stable_and_bind_every_input() -> None:
+    identity = _identity()
+
+    assert derive_game_id(**identity) == derive_game_id(**identity)
+    assert derive_game_seed(**identity) == derive_game_seed(**identity)
+
+    variants = (
+        identity | {"run_seed": 72},
+        identity | {"iteration": 5},
+        identity | {"game_index": 20},
+        identity | {"model_key": _soo_key("b" * 64)},
+        identity | {"retry_id": "attempt-1"},
+    )
+    assert all(derive_game_id(**variant) != derive_game_id(**identity) for variant in variants)
+    assert all(
+        derive_game_seed(**variant) != derive_game_seed(**identity)
+        for variant in variants
+    )
+
+
+def test_retry_reuses_identity_only_when_its_explicit_retry_id_is_reused() -> None:
+    first_attempt = _identity(retry_id="attempt-0")
+    same_attempt = _identity(retry_id="attempt-0")
+    next_attempt = _identity(retry_id="attempt-1")
+
+    assert derive_game_id(**first_attempt) == derive_game_id(**same_attempt)
+    assert derive_game_seed(**first_attempt) == derive_game_seed(**same_attempt)
+    assert derive_game_id(**first_attempt) != derive_game_id(**next_attempt)
+    assert derive_game_seed(**first_attempt) != derive_game_seed(**next_attempt)
+
+
+def test_job_and_result_are_immutable_and_pin_model_compatibility() -> None:
+    job, actions = _job(2, game_index=1)
+    coordinator = ImmediateCoordinator(
+        tuple((job.model_key.model_name, player_id, action) for player_id, action in actions)
+    )
+
+    result = run_selfplay_job(job, coordinator)
+
+    assert isinstance(result, EpisodeResult)
+    assert result.game_id == job.game_id
+    assert result.seed == job.seed
+    assert result.model_key == job.model_key
+    assert result.compatibility == job.compatibility
+    assert result.completed
+    assert result.samples
+    assert all(sample.compatibility == job.compatibility for sample in result.samples)
+    assert {request.model_key for request in coordinator.requests} == {job.model_key}
+    with pytest.raises(FrozenInstanceError):
+        job.game_index = 9  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.completed = False  # type: ignore[misc]
+
+
+def test_two_spawn_workers_run_authoritative_soo_and_min_episodes() -> None:
+    soo_job, soo_actions = _job(2, game_index=2)
+    min_job, min_actions = _job(3, game_index=3)
+    preferred = tuple(
+        (job.model_key.model_name, player_id, action)
+        for job, actions in ((soo_job, soo_actions), (min_job, min_actions))
+        for player_id, action in actions
+    )
+    coordinator = ImmediateCoordinator(preferred)
+    children_before = {process.pid for process in active_children()}
+
+    results = SelfPlayWorkerPool(
+        coordinator,
+        worker_count=2,
+        worker_timeout_s=10.0,
+        join_timeout_s=1.0,
+    ).run((soo_job, min_job))
+
+    assert tuple(result.game_id for result in results) == (
+        soo_job.game_id,
+        min_job.game_id,
+    )
+    assert {result.worker_id for result in results} == {0, 1}
+    assert all(result.completed for result in results)
+    assert results[0].final_order == (1, 2)
+    assert tuple(sample.value_target for sample in results[0].samples) == ((1.0,),)
+    assert results[1].final_order == (1, 2, 3)
+    assert tuple(sample.value_target for sample in results[1].samples) == (
+        (1.0, 0.0, -1.0),
+        (0.0, -1.0, 1.0),
+    )
+    action_by_model_and_player = coordinator.actions
+    for result in results:
+        for sample in result.samples:
+            expected = action_by_model_and_player[
+                (result.model_key.model_name, sample.canonical_player_ids[0])
+            ]
+            assert {action for action, _probability in sample.sparse_policy} == {expected}
+    assert {request.model_key for request in coordinator.requests} == {
+        soo_job.model_key,
+        min_job.model_key,
+    }
+    assert not ({process.pid for process in active_children()} - children_before)
+
+
+def test_authoritative_abort_keeps_metrics_but_returns_zero_samples() -> None:
+    near_terminal, _actions = _job(2, game_index=4)
+    job = SelfPlayJob(
+        run_seed=near_terminal.run_seed,
+        iteration=near_terminal.iteration,
+        game_index=near_terminal.game_index,
+        retry_id=near_terminal.retry_id,
+        model_key=near_terminal.model_key,
+        compatibility=near_terminal.compatibility,
+        players=near_terminal.players,
+        initial_state=initial_state(near_terminal.players),
+        mcts_config=near_terminal.mcts_config,
+        selfplay_config=SelfPlayConfig(max_moves=1, temperature_moves=0),
+    )
+
+    result = SelfPlayWorkerPool(
+        ImmediateCoordinator(()),
+        worker_count=1,
+        worker_timeout_s=10.0,
+        join_timeout_s=1.0,
+    ).run((job,))[0]
+
+    assert not result.completed
+    assert result.aborted_reason == "max_game_moves_exceeded"
+    assert result.move_count == 1
+    assert result.samples == ()
+    assert result.final_order is None
+
+
+def test_worker_failure_is_correlated_traceable_and_cleans_up() -> None:
+    job, _actions = _job(2, game_index=5)
+    children_before = {process.pid for process in active_children()}
+
+    with pytest.raises(SelfPlayWorkerError) as caught:
+        SelfPlayWorkerPool(
+            FailingCoordinator(),
+            worker_count=1,
+            worker_timeout_s=10.0,
+            join_timeout_s=1.0,
+        ).run((job,))
+
+    failure = caught.value.failure
+    assert isinstance(failure, WorkerFailure)
+    assert failure.game_id == job.game_id
+    assert failure.seed == job.seed
+    assert failure.retry_id == job.retry_id
+    assert failure.model_key == job.model_key
+    assert failure.worker_id == 0
+    assert failure.error_type == "RuntimeError"
+    assert "checkpoint unavailable" in failure.message
+    assert "run_selfplay_job" in failure.traceback
+    with pytest.raises(FrozenInstanceError):
+        failure.message = "changed"  # type: ignore[misc]
+    assert not ({process.pid for process in active_children()} - children_before)
+
+
+def test_timeout_terminates_worker_and_leaves_no_children() -> None:
+    job, _actions = _job(2, game_index=6)
+    children_before = {process.pid for process in active_children()}
+
+    with pytest.raises(TimeoutError, match=job.game_id):
+        SelfPlayWorkerPool(
+            SilentCoordinator(),
+            worker_count=1,
+            worker_timeout_s=0.5,
+            join_timeout_s=0.5,
+        ).run((job,))
+
+    assert not ({process.pid for process in active_children()} - children_before)
+
+
+def test_worker_module_does_not_import_torch() -> None:
+    source_root = str(Path(__file__).resolve().parents[3] / "src")
+    environment = os.environ | {"PYTHONPATH": source_root}
+    code = """
+import sys
+import diamond.alphazero.orchestration.selfplay_workers
+assert 'torch' not in sys.modules, tuple(sys.modules)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
