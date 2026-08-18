@@ -179,7 +179,8 @@ class InferenceCoordinator:
             assert isinstance(item, _QueuedRequest)
             if self._is_closed():
                 self._reply_failure(item, RuntimeError("inference coordinator is closed"))
-                continue
+                self._drain_closed_queue()
+                break
             request = self._validated_request(item)
             if request is None:
                 continue

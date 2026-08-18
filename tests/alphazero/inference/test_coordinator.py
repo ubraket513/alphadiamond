@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from threading import Event
 from time import monotonic
 
@@ -392,3 +392,54 @@ def test_stop_timeout_fails_inflight_work_without_waiting_for_a_hung_evaluator()
     assert isinstance(failure, InferenceFailure)
     assert failure.correlation_id == ("client", "request-1")
     assert "closed" in failure.message
+
+
+def test_worker_exits_after_full_queue_rejects_stop_sentinel() -> None:
+    class StopRejectingQueue(Queue[object]):
+        def __init__(self) -> None:
+            super().__init__(maxsize=1)
+            self.get_started = Event()
+            self.allow_get = Event()
+            self.reject_timed_put = True
+
+        def get(self, block: bool = True, timeout: float | None = None) -> object:
+            self.get_started.set()
+            self.allow_get.wait(timeout=1.0)
+            return super().get(block=block, timeout=timeout)
+
+        def put(
+            self,
+            item: object,
+            block: bool = True,
+            timeout: float | None = None,
+        ) -> None:
+            if self.reject_timed_put and timeout is not None:
+                raise Full
+            super().put(item, block=block, timeout=timeout)
+
+    coordinator = InferenceCoordinator(
+        RecordingEvaluator(),
+        InferenceConfig(
+            max_batch_size=1,
+            max_wait_ms=500,
+            request_queue_capacity=1,
+            response_timeout_s=0.02,
+        ),
+    )
+    requests = StopRejectingQueue()
+    coordinator._requests = requests
+    replies: Queue[object] = Queue()
+    coordinator.submit(_request(1), replies)
+    coordinator.start()
+    assert requests.get_started.wait(timeout=1.0)
+
+    coordinator.stop()
+    worker = coordinator._worker
+    assert worker is not None
+    requests.allow_get.set()
+    try:
+        worker.join(timeout=0.5)
+        assert not worker.is_alive()
+    finally:
+        requests.reject_timed_put = False
+        coordinator.stop()
