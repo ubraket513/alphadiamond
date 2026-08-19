@@ -1,52 +1,9 @@
 {
-  "schema_version": 1,
-  "model_name": "Soo",
-  "model_version": "2.0.0",
-  "network": {
-    "width": 128,
-    "residual_blocks": 6
-  },
-  "mcts": {
-    "simulations": 128,
-    "c_puct": 1.5,
-    "dirichlet_alpha": 0.3,
-    "dirichlet_epsilon": 0.25,
-    "seed": 7
-  },
-  "self_play": {
-    "max_moves": 2000,
-    "temperature_moves": 20,
-    "temperature": 1.0,
-    "seed": 7,
-    "bootstrap_prior": "canonical-target-vacancy-distance-v2"
-  },
-  "replay": {
-    "capacity": 50000,
-    "seed": 7
-  },
-  "training": {
-    "batch_size": 256,
-    "learning_rate": 0.001,
-    "weight_decay": 0.0001,
-    "device": "cpu",
-    "seed": 7
-  },
   "arena": {
     "games": 40,
-    "seed": 7,
     "max_moves": 2000,
-    "promotion_threshold": 0.55
-  },
-  "workers": {
-    "worker_count": 4,
-    "games_per_iteration": 32,
-    "retry_id": "attempt-0"
-  },
-  "inference": {
-    "max_batch_size": 64,
-    "max_wait_ms": 5,
-    "request_queue_capacity": 1024,
-    "response_timeout_s": 600.0
+    "promotion_threshold": 0.55,
+    "seed": 7
   },
   "benchmark": {
     "opening_count": 4,
@@ -54,5 +11,49 @@
     "opening_seed": 7,
     "opening_suite_version": "production-openings-v1"
   },
-  "run_seed": 7
+  "inference": {
+    "max_batch_size": 64,
+    "max_wait_ms": 5,
+    "request_queue_capacity": 1024,
+    "response_timeout_s": 600.0
+  },
+  "mcts": {
+    "c_puct": 1.5,
+    "dirichlet_alpha": 0.3,
+    "dirichlet_epsilon": 0.25,
+    "seed": 7,
+    "simulations": 128
+  },
+  "model_name": "Soo",
+  "model_version": "2.0.0",
+  "network": {
+    "residual_blocks": 6,
+    "width": 128
+  },
+  "replay": {
+    "capacity": 50000,
+    "seed": 7
+  },
+  "run_seed": 7,
+  "schema_version": 1,
+  "self_play": {
+    "bootstrap_prior": "canonical-target-vacancy-distance-v2",
+    "max_game_seconds": null,
+    "max_moves": 2000,
+    "seed": 7,
+    "temperature": 1.0,
+    "temperature_moves": 20
+  },
+  "training": {
+    "batch_size": 256,
+    "device": "cpu",
+    "learning_rate": 0.001,
+    "seed": 7,
+    "weight_decay": 0.0001
+  },
+  "workers": {
+    "games_per_iteration": 32,
+    "retry_id": "attempt-0",
+    "worker_count": 4
+  }
 }

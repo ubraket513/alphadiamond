@@ -71,6 +71,7 @@ def test_production_config_is_strictly_json_round_trippable() -> None:
             "temperature": 1.0,
             "seed": 7,
             "bootstrap_prior": "none",
+            "max_game_seconds": None,
         },
         "replay": {"capacity": 128, "seed": 7},
         "training": {
@@ -201,6 +202,7 @@ def test_production_selfplay_jobs_start_from_authoritative_initial_state_and_cha
                 "temperature": 1.0,
                 "seed": 7,
                 "bootstrap_prior": "none",
+                "max_game_seconds": None,
             },
             "replay": {"capacity": 128, "seed": 7},
             "training": {

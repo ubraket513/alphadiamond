@@ -48,6 +48,15 @@ def test_runtime_configs_keep_authoritative_identity(
     assert config["self_play"]["max_moves"] == 2000
 
 
+def _learning_fields(payload: dict) -> dict:
+    """The self-play fields that shape a training target, and only those."""
+    return {
+        key: value
+        for key, value in payload["self_play"].items()
+        if key != "max_game_seconds"
+    }
+
+
 def test_runtime_configs_only_retune_search_and_workers() -> None:
     """Everything the blueprint calls immutable must match the checked-in reference."""
     root = Path(__file__).resolve().parents[2]
@@ -59,13 +68,20 @@ def test_runtime_configs_only_retune_search_and_workers() -> None:
         )
         runtime = runtime_config(f"{model}-cpu8h.json")
         assert runtime["network"] == reference["network"]
-        assert runtime["self_play"] == reference["self_play"]
         assert runtime["replay"] == reference["replay"]
         assert runtime["arena"] == reference["arena"]
         assert runtime["model_version"] == reference["model_version"]
+        # Every self-play field that shapes a training target is immutable.
+        # max_game_seconds is an operational safety limit rather than a learning
+        # knob -- it only ever turns a game into a zero-sample abort -- so it is
+        # tuned per run alongside simulations and worker_count.
+        assert _learning_fields(runtime) == _learning_fields(reference)
         # Only the tuned knobs differ.
         assert runtime["mcts"]["simulations"] == 32
         assert runtime["training"]["device"] == "cpu"
+        # The CPU configs predate the field; omitting it must keep working,
+        # which is the backward-compatibility guarantee for old configs on disk.
+        assert "max_game_seconds" not in runtime["self_play"]
 
 
 def test_loop_state_round_trips_and_is_atomic(runner, tmp_path: Path) -> None:

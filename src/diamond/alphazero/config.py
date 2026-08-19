@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -43,12 +44,23 @@ class SelfPlayConfig:
     seed: int = 0
     bootstrap_prior: str = BOOTSTRAP_PRIOR_NONE
     """Opt-in cold-start scaffolding; self-play only, never arena or rating."""
+    max_game_seconds: float | None = None
+    """Per-game wall-clock budget.  ``None`` keeps the historical no-limit behaviour."""
 
     def __post_init__(self) -> None:
         if self.bootstrap_prior not in BOOTSTRAP_PRIORS:
             raise ValueError(
                 f"bootstrap_prior must be one of {sorted(BOOTSTRAP_PRIORS)}"
             )
+        if self.max_game_seconds is not None:
+            budget = self.max_game_seconds
+            if (
+                not isinstance(budget, (int, float))
+                or isinstance(budget, bool)
+                or not math.isfinite(budget)
+                or budget <= 0
+            ):
+                raise ValueError("max_game_seconds must be a positive finite number or None")
 
 
 @dataclass(frozen=True, slots=True)

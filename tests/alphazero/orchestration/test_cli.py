@@ -193,6 +193,7 @@ def _production_config(*, model_version: str) -> dict[str, object]:
             "temperature": 1.0,
             "seed": 7,
             "bootstrap_prior": "none",
+            "max_game_seconds": None,
         },
         "replay": {"capacity": 8, "seed": 7},
         "training": {
