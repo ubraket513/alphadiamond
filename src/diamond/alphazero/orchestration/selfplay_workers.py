@@ -11,7 +11,10 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 
-from ..config import MCTSConfig, SelfPlayConfig
+from ..bootstrap.evaluator import bootstrap_evaluator
+from ..bootstrap.heuristic import BOOTSTRAP_PRIOR_NONE
+from ..config import BOOTSTRAP_PRIORS, MCTSConfig, SelfPlayConfig
+from ..evaluator.base import Evaluator
 from ..game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from ..identity import (
     MIN_MODEL_NAME,
@@ -170,8 +173,14 @@ class EpisodeResult:
     completed: bool
     aborted_reason: str | None = None
     worker_id: int | None = None
+    bootstrap_prior: str = BOOTSTRAP_PRIOR_NONE
+    """Self-play provenance: which prior generated this episode."""
 
     def __post_init__(self) -> None:
+        if self.bootstrap_prior not in BOOTSTRAP_PRIORS:
+            raise ValueError(
+                f"bootstrap_prior must be one of {sorted(BOOTSTRAP_PRIORS)}"
+            )
         if not isinstance(self.samples, tuple):
             raise ValueError("samples must be a tuple")
         if self.move_count < 0:
@@ -233,13 +242,14 @@ def run_selfplay_job(
     game = DiamondSearchAdapter(
         AlphaZeroGameAdapter(job.players, initial=job.initial_state)
     )
-    evaluator = RemoteEvaluator(
+    evaluator: Evaluator = RemoteEvaluator(
         coordinator,
         model_key=job.model_key,
         client_id=job.game_id,
     )
     mcts_config = replace(job.mcts_config, seed=job.seed)
     selfplay_config = replace(job.selfplay_config, seed=job.seed)
+    evaluator = bootstrap_evaluator(evaluator, selfplay_config.bootstrap_prior)
     if job.model_key.model_name == SOO_MODEL_NAME:
         episode = SooSelfPlayRunner(
             game,
@@ -268,6 +278,7 @@ def run_selfplay_job(
         final_order=episode.final_order,
         move_count=episode.move_count,
         completed=episode.completed,
+        bootstrap_prior=selfplay_config.bootstrap_prior,
         aborted_reason=episode.aborted_reason,
     )
 

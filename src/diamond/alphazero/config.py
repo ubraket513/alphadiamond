@@ -5,6 +5,20 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .bootstrap.heuristic import (
+    BOOTSTRAP_PRIOR_NONE,
+    CANONICAL_TARGET_DISTANCE_V1,
+    CANONICAL_TARGET_VACANCY_DISTANCE_V2,
+)
+
+BOOTSTRAP_PRIORS = frozenset(
+    {
+        BOOTSTRAP_PRIOR_NONE,
+        CANONICAL_TARGET_DISTANCE_V1,
+        CANONICAL_TARGET_VACANCY_DISTANCE_V2,
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class NetworkConfig:
@@ -27,6 +41,14 @@ class SelfPlayConfig:
     temperature_moves: int = 20
     temperature: float = 1.0
     seed: int = 0
+    bootstrap_prior: str = BOOTSTRAP_PRIOR_NONE
+    """Opt-in cold-start scaffolding; self-play only, never arena or rating."""
+
+    def __post_init__(self) -> None:
+        if self.bootstrap_prior not in BOOTSTRAP_PRIORS:
+            raise ValueError(
+                f"bootstrap_prior must be one of {sorted(BOOTSTRAP_PRIORS)}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +81,7 @@ def config_dict(config: object) -> dict[str, Any]:
 
 
 __all__ = [
+    "BOOTSTRAP_PRIORS",
     "ArenaConfig",
     "MCTSConfig",
     "NetworkConfig",
