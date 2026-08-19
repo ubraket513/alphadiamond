@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 
 from ..checkpoint import load_inference_checkpoint
 from ..evaluator.torch import TorchEvaluator
@@ -13,10 +14,13 @@ from .protocol import InferenceRequest, InferenceResponse, ModelKey
 
 
 class InferenceModelPool:
-    """Own eager FP32 evaluators; never share a forward call across model keys."""
+    """Own eager evaluators (FP32 by default); never share forwards across keys."""
 
-    def __init__(self, *, device: str = "cpu") -> None:
+    def __init__(
+        self, *, device: str = "cpu", precision: Literal["fp32", "bf16"] = "fp32"
+    ) -> None:
         self.device = device
+        self.precision = precision
         self._evaluators: dict[ModelKey, TorchEvaluator] = {}
         self._compatibility: dict[ModelKey, CheckpointCompatibilitySpec] = {}
 
@@ -48,7 +52,9 @@ class InferenceModelPool:
             checkpoint_sha256=info.checkpoint_sha256,
         )
         if key not in self._evaluators:
-            self._evaluators[key] = TorchEvaluator(model, value_size=value_size, device=self.device)
+            self._evaluators[key] = TorchEvaluator(
+                model, value_size=value_size, device=self.device, precision=self.precision
+            )
             self._compatibility[key] = expected
         return key
 

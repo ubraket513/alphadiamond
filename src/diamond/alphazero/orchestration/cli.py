@@ -26,6 +26,8 @@ class CommandServices(Protocol):
 
     def leaderboard(self, *, model_name: str, run_id: str) -> Mapping[str, object]: ...
 
+    def profile(self, *, model_name: str, max_seconds: int) -> object: ...
+
 
 ServicesFactory = Callable[[Path, str], CommandServices]
 
@@ -49,6 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--run-id", required=True)
     profile = subcommands.add_parser("profile")
     profile.add_argument("--seconds", type=int, default=1)
+    profile.add_argument("--runtime-dir", type=Path, default=Path("runtime"))
+    profile.add_argument("--model", choices=("Soo", "Min"), default="Soo")
     return parser
 
 
@@ -79,11 +83,16 @@ def main(
         if args.command == "profile":
             if args.seconds <= 0:
                 raise ValueError("--seconds must be positive")
+            services = services_factory(args.runtime_dir, args.model)
+            result = services.profile(model_name=args.model, max_seconds=args.seconds)
+            to_dict = getattr(result, "to_dict", None)
+            if not callable(to_dict):
+                raise ValueError("profile service must return a ProfileReport")
             _emit(
                 {
                     "command": "profile",
-                    "max_seconds": args.seconds,
-                    "status": "not_implemented",
+                    "status": "ok",
+                    **dict(to_dict()),
                 },
                 stream,
             )

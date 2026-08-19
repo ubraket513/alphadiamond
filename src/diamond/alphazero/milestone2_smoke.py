@@ -13,7 +13,7 @@ from pathlib import Path
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, load_inference_checkpoint, save_checkpoint
 from .config import ArenaConfig, MCTSConfig, NetworkConfig, SelfPlayConfig, TrainingConfig
-from .evaluator.base import EvalResult
+from .evaluator.base import EvalRequest, EvalResult
 from .evaluator.torch import TorchEvaluator
 from .identity import CheckpointCompatibilitySpec, MIN_MODEL_NAME, SOO_MODEL_NAME
 from .inference.coordinator import InferenceConfig, InferenceCoordinator
@@ -960,6 +960,29 @@ class TinyTrainingServices:
         else:
             entries = [asdict(entry) for entry in registry.min_leaderboard()]
         return {"entries": entries}
+
+    def profile(self, *, model_name: str, max_seconds: int):
+        """Return a bounded real-model profile without creating a training run."""
+        self._assert_model(model_name)
+        from .inference.profile import detect_hardware, profile_evaluator
+
+        hardware = detect_hardware()
+        device = "cuda" if hardware.gpu_verified else "cpu"
+        evaluator = TorchEvaluator(
+            _new_model(self.compatibility),
+            value_size=1 if model_name == SOO_MODEL_NAME else 3,
+            device=device,
+        )
+        request = EvalRequest(
+            node_features=tuple(
+                (0.0,) * (self.compatibility.identity.player_count * 2) for _ in range(73)
+            ),
+            legal_action_ids=(0, 1, 2),
+            canonical_player_ids=tuple(
+                range(1, self.compatibility.identity.player_count + 1)
+            ),
+        )
+        return profile_evaluator(evaluator, (request,), max_seconds=max_seconds)
 
     def _load_registry(self, run_id: str) -> RatingRegistry:
         path = self.root / self.model_name.lower() / run_id / "ratings" / "registry.json"

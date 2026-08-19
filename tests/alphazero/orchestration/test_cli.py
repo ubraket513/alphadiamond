@@ -6,7 +6,10 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from diamond.alphazero.orchestration import cli
+from diamond.alphazero.inference.profile import ProfileReport
 
 
 class _Services:
@@ -28,6 +31,10 @@ class _Services:
     def leaderboard(self, *, model_name: str, run_id: str) -> dict[str, object]:
         self.calls.append(("leaderboard", model_name, run_id))
         return {"entries": []}
+
+    def profile(self, *, model_name: str, max_seconds: int) -> ProfileReport:
+        self.calls.append(("profile", model_name, str(max_seconds)))
+        return ProfileReport.empty(max_seconds=max_seconds)
 
 
 def _run(
@@ -60,16 +67,21 @@ def test_commands_dispatch_services_with_machine_readable_success(capsys) -> Non
     ]
 
 
-def test_profile_has_a_bounded_headless_entry(capsys) -> None:
-    exit_code = cli.main(["profile", "--seconds", "1"])
+def test_profile_dispatches_services_and_emits_a_bounded_report(capsys) -> None:
+    services = _Services()
+
+    exit_code = cli.main(
+        ["profile", "--seconds", "1"],
+        services_factory=lambda _root, _model: services,
+    )
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == cli.EXIT_OK
-    assert payload == {
-        "command": "profile",
-        "max_seconds": 1,
-        "status": "not_implemented",
-    }
+    assert payload["command"] == "profile"
+    assert payload["max_seconds"] == 1
+    assert payload["status"] == "ok"
+    assert payload["modes"] == []
+    assert services.calls == [("profile", "Soo", "1")]
 
 
 def test_runtime_errors_have_stable_machine_readable_exit_code(capsys) -> None:
@@ -115,6 +127,7 @@ def test_cli_module_import_does_not_initialize_pyside() -> None:
 
 
 def test_cli_module_is_directly_executable_without_gui() -> None:
+    pytest.importorskip("torch")
     source_root = str(Path(__file__).resolve().parents[3] / "src")
     result = subprocess.run(
         [sys.executable, "-m", "diamond.alphazero.orchestration.cli", "profile"],
@@ -125,4 +138,4 @@ def test_cli_module_is_directly_executable_without_gui() -> None:
     )
 
     assert result.returncode == cli.EXIT_OK, result.stderr
-    assert json.loads(result.stdout)["status"] == "not_implemented"
+    assert json.loads(result.stdout)["status"] == "ok"

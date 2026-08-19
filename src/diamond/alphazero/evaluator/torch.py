@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
+from typing import Literal
 
 import torch
 from torch import nn
@@ -11,12 +13,26 @@ from .base import EvalRequest, EvalResult
 
 
 class TorchEvaluator:
-    def __init__(self, model: nn.Module, *, value_size: int, device: str = "cpu") -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        *,
+        value_size: int,
+        device: str = "cpu",
+        precision: Literal["fp32", "bf16"] = "fp32",
+    ) -> None:
         if value_size not in (1, 3):
             raise ValueError("value_size must be 1 or 3")
         self.model = model.to(device)
         self.value_size = value_size
         self.device = torch.device(device)
+        if precision not in ("fp32", "bf16"):
+            raise ValueError("precision must be fp32 or bf16")
+        if precision == "bf16" and (
+            self.device.type != "cuda" or not torch.cuda.is_bf16_supported(self.device)
+        ):
+            raise ValueError("bf16 evaluation requires CUDA BF16 support")
+        self.precision = precision
         self.model.eval()
 
     def evaluate(self, requests: tuple[EvalRequest, ...]) -> tuple[EvalResult, ...]:
@@ -37,7 +53,12 @@ class TorchEvaluator:
             dtype=torch.float32,
             device=self.device,
         )
-        with torch.inference_mode():
+        autocast = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if self.precision == "bf16"
+            else nullcontext()
+        )
+        with torch.inference_mode(), autocast:
             policy_logits, values = self.model(features)
 
         if values.shape != (len(requests), self.value_size):

@@ -2,6 +2,7 @@
 
 from .protocol import InferenceFailure, InferenceRequest, InferenceResponse, ModelKey
 from .coordinator import InferenceConfig, InferenceCoordinator, InferenceMetrics
+from .profile import ProfileReport
 from .remote import RemoteEvaluator
 
 
@@ -21,5 +22,6 @@ __all__ = [
     "InferenceRequest",
     "InferenceResponse",
     "ModelKey",
+    "ProfileReport",
     "RemoteEvaluator",
 ]
