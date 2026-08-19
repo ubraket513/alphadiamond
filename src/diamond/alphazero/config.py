@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .bootstrap.heuristic import (
-    BOOTSTRAP_PRIOR_NONE,
-    CANONICAL_TARGET_DISTANCE_V1,
-    CANONICAL_TARGET_VACANCY_DISTANCE_V2,
-)
+# Bootstrap prior identities live here, not in the bootstrap package: config is
+# imported by nearly everything, and the heuristic modules import config back.
+BOOTSTRAP_PRIOR_NONE = "none"
+CANONICAL_TARGET_DISTANCE_V1 = "canonical-target-distance-v1"
+CANONICAL_TARGET_VACANCY_DISTANCE_V2 = "canonical-target-vacancy-distance-v2"
 
 BOOTSTRAP_PRIORS = frozenset(
     {
@@ -82,6 +82,9 @@ def config_dict(config: object) -> dict[str, Any]:
 
 __all__ = [
     "BOOTSTRAP_PRIORS",
+    "BOOTSTRAP_PRIOR_NONE",
+    "CANONICAL_TARGET_DISTANCE_V1",
+    "CANONICAL_TARGET_VACANCY_DISTANCE_V2",
     "ArenaConfig",
     "MCTSConfig",
     "NetworkConfig",

@@ -70,6 +70,7 @@ def test_production_config_is_strictly_json_round_trippable() -> None:
             "temperature_moves": 20,
             "temperature": 1.0,
             "seed": 7,
+            "bootstrap_prior": "none",
         },
         "replay": {"capacity": 128, "seed": 7},
         "training": {
@@ -199,6 +200,7 @@ def test_production_selfplay_jobs_start_from_authoritative_initial_state_and_cha
                 "temperature_moves": 20,
                 "temperature": 1.0,
                 "seed": 7,
+                "bootstrap_prior": "none",
             },
             "replay": {"capacity": 128, "seed": 7},
             "training": {

@@ -14,8 +14,11 @@ from math import exp
 from ..action_codec import ActionCodec
 from ...game.board import Board, Camp
 
-BOOTSTRAP_PRIOR_NONE = "none"
-CANONICAL_TARGET_DISTANCE_V1 = "canonical-target-distance-v1"
+from ..config import (  # noqa: F401  (re-exported for the bootstrap package)
+    BOOTSTRAP_PRIOR_NONE,
+    CANONICAL_TARGET_DISTANCE_V1,
+    CANONICAL_TARGET_VACANCY_DISTANCE_V2,
+)
 
 TEMPERATURE_V1 = 1.0
 """Part of the ``canonical-target-distance-v1`` identity, not a tuning knob."""
@@ -92,8 +95,6 @@ class CanonicalTargetDistancePrior:
 
 
 
-
-CANONICAL_TARGET_VACANCY_DISTANCE_V2 = "canonical-target-vacancy-distance-v2"
 
 
 def _self_occupancy(node_features: tuple[tuple[float, ...], ...]) -> frozenset[int]:

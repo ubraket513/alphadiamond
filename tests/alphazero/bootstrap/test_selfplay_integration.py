@@ -6,7 +6,10 @@ from dataclasses import replace
 
 import pytest
 
-from diamond.alphazero.bootstrap.evaluator import BootstrapPriorEvaluator
+from diamond.alphazero.bootstrap.evaluator import (
+    BootstrapPriorEvaluator,
+    VacancyPriorEvaluator,
+)
 from diamond.alphazero.bootstrap.heuristic import (
     BOOTSTRAP_PRIOR_NONE,
     CANONICAL_TARGET_DISTANCE_V1,
@@ -33,11 +36,15 @@ def min_compatibility() -> CheckpointCompatibilitySpec:
     )
 
 
-def soo_episode(evaluator, *, max_moves: int, seed: int = 0):
+def soo_episode(evaluator, *, max_moves: int, seed: int = 0, dirichlet: float | None = None):
+    """One Soo episode.  ``dirichlet=0.0`` disables root exploration noise."""
+    mcts = MCTSConfig(simulations=1, seed=seed)
+    if dirichlet is not None:
+        mcts = replace(mcts, dirichlet_epsilon=dirichlet)
     return SooSelfPlayRunner(
         DiamondSearchAdapter(AlphaZeroGameAdapter(build_players(2))),
         evaluator,
-        MCTSConfig(simulations=1, dirichlet_epsilon=0.0, seed=seed),
+        mcts,
         SelfPlayConfig(max_moves=max_moves, temperature_moves=0, seed=seed),
         soo_compatibility(),
     ).run()
@@ -45,23 +52,24 @@ def soo_episode(evaluator, *, max_moves: int, seed: int = 0):
 
 def test_bootstrap_disabled_follows_the_existing_path() -> None:
     """An unwrapped evaluator behaves exactly as it does today."""
-    plain = soo_episode(DummyEvaluator(0.0), max_moves=1)
+    plain = soo_episode(DummyEvaluator(0.0), max_moves=1, dirichlet=0.0)
     assert not plain.completed
     assert plain.aborted_reason == "max_game_moves_exceeded"
     assert plain.samples == ()
 
 
 def test_aborted_episodes_still_produce_zero_samples() -> None:
-    episode = soo_episode(BootstrapPriorEvaluator(DummyEvaluator(0.0)), max_moves=2)
+    episode = soo_episode(
+        BootstrapPriorEvaluator(DummyEvaluator(0.0)), max_moves=2, dirichlet=0.0
+    )
     assert not episode.completed
     assert episode.aborted_reason == "max_game_moves_exceeded"
     assert episode.samples == ()
 
 
 def test_bootstrap_soo_reaches_a_real_terminal_and_keeps_value_semantics() -> None:
-    episode = soo_episode(BootstrapPriorEvaluator(DummyEvaluator(0.0)), max_moves=400)
-    if not episode.completed:
-        pytest.skip("bootstrap episode did not finish inside the probe budget")
+    episode = soo_episode(VacancyPriorEvaluator(DummyEvaluator(0.0)), max_moves=400)
+    assert episode.completed, "v2 is expected to finish Soo inside 400 moves"
     assert episode.final_order is not None
     winner = episode.final_order[0]
     assert episode.samples
@@ -74,13 +82,13 @@ def test_bootstrap_soo_reaches_a_real_terminal_and_keeps_value_semantics() -> No
 def test_bootstrap_min_keeps_placement_utility_semantics() -> None:
     episode = MinSelfPlayRunner(
         DiamondSearchAdapter(AlphaZeroGameAdapter(build_players(3))),
-        BootstrapPriorEvaluator(DummyEvaluator((0.0, 0.0, 0.0))),
-        MCTSConfig(simulations=1, dirichlet_epsilon=0.0, seed=0),
-        SelfPlayConfig(max_moves=400, temperature_moves=0, seed=0),
+        VacancyPriorEvaluator(DummyEvaluator((0.0, 0.0, 0.0))),
+        MCTSConfig(simulations=1, seed=0),
+        SelfPlayConfig(max_moves=2000, temperature_moves=0, seed=0),
         min_compatibility(),
     ).run()
-    if not episode.completed:
-        pytest.skip("bootstrap episode did not finish inside the probe budget")
+    assert episode.completed, "v2 is expected to finish Min inside 2000 moves"
+    assert episode.samples
     for sample in episode.samples:
         assert sorted(sample.value_target) == [-1.0, 0.0, 1.0]
 

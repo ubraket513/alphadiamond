@@ -290,3 +290,89 @@ The design is complete when implementation can demonstrate all of the following:
 The heuristic exists to help AlphaZero reach its first useful terminal trajectories, not to become the game-playing intelligence.
 
 The strongest version of this design is the smallest one that reliably gets replay started and can then be switched off.
+
+---
+
+## Addendum: v1 measured result and the v2 successor
+
+Date: 2026-08-19 (implementation)
+
+### What v1 does well
+
+`canonical-target-distance-v1` was implemented exactly as specified above and
+drives the opening and midgame effectively: total target-distance for a Soo
+player falls from 70 to roughly 2 within about 100 moves.
+
+### The measured limitation
+
+Under deterministic greedy play (`dirichlet_epsilon=0.0`, argmax on the prior)
+v1 never terminates. It reaches a target-camp packing position where eight of ten
+pieces are home, the last two sit one step out, and *every* legal action scores
+`progress == 0`. The remaining target holes are reachable only from inside the
+camp, so the fixed distance table cannot distinguish a useful camp-internal
+rearrangement from an idle shuffle. Greedy play then enters a short cycle.
+
+This is a limitation of the metric, not of the implementation: `distance[]` is
+state-independent and cannot see which target holes are already filled.
+
+Root Dirichlet noise does break the plateau in practice, so v1 does complete
+games under ordinary MCTS settings. The stall is nonetheless real, and the
+regression is recorded in `tests/alphazero/bootstrap/test_vacancy_prior.py`.
+
+v1 is preserved unchanged as an experimental result. It was deliberately not
+patched.
+
+### v2: `canonical-target-vacancy-distance-v2`
+
+The minimal next experiment scores the whole position instead of the single
+moved piece:
+
+```text
+U   = canonical Z_NEG target holes the acting player does NOT yet occupy
+O   = the acting player's pieces outside the target camp
+Phi = sum over O of min over U of graph_distance(piece, target)
+```
+
+Each legal action is scored `Phi(before) - Phi(after)`, updating only the acting
+player's own occupancy, then passed through the same fixed softmax
+(`temperature = 1.0`).
+
+`U` means "not yet mine", never "physically empty": a target hole held by an
+opponent is still a slot this player must eventually fill. Whether a move is
+playable right now remains entirely the authoritative rules' business.
+
+Opponent pieces, legality, rules, MCTS backup, neural value and terminal targets
+are all unchanged, every legal action keeps a strictly positive prior, and no
+Torch dependency is added.
+
+
+### Probe results
+
+Fixed-seed A/B probe, `mcts.simulations=1`, `max_moves=2000`, 20 episodes per
+condition, seeds 0-19, untrained (dummy) evaluator:
+
+| model | prior | completion | median | p90 | samples/episode | aborts |
+|---|---|---|---|---|---|---|
+| Soo | `none` | 0.0% | - | - | 0.0 | 20 x `max_game_moves_exceeded` |
+| Soo | `canonical-target-distance-v1` | 100.0% | 84.5 | 126 | 88.6 | none |
+| Soo | `canonical-target-vacancy-distance-v2` | 100.0% | 74.0 | 93 | 76.4 | none |
+| Min | `none` | 0.0% | - | - | 0.0 | 20 x `max_game_moves_exceeded` |
+| Min | `canonical-target-distance-v1` | 100.0% | 131.0 | 172 | 135.3 | none |
+| Min | `canonical-target-vacancy-distance-v2` | 100.0% | 101.0 | 130 | 103.3 | none |
+
+Both priors take completion from 0% to 100% and turn an empty replay into a
+populated one, which is the question the probe exists to answer. v2 additionally
+finishes games in fewer moves (Soo p90 93 vs 126; Min p90 130 vs 172), consistent
+with it seeing the target-camp endgame that v1 is blind to.
+
+Since v2 produces stable terminals well inside 2000 moves for both models,
+assignment matching and a separate endgame heuristic remain unimplemented, as
+the Non-Goals require.
+
+### Scope
+
+Both priors remain opt-in, self-play-only, and selected by the single
+`bootstrap_prior` config value. Every Non-Goal above still stands: assignment
+matching, forced moves, camp locking, cycle penalties and reward shaping remain
+unimplemented, and are to be reconsidered only if v2 fails to produce stable
+terminals.
