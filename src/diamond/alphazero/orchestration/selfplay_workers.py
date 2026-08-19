@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import multiprocessing
 import traceback as traceback_module
 from dataclasses import dataclass, replace
@@ -395,22 +396,69 @@ def selfplay_worker_entry(
 class SelfPlayWorkerPool:
     """One-shot spawn worker group bridged to one parent inference coordinator."""
 
+    #: Headroom over the per-lane game budget for spawn, checkpoint load and drain.
+    DEFAULT_GRACE_S = 300.0
+
     def __init__(
         self,
         coordinator: RequestCoordinator,
         *,
         worker_count: int,
-        worker_timeout_s: float = 60.0,
+        worker_timeout_s: float | None = None,
+        per_game_timeout_s: float | None = None,
+        grace_s: float = DEFAULT_GRACE_S,
         join_timeout_s: float = 2.0,
     ) -> None:
         if worker_count <= 0:
             raise ValueError("worker_count must be positive")
-        if worker_timeout_s <= 0 or join_timeout_s <= 0:
-            raise ValueError("worker and join timeouts must be positive")
+        if worker_timeout_s is not None and worker_timeout_s <= 0:
+            raise ValueError("worker timeout must be positive")
+        if per_game_timeout_s is not None and per_game_timeout_s <= 0:
+            raise ValueError("per-game timeout must be positive")
+        if grace_s < 0 or join_timeout_s <= 0:
+            raise ValueError("grace must be non-negative and join timeout positive")
         self.coordinator = coordinator
         self.worker_count = worker_count
         self.worker_timeout_s = worker_timeout_s
+        self.per_game_timeout_s = per_game_timeout_s
+        self.grace_s = grace_s
         self.join_timeout_s = join_timeout_s
+
+    @staticmethod
+    def derive_pool_timeout(
+        *,
+        job_count: int,
+        lane_count: int,
+        per_game_timeout_s: float,
+        grace_s: float,
+    ) -> float:
+        """Budget the busiest lane, not the pool as a whole.
+
+        With more jobs than lanes some lane runs several games back to back, so
+        a per-game budget does not bound the iteration.  Sizing from the deepest
+        lane keeps this guard catastrophic rather than routine.
+        """
+        if job_count < 1 or lane_count < 1:
+            raise ValueError("job_count and lane_count must be positive")
+        if per_game_timeout_s <= 0:
+            raise ValueError("per_game_timeout_s must be positive")
+        if grace_s < 0:
+            raise ValueError("grace_s must be non-negative")
+        jobs_per_lane = math.ceil(job_count / lane_count)
+        return jobs_per_lane * per_game_timeout_s + grace_s
+
+    def _pool_timeout(self, *, job_count: int, lane_count: int) -> float:
+        """Explicit override wins; otherwise derive, else keep the old default."""
+        if self.worker_timeout_s is not None:
+            return self.worker_timeout_s
+        if self.per_game_timeout_s is not None:
+            return self.derive_pool_timeout(
+                job_count=job_count,
+                lane_count=lane_count,
+                per_game_timeout_s=self.per_game_timeout_s,
+                grace_s=self.grace_s,
+            )
+        return 60.0
 
     def run(self, jobs: tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]:
         if not isinstance(jobs, tuple):
@@ -457,7 +505,9 @@ class SelfPlayWorkerPool:
             for lane in job_queues:
                 lane.put(None)
 
-            deadline = monotonic() + self.worker_timeout_s
+            deadline = monotonic() + self._pool_timeout(
+                job_count=len(jobs), lane_count=lane_count
+            )
             while len(received) < len(jobs):
                 self._forward_inference(
                     inference_requests,
@@ -488,8 +538,14 @@ class SelfPlayWorkerPool:
                         f"self-play worker {failed.name} exited with code {failed.exitcode}"
                     )
                 if monotonic() >= deadline:
+                    # Not the normal way a long game ends -- a game aborts itself
+                    # on its own budget.  Reaching here means a dead child, broken
+                    # IPC or an unresponsive worker.
                     pending = tuple(game_id for game_id in game_ids if game_id not in received)
-                    raise TimeoutError(f"timed out waiting for self-play jobs: {pending}")
+                    raise TimeoutError(
+                        "self-play pool exceeded its catastrophic safety deadline "
+                        f"waiting for jobs: {pending}"
+                    )
             return tuple(received[game_id] for game_id in game_ids)
         finally:
             self._cleanup(processes, all_queues)

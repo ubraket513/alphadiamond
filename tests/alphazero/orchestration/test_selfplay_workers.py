@@ -409,3 +409,112 @@ assert 'torch' not in sys.modules, tuple(sys.modules)
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_pool_timeout_accounts_for_multiple_jobs_per_lane() -> None:
+    """32 games over 30 lanes means some lane runs two games back to back."""
+    derive = SelfPlayWorkerPool.derive_pool_timeout
+
+    assert derive(job_count=32, lane_count=30, per_game_timeout_s=900.0, grace_s=300.0) == 2100.0
+    assert derive(job_count=32, lane_count=32, per_game_timeout_s=900.0, grace_s=300.0) == 1200.0
+    assert derive(job_count=64, lane_count=30, per_game_timeout_s=900.0, grace_s=300.0) == 3000.0
+    # One lane draining every job is the worst case.
+    assert derive(job_count=4, lane_count=1, per_game_timeout_s=10.0, grace_s=1.0) == 41.0
+
+
+def test_pool_timeout_rejects_nonsensical_inputs() -> None:
+    derive = SelfPlayWorkerPool.derive_pool_timeout
+
+    for kwargs in (
+        {"job_count": 0, "lane_count": 1, "per_game_timeout_s": 1.0, "grace_s": 1.0},
+        {"job_count": 1, "lane_count": 0, "per_game_timeout_s": 1.0, "grace_s": 1.0},
+        {"job_count": 1, "lane_count": 1, "per_game_timeout_s": 0.0, "grace_s": 1.0},
+        {"job_count": 1, "lane_count": 1, "per_game_timeout_s": 1.0, "grace_s": -1.0},
+    ):
+        with pytest.raises(ValueError):
+            derive(**kwargs)
+
+
+def test_a_single_timed_out_game_does_not_discard_completed_siblings() -> None:
+    """One slow game must cost one game, not the whole iteration."""
+    fast_a, actions_a = _job(2, game_index=20)
+    fast_b, actions_b = _job(2, game_index=21)
+    slow_base, _slow_actions = _job(2, game_index=22)
+    # An infinitesimal budget expires on the first clock read, so the abort is
+    # immediate rather than waited for.
+    slow = SelfPlayJob(
+        run_seed=slow_base.run_seed,
+        iteration=slow_base.iteration,
+        game_index=slow_base.game_index,
+        retry_id=slow_base.retry_id,
+        model_key=slow_base.model_key,
+        compatibility=slow_base.compatibility,
+        players=slow_base.players,
+        initial_state=initial_state(slow_base.players),
+        mcts_config=slow_base.mcts_config,
+        selfplay_config=SelfPlayConfig(
+            max_moves=2000, temperature_moves=0, max_game_seconds=1e-9
+        ),
+    )
+    preferred = tuple(
+        (job.model_key.model_name, player_id, action)
+        for job, actions in ((fast_a, actions_a), (fast_b, actions_b))
+        for player_id, action in actions
+    )
+    children_before = {process.pid for process in active_children()}
+
+    results = SelfPlayWorkerPool(
+        ImmediateCoordinator(preferred),
+        worker_count=3,
+        per_game_timeout_s=900.0,
+        join_timeout_s=1.0,
+    ).run((fast_a, fast_b, slow))
+
+    by_id = {result.game_id: result for result in results}
+    assert set(by_id) == {fast_a.game_id, fast_b.game_id, slow.game_id}
+
+    timed_out = by_id[slow.game_id]
+    assert not timed_out.completed
+    assert timed_out.aborted_reason == "max_game_time_exceeded"
+    assert timed_out.samples == ()
+    assert timed_out.final_order is None
+
+    # The siblings survived intact, which is the entire point.
+    for job in (fast_a, fast_b):
+        sibling = by_id[job.game_id]
+        assert sibling.completed
+        assert sibling.samples
+        assert sibling.final_order == (1, 2)
+
+    assert not ({process.pid for process in active_children()} - children_before)
+
+
+def test_an_explicit_worker_timeout_still_wins() -> None:
+    """The existing parameter keeps working for callers that pass it."""
+    job, _actions = _job(2, game_index=23)
+
+    with pytest.raises(TimeoutError, match=job.game_id):
+        SelfPlayWorkerPool(
+            SilentCoordinator(),
+            worker_count=1,
+            worker_timeout_s=0.5,
+            per_game_timeout_s=10_000.0,
+            join_timeout_s=0.5,
+        ).run((job,))
+
+
+def test_the_catastrophic_timeout_names_itself_distinctly() -> None:
+    """Pool catastrophe, game timeout and inference timeout must not read alike."""
+    job, _actions = _job(2, game_index=24)
+
+    with pytest.raises(TimeoutError) as caught:
+        SelfPlayWorkerPool(
+            SilentCoordinator(),
+            worker_count=1,
+            worker_timeout_s=0.5,
+            join_timeout_s=0.5,
+        ).run((job,))
+
+    message = str(caught.value)
+    assert "catastrophic" in message
+    assert "max_game_time_exceeded" not in message
