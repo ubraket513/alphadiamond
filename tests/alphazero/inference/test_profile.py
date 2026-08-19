@@ -35,7 +35,7 @@ def _all_finite(value: object) -> bool:
     return not isinstance(value, float) or math.isfinite(value)
 
 
-def test_cpu_profile_reports_bounded_measured_stages_and_json() -> None:
+def test_cpu_profile_omits_unsupplied_stage_durations_and_reports_unavailable() -> None:
     report = profile_evaluator(
         TorchEvaluator(_Model(), value_size=1),
         (_request(),),
@@ -60,6 +60,40 @@ def test_cpu_profile_reports_bounded_measured_stages_and_json() -> None:
         "p50_s",
         "p95_s",
     }
+    assert set(report.stage_timings) == {"queue_wait", "inference"}
+    assert all(summary.samples > 0 for summary in report.stage_timings.values())
+    assert set(report.unavailable_stages) == {
+        "self_play",
+        "replay_collation",
+        "training",
+    }
+    assert all(
+        stage not in payload["stage_timings"] for stage in report.unavailable_stages
+    )
+    assert isinstance(payload["hardware"]["gpu_verified"], bool)
+    assert _all_finite(payload)
+    assert json.loads(report.to_json()) == payload
+
+
+def test_profile_times_each_supplied_stage_operation_once() -> None:
+    invoked: list[str] = []
+
+    def operation(name: str):
+        return lambda: invoked.append(name)
+
+    report = profile_evaluator(
+        TorchEvaluator(_Model(), value_size=1),
+        (_request(),),
+        max_seconds=0.01,
+        include_optional=False,
+        stage_operations={
+            "self_play": operation("self_play"),
+            "replay_collation": operation("replay_collation"),
+            "training": operation("training"),
+        },
+    )
+
+    assert invoked == ["self_play", "replay_collation", "training"]
     assert set(report.stage_timings) == {
         "queue_wait",
         "inference",
@@ -67,10 +101,10 @@ def test_cpu_profile_reports_bounded_measured_stages_and_json() -> None:
         "replay_collation",
         "training",
     }
-    assert all(summary.samples > 0 for summary in report.stage_timings.values())
-    assert isinstance(payload["hardware"]["gpu_verified"], bool)
-    assert _all_finite(payload)
-    assert json.loads(report.to_json()) == payload
+    assert report.stage_timings["self_play"].samples == 1
+    assert report.stage_timings["replay_collation"].samples == 1
+    assert report.stage_timings["training"].samples == 1
+    assert report.unavailable_stages == {}
 
 
 def test_cuda_absence_does_not_fabricate_gpu_rows(monkeypatch) -> None:

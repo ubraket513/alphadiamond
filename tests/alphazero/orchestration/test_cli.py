@@ -138,4 +138,13 @@ def test_cli_module_is_directly_executable_without_gui() -> None:
     )
 
     assert result.returncode == cli.EXIT_OK, result.stderr
-    assert json.loads(result.stdout)["status"] == "ok"
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert set(payload["stage_timings"]) == {
+        "queue_wait",
+        "inference",
+        "self_play",
+        "replay_collation",
+        "training",
+    }
+    assert payload["unavailable_stages"] == {}

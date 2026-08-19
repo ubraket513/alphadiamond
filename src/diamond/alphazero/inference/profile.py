@@ -18,9 +18,8 @@ from time import monotonic
 from typing import Any, Callable, Mapping, Sequence
 
 
-_STAGES = (
-    "queue_wait",
-    "inference",
+_EVALUATOR_STAGES = ("queue_wait", "inference")
+_SUPPLIED_STAGES = (
     "self_play",
     "replay_collation",
     "training",
@@ -113,6 +112,7 @@ class ProfileReport:
     hardware: HardwareProfile
     modes: tuple[ModeProfile, ...]
     stage_timings: Mapping[str, TimingSummary]
+    unavailable_stages: Mapping[str, str]
     unavailable_modes: Mapping[str, str]
 
     @classmethod
@@ -122,6 +122,10 @@ class ProfileReport:
             hardware=detect_hardware(),
             modes=(),
             stage_timings={},
+            unavailable_stages={
+                name: "profile operation was not run"
+                for name in (*_EVALUATOR_STAGES, *_SUPPLIED_STAGES)
+            },
             unavailable_modes={},
         )
 
@@ -133,6 +137,7 @@ class ProfileReport:
             "stage_timings": {
                 name: summary.to_dict() for name, summary in self.stage_timings.items()
             },
+            "unavailable_stages": dict(self.unavailable_stages),
             "unavailable_modes": dict(self.unavailable_modes),
         }
 
@@ -217,13 +222,16 @@ class _StageMeter:
 
     def measure(self, name: str, operation: Callable[[], Any]) -> Any:
         started = monotonic()
-        try:
-            return operation()
-        finally:
-            self.samples[name].append(monotonic() - started)
+        result = operation()
+        self.samples[name].append(monotonic() - started)
+        return result
 
     def summaries(self) -> dict[str, TimingSummary]:
-        return {name: TimingSummary.from_samples(self.samples[name]) for name in _STAGES}
+        return {
+            name: TimingSummary.from_samples(samples)
+            for name, samples in self.samples.items()
+            if samples
+        }
 
 
 def _is_cuda_evaluator(evaluator: Any) -> bool:
@@ -285,13 +293,6 @@ def _measure_mode(
         else:
             results = meter.measure("inference", infer)
         batch_samples.append(monotonic() - inference_started)
-        if meter is not None:
-            meter.measure("self_play", lambda: max(results[0].priors, key=results[0].priors.get))
-            meter.measure(
-                "replay_collation",
-                lambda: tuple((action, probability) for action, probability in results[0].priors.items()),
-            )
-            meter.measure("training", lambda: sum(float(value) for value in results[0].priors.values()))
         return tuple(results)
 
     while calls == 0 or (monotonic() < deadline and calls < 64):
@@ -330,6 +331,7 @@ def profile_evaluator(
     *,
     max_seconds: float,
     include_optional: bool = True,
+    stage_operations: Mapping[str, Callable[[], object]] | None = None,
 ) -> ProfileReport:
     """Profile eager FP32 first, then isolated BF16 and compiled candidates.
 
@@ -354,8 +356,25 @@ def profile_evaluator(
     )
     modes = [eager]
     unavailable: dict[str, str] = {}
+    unavailable_stages: dict[str, str] = {}
     optional_candidates: list[tuple[str, Any]] = []
     torch = _torch()
+
+    operations = dict(stage_operations or {})
+    unexpected_stages = set(operations) - set(_SUPPLIED_STAGES)
+    if unexpected_stages:
+        raise ValueError(
+            f"unsupported profile stages: {', '.join(sorted(unexpected_stages))}"
+        )
+    for stage in _SUPPLIED_STAGES:
+        operation = operations.get(stage)
+        if operation is None:
+            unavailable_stages[stage] = "operation was not supplied"
+            continue
+        try:
+            meter.measure(stage, operation)
+        except Exception as error:
+            unavailable_stages[stage] = f"{type(error).__name__}: {error}"
 
     if include_optional and hardware.gpu_verified and hardware.supports_bf16:
         try:
@@ -417,6 +436,7 @@ def profile_evaluator(
         hardware=hardware,
         modes=tuple(modes),
         stage_timings=meter.summaries(),
+        unavailable_stages=unavailable_stages,
         unavailable_modes=unavailable,
     )
 

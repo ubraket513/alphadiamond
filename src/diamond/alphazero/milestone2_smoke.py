@@ -35,7 +35,7 @@ from .rating.events import MinRatingEvent, SooRatingEvent
 from .rating.participants import CheckpointParticipant
 from .rating.protocol import BenchmarkProtocol, EloConfig, TrueSkillConfig
 from .rating.registry import RatingRegistry
-from .replay import TrainingSample
+from .replay import ReplayBatch, ReplayBuffer, TrainingSample
 from .trainer import AlphaZeroTrainer
 from ..game.board import standard_board
 from ..game.rules import find_legal_move
@@ -982,7 +982,92 @@ class TinyTrainingServices:
                 range(1, self.compatibility.identity.player_count + 1)
             ),
         )
-        return profile_evaluator(evaluator, (request,), max_seconds=max_seconds)
+        return profile_evaluator(
+            evaluator,
+            (request,),
+            max_seconds=max_seconds,
+            stage_operations=self._profile_stage_operations(),
+        )
+
+    def _profile_stage_operations(self):
+        """Build one real tiny self-play, collation, and training operation."""
+        players = build_players(self.compatibility.identity.player_count)
+        initial, actions = _near_terminal_state(
+            players, finishers=self.compatibility.identity.player_count - 1
+        )
+        actions_by_model = {
+            (self.model_name, player_id): action for player_id, action in actions
+        }
+        model_key = ModelKey(
+            self.model_name,
+            self.compatibility.identity.model_version,
+            "0" * 64,
+        )
+        job = SelfPlayJob(
+            run_seed=17,
+            iteration=0,
+            game_index=0,
+            retry_id="profile",
+            model_key=model_key,
+            compatibility=self.compatibility,
+            players=players,
+            initial_state=initial,
+            mcts_config=MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
+            selfplay_config=SelfPlayConfig(max_moves=2, temperature_moves=0),
+        )
+        replay = ReplayBuffer(self.compatibility, capacity=8, seed=17)
+        trainer = AlphaZeroTrainer(
+            _new_model(self.compatibility), self.compatibility, _TRAINING
+        )
+        episodes: tuple[EpisodeResult, ...] | None = None
+        batch: ReplayBatch | None = None
+
+        def self_play() -> tuple[EpisodeResult, ...]:
+            nonlocal episodes
+            coordinator = InferenceCoordinator(
+                _PreferredBatchEvaluator(actions_by_model),
+                InferenceConfig(
+                    max_batch_size=1,
+                    max_wait_ms=1,
+                    request_queue_capacity=2,
+                    response_timeout_s=10.0,
+                ),
+            )
+            coordinator.start()
+            try:
+                episodes = SelfPlayWorkerPool(
+                    coordinator,
+                    worker_count=1,
+                    worker_timeout_s=20.0,
+                    join_timeout_s=2.0,
+                ).run((job,))
+            finally:
+                coordinator.stop()
+            if not episodes or not episodes[0].completed:
+                raise RuntimeError("tiny profile self-play did not complete")
+            return episodes
+
+        def replay_collation() -> ReplayBatch:
+            nonlocal batch
+            if episodes is None:
+                raise RuntimeError("self-play must run before replay collation")
+            samples = tuple(sample for episode in episodes for sample in episode.samples)
+            if not samples:
+                raise RuntimeError("tiny profile self-play produced no replay samples")
+            replay.extend(samples)
+            batch = replay.collate((replay.samples[0],), action_size=73 * 73)
+            return batch
+
+        def training():
+            if batch is None:
+                raise RuntimeError("replay collation must run before training")
+            return trainer.train_batch(batch)
+
+        return {
+            "self_play": self_play,
+            "replay_collation": replay_collation,
+            "training": training,
+        }
 
     def _load_registry(self, run_id: str) -> RatingRegistry:
         path = self.root / self.model_name.lower() / run_id / "ratings" / "registry.json"
