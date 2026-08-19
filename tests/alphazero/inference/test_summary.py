@@ -99,6 +99,8 @@ def test_summary_is_json_ready_and_carries_no_raw_arrays() -> None:
     assert summary["requests_completed"] == 93
     assert summary["batches_completed"] == 6
     assert summary["max_batch_size"] == 32
+    # A batch size is a count, so report it as one.
+    assert isinstance(summary["max_batch_size"], int)
     assert summary["mean_batch_size"] == pytest.approx(93 / 6)
     assert summary["evaluations_per_second"] == pytest.approx(9.3)
     assert summary["batches_per_second"] == pytest.approx(0.6)

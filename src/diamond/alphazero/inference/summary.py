@@ -116,7 +116,7 @@ def summarize_metrics(metrics, elapsed_s: float) -> dict[str, object]:
         "mean_batch_size": batch.mean,
         "median_batch_size": batch.quantile(0.5),
         "p90_batch_size": batch.quantile(0.9),
-        "max_batch_size": batch.maximum,
+        "max_batch_size": None if batch.maximum is None else int(batch.maximum),
         "queue_to_dispatch_p50_ms": _milliseconds(queue.quantile(0.5)),
         "queue_to_dispatch_p90_ms": _milliseconds(queue.quantile(0.9)),
         "inference_p50_ms": _milliseconds(inference.quantile(0.5)),
