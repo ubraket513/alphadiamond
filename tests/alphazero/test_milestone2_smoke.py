@@ -47,6 +47,20 @@ def test_tiny_production_smoke_runs_soo_and_min_without_fabricating_min_rating(t
     assert report["models"]["Min"]["state_reloaded"] is True
 
 
+def test_fresh_min_resume_preserves_insufficient_history_summary(tmp_path: Path) -> None:
+    run_id = "fresh-min-rating-resume"
+    trained = TinyTrainingServices(tmp_path, "Min").train(
+        model_name="Min", run_id=run_id
+    )
+
+    resumed = TinyTrainingServices(tmp_path, "Min").resume(
+        model_name="Min", run_id=run_id
+    )
+
+    assert resumed["rating_status"] == "insufficient_history"
+    assert resumed == trained
+
+
 def test_fresh_services_resume_after_candidate_save_without_repeating_completed_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -29,7 +29,7 @@ from .orchestration.coordinator import (
     WorkerConfig,
 )
 from .orchestration.replay_store import PersistentReplayStore
-from .orchestration.run_state import RunStage, RunStateStore, TrainingRunState
+from .orchestration.run_state import RunStateStore, TrainingRunState
 from .orchestration.selfplay_workers import EpisodeResult, SelfPlayJob, SelfPlayWorkerPool
 from .rating.events import MinRatingEvent, SooRatingEvent
 from .rating.participants import CheckpointParticipant
@@ -977,6 +977,12 @@ class TinyTrainingServices:
         rating: _RatingStage,
         checkpoints: _CheckpointStage,
     ) -> dict[str, object]:
+        if state.rating_records:
+            operation_id = state.rating_records[-1].get("operation_id")
+            if not isinstance(operation_id, str):
+                raise ValueError("persisted rating record has invalid operation identity")
+            if rating.load(operation_id) is None:
+                raise ValueError("completed rating artifact is missing")
         return {
             "candidate_checkpoint": state.candidate_checkpoint,
             "rating_events": len(state.rating_records[-1]["event_ids"]),
@@ -1006,7 +1012,9 @@ def _run_model(root: Path, model_name: str) -> dict[str, object]:
     result = dict(services.train(model_name=model_name, run_id=run_id))
     state_store = RunStateStore(root)
     persisted = state_store.load(run_id, model_name)
-    resumed = services.resume(model_name=model_name, run_id=run_id)
+    resumed = build_tiny_services(root, model_name).resume(
+        model_name=model_name, run_id=run_id
+    )
     replay = PersistentReplayStore(
         root / model_name.lower() / run_id / "replay", services.compatibility, capacity=8, seed=17
     )
@@ -1015,11 +1023,11 @@ def _run_model(root: Path, model_name: str) -> dict[str, object]:
         "candidate_read_only_loaded": result["read_only_checkpoint_loads"] == 2,
         "participant_count": len(registry.participants),
         "rating_events": result["rating_events"],
-        "rating_status": result["rating_status"],
+        "rating_status": resumed["rating_status"],
         "replay_reloaded": len(replay.load_buffer()) > 0,
         "state_reloaded": (
             persisted == state_store.load(run_id, model_name)
-            and resumed["stage"] == RunStage.COMPLETE.value
+            and resumed == result
         ),
         "training_step": result["training_step"],
         "worker_games": len(persisted.completed_game_ids),
