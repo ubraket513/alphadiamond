@@ -29,10 +29,24 @@ def iterations(run_root: Path) -> list[dict]:
     return records
 
 
+def run_config(run_root: Path) -> dict:
+    """The pinned per-run config snapshot, if the run wrote one."""
+    path = run_root / "config.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def summarize(run_root: Path) -> dict | None:
     records = iterations(run_root)
     if not records:
         return None
+    config = run_config(run_root)
+    self_play = config.get("self_play", {})
+    inference_config = config.get("inference", {})
     attempted = sum(r["attempted"] for r in records)
     completed = sum(r["completed"] for r in records)
     samples = sum(r["samples_new"] for r in records)
@@ -70,6 +84,10 @@ def summarize(run_root: Path) -> dict | None:
         "median_moves": sorted(medians)[len(medians) // 2] if medians else None,
         "p90_moves": max(p90s) if p90s else None,
         "training_step": records[-1]["training_step"],
+        "max_moves": self_play.get("max_moves"),
+        "max_game_seconds": self_play.get("max_game_seconds"),
+        "max_wait_ms": inference_config.get("max_wait_ms"),
+        "max_batch_size": inference_config.get("max_batch_size"),
         "simulations": records[-1].get("simulations"),
         "workers": records[-1].get("worker_count"),
         "loss": (records[-1].get("metrics") or {}).get("total_loss"),
@@ -105,9 +123,9 @@ def main() -> int:
 
     width = max(12, *(len(s["run"]) for s in summaries))
     header = (
-        f"{'run':<{width}} {'sims':>4} {'wrk':>4} {'games':>9} {'s/game':>8} "
-        f"{'compl/h':>8} {'samp/h':>9} {'p90mv':>6} {'batch':>6} "
-        f"{'inf_ms':>7} {'evals/s':>8}  aborts"
+        f"{'run':<{width}} {'sims':>4} {'wrk':>4} {'mvcap':>6} {'wait':>5} "
+        f"{'games':>9} {'s/game':>8} {'compl/h':>8} {'samp/h':>9} {'p90mv':>6} "
+        f"{'batch':>6} {'inf_ms':>7} {'evals/s':>8}  aborts"
     )
     print(header)
     print("-" * len(header))
@@ -117,6 +135,8 @@ def main() -> int:
             f"{s['run']:<{width}} "
             f"{_format(s['simulations'], '>4')} "
             f"{_format(s['workers'], '>4')} "
+            f"{_format(s['max_moves'], '>6')} "
+            f"{_format(s['max_wait_ms'], '>5')} "
             f"{games:>9} "
             f"{_format(s['sec_per_game'], '>8.1f')} "
             f"{_format(s['completed_games_per_hour'], '>8.1f')} "
@@ -127,6 +147,19 @@ def main() -> int:
             f"{_format(s['evals_per_second'], '>8.0f')}"
             f"  {s['abort_reasons'] or '{}'}"
         )
+    for key, label in (
+        ("max_moves", "self_play.max_moves"),
+        ("simulations", "mcts.simulations"),
+        ("max_wait_ms", "inference.max_wait_ms"),
+    ):
+        distinct = {s[key] for s in summaries if s.get(key) is not None}
+        if len(distinct) > 1:
+            print(
+                f"\nnote: runs differ in {label} ({sorted(distinct)}). "
+                "A tighter move cap aborts long games sooner, and aborted games "
+                "contribute zero samples, so s/game and samples/h are not "
+                "directly comparable across these runs."
+            )
     return 0
 
 
