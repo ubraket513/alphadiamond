@@ -189,3 +189,78 @@ def test_checkpoint_rejects_training_config_inconsistent_with_runtime_state(
         torch.equal(expected, actual)
         for expected, actual in zip(before, destination.model.parameters())
     )
+
+
+def _soo_trainer(device: str = "cpu", *, trained: bool = True) -> AlphaZeroTrainer:
+    """A small Soo trainer with real optimizer state, on the requested device."""
+    network = NetworkConfig(width=16, residual_blocks=1)
+    spec = CheckpointCompatibilitySpec.soo(model_version="0.4.0", network_config=network)
+    trainer = AlphaZeroTrainer(
+        SooModel(network, model_version="0.4.0"),
+        spec,
+        TrainingConfig(batch_size=1, learning_rate=2e-3, weight_decay=3e-4, device=device, seed=11),
+    )
+    if trained:
+        # Optimizer state only exists after a step, and it is what must migrate.
+        trainer.train_batch(training_batch(spec))
+    return trainer
+
+
+def test_device_migration_is_opt_in() -> None:
+    """The strict device gate stays the default for every existing caller."""
+    import inspect
+
+    signature = inspect.signature(load_checkpoint)
+    parameter = signature.parameters["allow_device_migration"]
+    assert parameter.default is False
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_migration_relaxes_only_the_device_gate(tmp_path) -> None:
+    """Semantic compatibility must still be enforced under migration."""
+    trainer = _soo_trainer()
+    path = save_checkpoint(tmp_path / "latest.pt", trainer)
+
+    # A same-device load with the flag set behaves exactly like a normal load.
+    destination = _soo_trainer(trained=False)
+    info = load_checkpoint(
+        path, destination, expected=destination.compatibility, allow_device_migration=True
+    )
+    assert info.training_step == trainer.training_step
+
+    # A different model identity is still rejected, flag or no flag.
+    other = AlphaZeroTrainer(
+        MinModel(NetworkConfig(width=16, residual_blocks=1), model_version="0.7.0"),
+        CheckpointCompatibilitySpec.min(
+            model_version="0.7.0", network_config=NetworkConfig(width=16, residual_blocks=1)
+        ),
+        TrainingConfig(batch_size=2, learning_rate=1e-3, weight_decay=1e-4),
+    )
+    with pytest.raises(CheckpointCompatibilityError):
+        load_checkpoint(
+            path, other, expected=other.compatibility, allow_device_migration=True
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA device")
+def test_a_cuda_trainer_needs_migration_to_load_a_cpu_checkpoint(tmp_path) -> None:
+    cpu_trainer = _soo_trainer(device="cpu")
+    path = save_checkpoint(tmp_path / "latest.pt", cpu_trainer)
+    cuda_trainer = _soo_trainer(device="cuda:0", trained=False)
+
+    with pytest.raises(CheckpointError, match="device"):
+        load_checkpoint(path, cuda_trainer, expected=cuda_trainer.compatibility)
+
+    info = load_checkpoint(
+        path,
+        cuda_trainer,
+        expected=cuda_trainer.compatibility,
+        allow_device_migration=True,
+    )
+
+    assert info.training_step == cpu_trainer.training_step
+    assert all(p.device.type == "cuda" for p in cuda_trainer.model.parameters())
+    for state in cuda_trainer.optimizer.state.values():
+        for value in state.values():
+            if isinstance(value, torch.Tensor) and value.dim() > 0:
+                assert value.device.type == "cuda"

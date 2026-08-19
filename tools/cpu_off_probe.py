@@ -77,7 +77,12 @@ def main() -> int:
         model, compatibility, TrainingConfig(**config["training"])
     )
     # Load the real trained weights; never reinitialize for a probe.
-    load_checkpoint(args.checkpoint, trainer, expected=compatibility)
+    # Device migration is allowed here on purpose: a probe only reads the model,
+    # so scoring a CPU-tagged archived checkpoint on the GPU box -- or a
+    # GPU-trained checkpoint on a CPU box -- is a legitimate, read-only use.
+    load_checkpoint(
+        args.checkpoint, trainer, expected=compatibility, allow_device_migration=True
+    )
     evaluator = TorchEvaluator(
         trainer.model, value_size=value_size, device=config["training"]["device"]
     )

@@ -81,7 +81,15 @@ def load_checkpoint(
     trainer: AlphaZeroTrainer,
     *,
     expected: CheckpointCompatibilitySpec,
+    allow_device_migration: bool = False,
 ) -> CheckpointInfo:
+    """Restore a checkpoint into ``trainer``, enforcing semantic compatibility.
+
+    ``allow_device_migration`` waives only the recorded-device check, for the
+    deliberate act of moving a run between CPU and GPU.  Every other gate still
+    applies, and it stays off by default so an accidental cross-device load
+    remains loud.
+    """
     source = Path(path)
     if expected != trainer.compatibility:
         raise ValueError("expected checkpoint compatibility must match the trainer")
@@ -126,7 +134,7 @@ def load_checkpoint(
         checkpoint_device = torch.device(training_config.device)
     except (RuntimeError, ValueError) as exc:
         raise CheckpointError(f"invalid checkpoint training device: {exc}") from exc
-    if checkpoint_device != trainer.device:
+    if checkpoint_device != trainer.device and not allow_device_migration:
         raise CheckpointError(
             f"checkpoint training device {checkpoint_device} does not match "
             f"trainer device {trainer.device}"
