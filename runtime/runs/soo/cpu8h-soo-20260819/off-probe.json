@@ -1,0 +1,36 @@
+[
+  {
+    "abort_reasons": {},
+    "bootstrap_prior": "none",
+    "checkpoint": "runtime/runs/soo/cpu8h-soo-20260819/latest.pt",
+    "completed": 10,
+    "completion_rate": 1.0,
+    "episodes": 10,
+    "median_moves": 183.0,
+    "model": "Soo",
+    "p90_moves": 272,
+    "samples": 1843,
+    "samples_per_episode": 184.3,
+    "sec_per_game": 22.2,
+    "simulations": 32,
+    "training_step": 40,
+    "verdict": "PASS"
+  },
+  {
+    "abort_reasons": {},
+    "bootstrap_prior": "none",
+    "checkpoint": "runtime/runs/soo/cpu8h-soo-20260819/latest.pt",
+    "completed": 10,
+    "completion_rate": 1.0,
+    "episodes": 10,
+    "median_moves": 143.0,
+    "model": "Soo",
+    "p90_moves": 1931,
+    "samples": 3615,
+    "samples_per_episode": 361.5,
+    "sec_per_game": 93.34,
+    "simulations": 64,
+    "training_step": 40,
+    "verdict": "PASS"
+  }
+]

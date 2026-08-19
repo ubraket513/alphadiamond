@@ -8,3 +8,6 @@ build/
 dist/
 .pytest_cache/
 /runs/
+
+# CPU training session runtime: checkpoints, replay and ledgers stay out of Git.
+# /runtime/
