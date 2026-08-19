@@ -206,6 +206,9 @@ def _harness(
         run_seed=17,
         protocol_ids={"promotion": promotion_protocol, "rating": protocol.protocol_id},
         champion_checkpoint=str(tmp_path / "champion.pt"),
+        champion_model_key=job.model_key if "job" in locals() else ModelKey(
+            "Soo", "2.0.0", "a" * 64
+        ),
     )
     job = _job(compatibility)
     episode = _episode(job)
@@ -386,6 +389,80 @@ def test_resume_rejects_a_candidate_file_whose_recorded_hash_changed(tmp_path: P
         harness.coordinator.resume(harness.state.run_id, "Soo")
 
     assert harness.checkpoints.executions == 1
+
+
+def test_fresh_resume_recovers_a_valid_candidate_published_before_its_journal(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    published: dict[str, Path] = {}
+
+    class CrashAfterPublish:
+        def __init__(self, *, crash: bool) -> None:
+            self.crash = crash
+            self.executions = 0
+            self.recoveries = 0
+            self.artifacts: dict[str, CandidateArtifact] = {}
+
+        def load(self, operation_id: str) -> CandidateArtifact | None:
+            return self.artifacts.get(operation_id)
+
+        def execute(
+            self,
+            operation_id: str,
+            path: Path,
+            training: TrainingStepArtifact,
+        ) -> CandidateArtifact:
+            self.executions += 1
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"candidate-{training.output_training_step}".encode())
+            published[operation_id] = path
+            if self.crash:
+                raise _Interrupted("after checkpoint publish before journal")
+            return self.recover(operation_id, path, training)
+
+        def recover(
+            self,
+            operation_id: str,
+            path: Path,
+            training: TrainingStepArtifact,
+        ) -> CandidateArtifact:
+            self.recoveries += 1
+            content = path.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            artifact = CandidateArtifact(
+                operation_id=operation_id,
+                path=path,
+                checkpoint_sha256=digest,
+                training_step=training.output_training_step,
+                compatibility_namespace=training.compatibility_namespace,
+                participant=_participant(
+                    harness.compatibility,
+                    training.output_training_step,
+                    digest,
+                ),
+            )
+            self.artifacts[operation_id] = artifact
+            return artifact
+
+    crashing = CrashAfterPublish(crash=True)
+    harness.coordinator.checkpoints = crashing
+
+    with pytest.raises(_Interrupted, match="after checkpoint publish"):
+        harness.coordinator.run_iteration(harness.state)
+
+    operation_id, candidate_path = next(iter(published.items()))
+    assert candidate_path.exists()
+    assert crashing.load(operation_id) is None
+
+    fresh = CrashAfterPublish(crash=False)
+    harness.coordinator.checkpoints = fresh
+    completed = harness.coordinator.resume(harness.state.run_id, "Soo")
+
+    assert completed.stage is RunStage.COMPLETE
+    assert fresh.executions == 0
+    assert fresh.recoveries == 1
+    assert fresh.load(operation_id) is not None
 
 
 def test_resume_rejects_soo_min_compatibility_crossover_before_side_effects(

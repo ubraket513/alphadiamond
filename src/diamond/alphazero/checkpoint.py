@@ -50,7 +50,12 @@ class InferenceCheckpointInfo:
     metadata: dict[str, Any]
 
 
-def save_checkpoint(path: str | Path, trainer: AlphaZeroTrainer) -> Path:
+def save_checkpoint(
+    path: str | Path,
+    trainer: AlphaZeroTrainer,
+    *,
+    operation_id: str | None = None,
+) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -61,6 +66,10 @@ def save_checkpoint(path: str | Path, trainer: AlphaZeroTrainer) -> Path:
         "model_state_dict": trainer.model.state_dict(),
         "optimizer_state_dict": trainer.optimizer.state_dict(),
     }
+    if operation_id is not None:
+        if not isinstance(operation_id, str) or not operation_id.strip():
+            raise ValueError("operation_id must be a non-empty string")
+        payload["operation_id"] = operation_id
     temporary = target.with_suffix(target.suffix + ".tmp")
     torch.save(payload, temporary)
     temporary.replace(target)

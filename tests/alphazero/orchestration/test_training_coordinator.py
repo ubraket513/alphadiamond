@@ -11,6 +11,7 @@ from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.inference.protocol import ModelKey
 from diamond.alphazero.orchestration.coordinator import (
     CandidateArtifact,
+    CoordinatorError,
     PersistenceConfig,
     PromotionArtifact,
     TrainingCoordinator,
@@ -76,6 +77,7 @@ def _job(
     compatibility: CheckpointCompatibilitySpec,
     *,
     iteration: int = 0,
+    checkpoint_sha256: str = "a" * 64,
 ) -> SelfPlayJob:
     players = build_players(2)
     return SelfPlayJob(
@@ -83,7 +85,7 @@ def _job(
         iteration=iteration,
         game_index=0,
         retry_id="attempt-0",
-        model_key=ModelKey("Soo", "2.0.0", "a" * 64),
+        model_key=ModelKey("Soo", "2.0.0", checkpoint_sha256),
         compatibility=compatibility,
         players=players,
         initial_state=initial_state(players),
@@ -328,6 +330,7 @@ def test_run_iteration_executes_durable_stages_in_run_stage_order(tmp_path: Path
     registry = RatingRegistry(protocol)
     registry.add_participant(champion)
     state_store = RunStateStore(tmp_path / "runs")
+    job = _job(compatibility, checkpoint_sha256=champion_hash)
     state = state_store.initialize(
         run_id="run-order",
         compatibility=compatibility,
@@ -337,8 +340,8 @@ def test_run_iteration_executes_durable_stages_in_run_stage_order(tmp_path: Path
             "rating": protocol.protocol_id,
         },
         champion_checkpoint=str(tmp_path / "champion.pt"),
+        champion_model_key=job.model_key,
     )
-    job = _job(compatibility)
     order: list[str] = []
     replay = _RecordingReplay(
         tmp_path / "replay",
@@ -399,6 +402,14 @@ def test_two_iterations_reset_working_state_and_resume_each_side_effect_once(
     registry = RatingRegistry(protocol)
     registry.add_participant(champion)
     state_store = _InterruptSecondTrainingTransition(tmp_path / "runs")
+    first_job = _job(compatibility, iteration=0, checkpoint_sha256="1" * 64)
+    second_champion_hash = hashlib.sha256(b"candidate:1").hexdigest()
+    second_job = _job(
+        compatibility,
+        iteration=1,
+        checkpoint_sha256=second_champion_hash,
+    )
+    jobs = (first_job, second_job)
     state = state_store.initialize(
         run_id="run-twice",
         compatibility=compatibility,
@@ -408,8 +419,8 @@ def test_two_iterations_reset_working_state_and_resume_each_side_effect_once(
             "rating": protocol.protocol_id,
         },
         champion_checkpoint=str(tmp_path / "champion.pt"),
+        champion_model_key=first_job.model_key,
     )
-    jobs = (_job(compatibility, iteration=0), _job(compatibility, iteration=1))
     order: list[str] = []
     replay = _RecordingReplay(
         tmp_path / "replay",
@@ -448,6 +459,7 @@ def test_two_iterations_reset_working_state_and_resume_each_side_effect_once(
     assert second_start.stage is RunStage.INITIALIZE
     assert second_start.iteration == 1
     assert second_start.champion_checkpoint == first.champion_checkpoint
+    assert second_start.champion_model_key == second_job.model_key
     assert second_start.training_step == first.training_step
     assert second_start.replay_manifest == first.replay_manifest
     assert second_start.candidate_checkpoint is None
@@ -469,3 +481,59 @@ def test_two_iterations_reset_working_state_and_resume_each_side_effect_once(
     assert len(second.rating_records) == 2
     assert [record["iteration"] for record in second.promotion_records] == [0, 1]
     assert [record["iteration"] for record in second.rating_records] == [0, 1]
+
+
+def test_job_model_key_mismatch_is_rejected_before_worker_side_effects(
+    tmp_path: Path,
+) -> None:
+    compatibility = _compatibility()
+    protocol = _protocol(compatibility)
+    promotion_protocol_id = "soo-promotion-arena-v1"
+    champion = _participant(
+        compatibility,
+        training_step=0,
+        checkpoint_sha256="1" * 64,
+    )
+    registry = RatingRegistry(protocol)
+    registry.add_participant(champion)
+    state_store = RunStateStore(tmp_path / "runs")
+    state = state_store.initialize(
+        run_id="reject-stale-job",
+        compatibility=compatibility,
+        run_seed=91,
+        protocol_ids={
+            "promotion": promotion_protocol_id,
+            "rating": protocol.protocol_id,
+        },
+        champion_checkpoint=str(tmp_path / "champion.pt"),
+        champion_model_key=ModelKey("Soo", "2.0.0", "1" * 64),
+    )
+    stale_job = _job(compatibility, checkpoint_sha256="2" * 64)
+    order: list[str] = []
+    replay = _RecordingReplay(
+        tmp_path / "replay", compatibility, capacity=8, order=order
+    )
+    coordinator = TrainingCoordinator(
+        state_store=state_store,
+        compatibility=compatibility,
+        worker_config=WorkerConfig(worker_count=1, games_per_iteration=1),
+        loop_config=TrainingLoopConfig(
+            replay_batch_size=1,
+            promotion_protocol_id=promotion_protocol_id,
+            benchmark_protocol_id=protocol.protocol_id,
+        ),
+        persistence_config=PersistenceConfig(root=tmp_path / "runs"),
+        build_selfplay_jobs=lambda _state, _config: (stale_job,),
+        self_play=_SelfPlayStage(order, _episode(stale_job)),
+        replay_store=replay,
+        training=_TrainingStage(order, state.compatibility_namespace),
+        checkpoints=_CheckpointStage(order, compatibility),
+        promotion=_PromotionStage(order, promotion_protocol_id, compatibility),
+        benchmark=_BenchmarkStage(order, protocol, champion),
+        rating_registry=registry,
+    )
+
+    with pytest.raises(CoordinatorError, match="durable champion"):
+        coordinator.run_iteration(state)
+
+    assert order == []

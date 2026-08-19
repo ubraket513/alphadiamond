@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from ..identity import CheckpointCompatibilitySpec
+from ..inference.protocol import ModelKey
 from ..rating.events import MinRatingEvent, SooRatingEvent
 from ..rating.participants import CheckpointParticipant
 from ..rating.registry import RatingRegistry
@@ -93,6 +94,16 @@ class PersistenceConfig:
     def rating_registry_path(self, state: TrainingRunState) -> Path:
         return self.run_path(state) / "ratings" / "registry.json"
 
+    def require_contained(self, path: str | Path) -> Path:
+        """Resolve a prospective artifact and reject paths outside the runtime root."""
+        root = self.root.resolve(strict=False)
+        resolved = Path(path).resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError as error:
+            raise CoordinatorError("artifact path escapes the persistence root") from error
+        return resolved
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingStepArtifact:
@@ -118,6 +129,14 @@ class CandidateArtifact:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
+
+    @property
+    def model_key(self) -> ModelKey:
+        return ModelKey(
+            model_name=self.participant.model_name,
+            model_version=self.participant.model_version,
+            checkpoint_sha256=self.checkpoint_sha256,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +177,13 @@ class CheckpointStage(Protocol):
     def load(self, operation_id: str) -> CandidateArtifact | None: ...
 
     def execute(
+        self,
+        operation_id: str,
+        path: Path,
+        training: TrainingStepArtifact,
+    ) -> CandidateArtifact: ...
+
+    def recover(
         self,
         operation_id: str,
         path: Path,
@@ -348,6 +374,11 @@ class TrainingCoordinator:
             state,
             {
                 "champion_checkpoint": state.champion_checkpoint,
+                "champion_model_key": (
+                    state.champion_model_key.to_payload()
+                    if state.champion_model_key is not None
+                    else None
+                ),
                 "loop_config": asdict(self.loop_config),
                 "worker_config": asdict(self.worker_config),
             },
@@ -454,6 +485,7 @@ class TrainingCoordinator:
         if training is None:
             raise CoordinatorError("completed training artifact is missing")
         path = self.persistence_config.candidate_path(state, state.training_step)
+        self.persistence_config.require_contained(path)
         operation_id = _operation_id(
             RunStage.SAVE_CANDIDATE,
             state,
@@ -466,8 +498,14 @@ class TrainingCoordinator:
         artifact = self.checkpoints.load(operation_id)
         if artifact is None:
             if path.exists():
-                raise CoordinatorError("refusing to overwrite an unjournaled candidate checkpoint")
-            artifact = self.checkpoints.execute(operation_id, path, training)
+                recover = getattr(self.checkpoints, "recover", None)
+                if not callable(recover):
+                    raise CoordinatorError(
+                        "refusing to overwrite an unjournaled candidate checkpoint"
+                    )
+                artifact = recover(operation_id, path, training)
+            else:
+                artifact = self.checkpoints.execute(operation_id, path, training)
         self._validate_candidate(state, operation_id, path, artifact)
         pointer = str(path)
         if state.candidate_checkpoint is not None and state.candidate_checkpoint != pointer:
@@ -579,11 +617,15 @@ class TrainingCoordinator:
             if decision["promoted"] is True
             else state.champion_checkpoint
         )
+        champion_model_key = (
+            candidate.model_key if decision["promoted"] is True else state.champion_model_key
+        )
         return self.state_store.transition(
             state,
             RunStage.PERSIST,
             completion_marker=operation_id,
             champion_checkpoint=champion,
+            champion_model_key=champion_model_key,
         )
 
     def _persist(self, state: TrainingRunState) -> TrainingRunState:
@@ -593,6 +635,11 @@ class TrainingCoordinator:
             {
                 "candidate_checkpoint": state.candidate_checkpoint,
                 "champion_checkpoint": state.champion_checkpoint,
+                "champion_model_key": (
+                    state.champion_model_key.to_payload()
+                    if state.champion_model_key is not None
+                    else None
+                ),
                 "promotion_records": len(state.promotion_records),
                 "rating_records": len(state.rating_records),
                 "training_step": state.training_step,
@@ -615,6 +662,10 @@ class TrainingCoordinator:
         if len({job.game_id for job in jobs}) != len(jobs):
             raise CoordinatorError("self-play jobs contain duplicate game IDs")
         for job in jobs:
+            if state.champion_model_key is not None and job.model_key != state.champion_model_key:
+                raise CoordinatorError(
+                    "self-play job model key does not match durable champion identity"
+                )
             if (
                 job.compatibility != self.compatibility
                 or job.run_seed != state.run_seed
@@ -669,6 +720,7 @@ class TrainingCoordinator:
         if not isinstance(artifact, CandidateArtifact):
             raise CoordinatorError("checkpoint stage returned a malformed artifact")
         try:
+            self.persistence_config.require_contained(expected_path)
             content = expected_path.read_bytes()
         except OSError as error:
             raise CoordinatorError("candidate checkpoint artifact is missing") from error

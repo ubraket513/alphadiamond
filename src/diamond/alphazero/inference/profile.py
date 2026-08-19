@@ -13,12 +13,17 @@ import platform
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from queue import Queue
+from threading import Barrier, Thread
 from time import monotonic
 from typing import Any, Callable, Mapping, Sequence
 
 
-_EVALUATOR_STAGES = ("queue_wait", "inference")
+from .coordinator import InferenceConfig, InferenceCoordinator, InferenceMetrics
+from .protocol import InferenceRequest, InferenceResponse, ModelKey
+from .remote import RemoteEvaluator
+
+
+_EVALUATOR_STAGES = ("admission", "queue_to_dispatch", "inference", "response")
 _SUPPLIED_STAGES = (
     "self_play",
     "replay_collation",
@@ -90,6 +95,8 @@ class ModeProfile:
     first_call_startup_s: float
     steady_state_seconds: TimingSummary
     peak_memory_bytes: int | None
+    mean_batch_size: float
+    max_batch_size: int
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -101,6 +108,8 @@ class ModeProfile:
             "first_call_startup_s": self.first_call_startup_s,
             "steady_state_seconds": self.steady_state_seconds.to_dict(),
             "peak_memory_bytes": self.peak_memory_bytes,
+            "mean_batch_size": self.mean_batch_size,
+            "max_batch_size": self.max_batch_size,
         }
 
 
@@ -262,6 +271,7 @@ def _measure_mode(
     requests: tuple[Any, ...],
     max_seconds: float,
     meter: _StageMeter | None,
+    model_key: ModelKey,
 ) -> tuple[ModeProfile, tuple[Any, ...]]:
     """Measure a mode without mutating the evaluator or model-pool default."""
     batch_samples: list[float] = []
@@ -274,38 +284,86 @@ def _measure_mode(
     _synchronize(evaluator)
     _reset_peak_memory(evaluator)
 
-    def run_batch() -> tuple[Any, ...]:
-        queue = Queue(maxsize=1)
-        if meter is not None:
-            meter.measure("queue_wait", lambda: (queue.put(requests), queue.get()))
-        else:
-            queue.put(requests)
-            queue.get()
-        inference_started = monotonic()
+    client_count = 4
 
-        def infer() -> Any:
-            output = evaluator.evaluate(requests)
+    class _ProfileBatchEvaluator:
+        def evaluate(
+            self, envelopes: tuple[InferenceRequest, ...]
+        ) -> tuple[InferenceResponse, ...]:
+            results = evaluator.evaluate(
+                tuple(envelope.to_eval_request() for envelope in envelopes)
+            )
             _synchronize(evaluator)
-            return output
+            return tuple(
+                InferenceResponse.from_eval_result(envelope, result)
+                for envelope, result in zip(envelopes, results, strict=True)
+            )
 
-        if meter is None:
-            results = infer()
-        else:
-            results = meter.measure("inference", infer)
-        batch_samples.append(monotonic() - inference_started)
-        return tuple(results)
+    coordinator = InferenceCoordinator(
+        _ProfileBatchEvaluator(),
+        InferenceConfig(
+            max_batch_size=client_count * len(requests),
+            max_wait_ms=5,
+            request_queue_capacity=client_count * len(requests) * 2,
+            response_timeout_s=max(5.0, max_seconds * 4),
+        ),
+    )
+    remotes = tuple(
+        RemoteEvaluator(coordinator, model_key=model_key, client_id=f"profile-client-{index}")
+        for index in range(client_count)
+    )
+    coordinator.start()
+    try:
+        rounds = 0
+        while rounds == 0 or (monotonic() < deadline and rounds < 64):
+            barrier = Barrier(client_count + 1)
+            outputs: list[tuple[Any, ...] | None] = [None] * client_count
+            errors: list[BaseException] = []
 
-    while calls == 0 or (monotonic() < deadline and calls < 64):
-        call_started = monotonic()
-        results = run_batch()
-        latency = monotonic() - call_started
-        latency_samples.append(latency)
-        if calls == 0:
-            first_results = results
-            first_call = latency
-        else:
-            steady_samples.append(latency)
-        calls += 1
+            def evaluate_client(index: int) -> None:
+                try:
+                    barrier.wait()
+                    outputs[index] = remotes[index].evaluate(requests)
+                except BaseException as error:
+                    errors.append(error)
+
+            threads = tuple(
+                Thread(target=evaluate_client, args=(index,), daemon=True)
+                for index in range(client_count)
+            )
+            for thread in threads:
+                thread.start()
+            call_started = monotonic()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=coordinator.config.response_timeout_s)
+            if any(thread.is_alive() for thread in threads):
+                raise TimeoutError("profile clients did not shut down cleanly")
+            if errors:
+                raise errors[0]
+            if any(output is None for output in outputs):
+                raise RuntimeError("profile client returned no result")
+            latency = monotonic() - call_started
+            if rounds == 0:
+                first_results = tuple(outputs[0] or ())
+                first_call = latency
+            else:
+                steady_samples.append(latency)
+            latency_samples.append(latency)
+            rounds += 1
+            calls += client_count
+    finally:
+        coordinator.stop()
+
+    metrics: InferenceMetrics = coordinator.metrics
+    batch_samples.extend(metrics.inference_latency_samples)
+    if meter is not None:
+        meter.samples["admission"].extend(metrics.admission_latency_samples)
+        meter.samples["queue_to_dispatch"].extend(
+            metrics.queue_to_dispatch_latency_samples
+        )
+        meter.samples["inference"].extend(metrics.inference_latency_samples)
+        meter.samples["response"].extend(metrics.response_latency_samples)
 
     elapsed = max(monotonic() - started, sys.float_info.epsilon)
     if not steady_samples:
@@ -320,6 +378,12 @@ def _measure_mode(
             first_call_startup_s=first_call,
             steady_state_seconds=TimingSummary.from_samples(steady_samples),
             peak_memory_bytes=_peak_memory(evaluator),
+            mean_batch_size=(
+                sum(metrics.batch_sizes) / len(metrics.batch_sizes)
+                if metrics.batch_sizes
+                else 0.0
+            ),
+            max_batch_size=max(metrics.batch_sizes, default=0),
         ),
         first_results,
     )
@@ -332,6 +396,7 @@ def profile_evaluator(
     max_seconds: float,
     include_optional: bool = True,
     stage_operations: Mapping[str, Callable[[], object]] | None = None,
+    model_key: ModelKey | None = None,
 ) -> ProfileReport:
     """Profile eager FP32 first, then isolated BF16 and compiled candidates.
 
@@ -346,6 +411,9 @@ def profile_evaluator(
     if getattr(evaluator, "precision", "fp32") != "fp32":
         raise ValueError("profiling requires an eager FP32 reference evaluator")
     hardware = detect_hardware()
+    if model_key is None:
+        model_name = "Soo" if len(requests[0].canonical_player_ids) == 2 else "Min"
+        model_key = ModelKey(model_name, "0.0.0", "0" * 64)
     meter = _StageMeter()
     eager, eager_results = _measure_mode(
         name="eager-fp32",
@@ -353,6 +421,7 @@ def profile_evaluator(
         requests=requests,
         max_seconds=max_seconds,
         meter=meter,
+        model_key=model_key,
     )
     modes = [eager]
     unavailable: dict[str, str] = {}
@@ -392,6 +461,7 @@ def profile_evaluator(
                 requests=requests,
                 max_seconds=max_seconds,
                 meter=None,
+                model_key=model_key,
             )
             assert_evaluation_agreement(eager_results, results, rtol=1e-2, atol=1e-3)
             modes.append(measured)
@@ -421,6 +491,7 @@ def profile_evaluator(
                     requests=requests,
                     max_seconds=max_seconds,
                     meter=None,
+                    model_key=model_key,
                 )
                 if measured.peak_memory_bytes is None:
                     raise RuntimeError("compiled CUDA peak-memory measurement is unavailable")

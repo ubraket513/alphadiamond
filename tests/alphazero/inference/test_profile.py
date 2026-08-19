@@ -14,8 +14,13 @@ from diamond.alphazero.inference.profile import detect_hardware, profile_evaluat
 
 
 class _Model(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_sizes: list[int] = []
+
     def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch = features.shape[0]
+        self.batch_sizes.append(batch)
         return torch.zeros((batch, 4)), torch.zeros((batch, 1))
 
 
@@ -36,8 +41,9 @@ def _all_finite(value: object) -> bool:
 
 
 def test_cpu_profile_omits_unsupplied_stage_durations_and_reports_unavailable() -> None:
+    model = _Model()
     report = profile_evaluator(
-        TorchEvaluator(_Model(), value_size=1),
+        TorchEvaluator(model, value_size=1),
         (_request(),),
         max_seconds=0.01,
         include_optional=False,
@@ -60,8 +66,17 @@ def test_cpu_profile_omits_unsupplied_stage_durations_and_reports_unavailable() 
         "p50_s",
         "p95_s",
     }
-    assert set(report.stage_timings) == {"queue_wait", "inference"}
+    assert set(report.stage_timings) == {
+        "admission",
+        "queue_to_dispatch",
+        "inference",
+        "response",
+    }
+    assert "queue_wait" not in report.stage_timings
     assert all(summary.samples > 0 for summary in report.stage_timings.values())
+    assert report.modes[0].max_batch_size > 1
+    assert report.modes[0].mean_batch_size > 1.0
+    assert max(model.batch_sizes) > 1
     assert set(report.unavailable_stages) == {
         "self_play",
         "replay_collation",
@@ -95,8 +110,10 @@ def test_profile_times_each_supplied_stage_operation_once() -> None:
 
     assert invoked == ["self_play", "replay_collation", "training"]
     assert set(report.stage_timings) == {
-        "queue_wait",
+        "admission",
+        "queue_to_dispatch",
         "inference",
+        "response",
         "self_play",
         "replay_collation",
         "training",

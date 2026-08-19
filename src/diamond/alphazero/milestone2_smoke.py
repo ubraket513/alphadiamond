@@ -29,7 +29,7 @@ from .orchestration.coordinator import (
     WorkerConfig,
 )
 from .orchestration.replay_store import PersistentReplayStore
-from .orchestration.run_state import RunStateStore, TrainingRunState
+from .orchestration.run_state import RunStateStore, TrainingRunState, validate_run_id
 from .orchestration.selfplay_workers import EpisodeResult, SelfPlayJob, SelfPlayWorkerPool
 from .rating.events import MinRatingEvent, SooRatingEvent
 from .rating.participants import CheckpointParticipant
@@ -804,8 +804,14 @@ def _build_jobs(
     )
 
 
+def _champion_model_key(state: TrainingRunState) -> ModelKey:
+    if state.champion_model_key is None:
+        raise ValueError("smoke run has no durable champion model key")
+    return state.champion_model_key
+
+
 class TinyTrainingServices:
-    """Production-stage assembly used by the smoke and headless CLI defaults."""
+    """Tiny fixture assembly used only by the Milestone 2 smoke and tests."""
 
     def __init__(self, root: Path, model_name: str) -> None:
         self.root = Path(root)
@@ -871,11 +877,6 @@ class TinyTrainingServices:
             players, finishers=self.compatibility.identity.player_count - 1
         )
         actions_by_model = {(self.model_name, player_id): action for player_id, action in actions}
-        model_key = ModelKey(
-            self.model_name,
-            self.compatibility.identity.model_version,
-            champion.checkpoint_sha256,
-        )
         state_store = RunStateStore(self.root)
         replay = PersistentReplayStore(
             run_root / "replay", self.compatibility, capacity=8, seed=17
@@ -904,7 +905,10 @@ class TinyTrainingServices:
             ),
             persistence_config=PersistenceConfig(root=self.root),
             build_selfplay_jobs=lambda state, config: _build_jobs(
-                state, config, self.compatibility, model_key
+                state,
+                config,
+                self.compatibility,
+                _champion_model_key(state),
             ),
             self_play=worker,
             replay_store=replay,
@@ -918,6 +922,7 @@ class TinyTrainingServices:
 
     def train(self, *, model_name: str, run_id: str) -> Mapping[str, object]:
         self._assert_model(model_name)
+        validate_run_id(run_id)
         coordinator, state_store, rating, checkpoints = self._runtime(run_id, create=True)
         initial = state_store.initialize(
             run_id=run_id,
@@ -928,18 +933,27 @@ class TinyTrainingServices:
                 "rating": self.protocol.protocol_id,
             },
             champion_checkpoint=str(self.root / self.model_name.lower() / run_id / "bootstrap.pt"),
+            champion_model_key=ModelKey(
+                self.model_name,
+                self.compatibility.identity.model_version,
+                CheckpointParticipant.from_checkpoint(
+                    self.root / self.model_name.lower() / run_id / "bootstrap.pt"
+                ).checkpoint_sha256,
+            ),
         )
         complete = coordinator.run_iteration(initial)
         return self._summary(complete, rating, checkpoints)
 
     def resume(self, *, model_name: str, run_id: str) -> Mapping[str, object]:
         self._assert_model(model_name)
+        validate_run_id(run_id)
         coordinator, _state_store, rating, checkpoints = self._runtime(run_id, create=False)
         complete = coordinator.resume(run_id, self.model_name)
         return self._summary(complete, rating, checkpoints)
 
     def benchmark(self, *, model_name: str, run_id: str) -> Mapping[str, object]:
         self._assert_model(model_name)
+        validate_run_id(run_id)
         registry = self._load_registry(run_id)
         return {
             "events": len(registry.events),
@@ -953,6 +967,7 @@ class TinyTrainingServices:
 
     def leaderboard(self, *, model_name: str, run_id: str) -> Mapping[str, object]:
         self._assert_model(model_name)
+        validate_run_id(run_id)
         registry = self._load_registry(run_id)
         entries: list[dict[str, object]] = []
         if self.model_name == SOO_MODEL_NAME:
@@ -1110,7 +1125,7 @@ class TinyTrainingServices:
 
 
 def build_tiny_services(root: Path, model_name: str) -> TinyTrainingServices:
-    """Build the only small, production-backed runtime used by this milestone."""
+    """Build the bounded smoke fixture runtime."""
     return TinyTrainingServices(root, model_name)
 
 

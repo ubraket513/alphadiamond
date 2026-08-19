@@ -28,6 +28,13 @@ class InferenceModelPool:
     def model_keys(self) -> tuple[ModelKey, ...]:
         return tuple(self._evaluators)
 
+    def evaluator(self, model_key: ModelKey) -> TorchEvaluator:
+        """Return the exact activated eager evaluator for measured central use."""
+        try:
+            return self._evaluators[model_key]
+        except KeyError as error:
+            raise ValueError("model key is not active in the inference pool") from error
+
     def activate_checkpoint(
         self, path: str | Path, *, expected: CheckpointCompatibilitySpec
     ) -> ModelKey:

@@ -14,8 +14,9 @@ from pathlib import Path
 from types import MappingProxyType
 
 from ..identity import CheckpointCompatibilitySpec
+from ..inference.protocol import ModelKey
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -36,10 +37,19 @@ class RunStage(str, Enum):
     COMPLETE = "COMPLETE"
 
 
+def validate_run_id(value: object) -> str:
+    """Return a safe run identifier before any run-relative path is resolved."""
+    run_id = _non_empty_string(value, "run_id")
+    if not _SAFE_ID.fullmatch(run_id) or run_id in {".", ".."}:
+        raise RunStateError("run_id contains unsafe path characters")
+    return run_id
+
+
 _STAGES = tuple(RunStage)
 _NEXT_STAGE = dict(zip(_STAGES[:-1], _STAGES[1:], strict=True))
 _PROGRESS_FIELDS = {
     "champion_checkpoint",
+    "champion_model_key",
     "candidate_checkpoint",
     "iteration",
     "training_step",
@@ -144,6 +154,7 @@ class TrainingRunState:
     stage: RunStage
     generation: int
     champion_checkpoint: str | None
+    champion_model_key: ModelKey | None
     candidate_checkpoint: str | None
     iteration: int
     training_step: int
@@ -155,9 +166,7 @@ class TrainingRunState:
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        _non_empty_string(self.run_id, "run_id")
-        if not _SAFE_ID.fullmatch(self.run_id):
-            raise RunStateError("run_id contains unsafe path characters")
+        validate_run_id(self.run_id)
         if not isinstance(self.stage, RunStage):
             raise RunStateError("stage must be a RunStage")
         if self.schema_version != _SCHEMA_VERSION:
@@ -167,6 +176,11 @@ class TrainingRunState:
         _non_negative_int(self.iteration, "iteration")
         _non_negative_int(self.training_step, "training_step")
         _optional_pointer(self.champion_checkpoint, "champion_checkpoint")
+        if self.champion_model_key is not None:
+            if not isinstance(self.champion_model_key, ModelKey):
+                raise RunStateError("champion_model_key must be a ModelKey")
+            if self.champion_checkpoint is None:
+                raise RunStateError("champion_model_key requires champion_checkpoint")
         _optional_pointer(self.candidate_checkpoint, "candidate_checkpoint")
         _optional_pointer(self.replay_manifest, "replay_manifest")
 
@@ -200,6 +214,11 @@ class TrainingRunState:
             "Min",
         }:
             raise RunStateError("model_identity does not match compatibility")
+        if self.champion_model_key is not None and (
+            self.champion_model_key.model_name != expected_identity["model_name"]
+            or self.champion_model_key.model_version != expected_identity["model_version"]
+        ):
+            raise RunStateError("champion_model_key does not match model identity")
         if self.compatibility_namespace != _compatibility_namespace(compatibility):
             raise RunStateError("compatibility_namespace does not match compatibility")
         if len(set(game_ids)) != len(game_ids):
@@ -260,6 +279,11 @@ class TrainingRunState:
             "run_seed": self.run_seed,
             "stage": self.stage.value,
             "champion_checkpoint": self.champion_checkpoint,
+            "champion_model_key": (
+                self.champion_model_key.to_payload()
+                if self.champion_model_key is not None
+                else None
+            ),
             "candidate_checkpoint": self.candidate_checkpoint,
             "iteration": self.iteration,
             "training_step": self.training_step,
@@ -278,9 +302,7 @@ class RunStateStore:
         self.root = Path(root)
 
     def state_path(self, run_id: str, model_name: str) -> Path:
-        _non_empty_string(run_id, "run_id")
-        if not _SAFE_ID.fullmatch(run_id):
-            raise RunStateError("run_id contains unsafe path characters")
+        validate_run_id(run_id)
         if model_name not in {"Soo", "Min"}:
             raise RunStateError("model_name must be Soo or Min")
         return self.root / model_name.lower() / run_id / "state.json"
@@ -293,6 +315,7 @@ class RunStateStore:
         run_seed: int,
         protocol_ids: Mapping[str, str],
         champion_checkpoint: str | None = None,
+        champion_model_key: ModelKey | None = None,
         iteration: int = 0,
         training_step: int = 0,
     ) -> TrainingRunState:
@@ -315,6 +338,7 @@ class RunStateStore:
             stage=RunStage.INITIALIZE,
             generation=0,
             champion_checkpoint=champion_checkpoint,
+            champion_model_key=champion_model_key,
             candidate_checkpoint=None,
             iteration=iteration,
             training_step=training_step,
@@ -457,6 +481,7 @@ class RunStateStore:
             "run_seed",
             "stage",
             "champion_checkpoint",
+            "champion_model_key",
             "candidate_checkpoint",
             "iteration",
             "training_step",
@@ -485,6 +510,11 @@ class RunStateStore:
             stage=stage,
             champion_checkpoint=_optional_pointer(
                 payload["champion_checkpoint"], "champion_checkpoint"
+            ),
+            champion_model_key=(
+                ModelKey.from_payload(payload["champion_model_key"])
+                if payload["champion_model_key"] is not None
+                else None
             ),
             candidate_checkpoint=_optional_pointer(
                 payload["candidate_checkpoint"], "candidate_checkpoint"
@@ -539,4 +569,10 @@ class RunStateStore:
             pass
 
 
-__all__ = ["RunStage", "RunStateError", "RunStateStore", "TrainingRunState"]
+__all__ = [
+    "RunStage",
+    "RunStateError",
+    "RunStateStore",
+    "TrainingRunState",
+    "validate_run_id",
+]

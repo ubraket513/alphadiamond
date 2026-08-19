@@ -125,14 +125,32 @@ The headless CLI emits one JSON object and an exit status. Its commands are
 `train`, `resume`, `benchmark`, `leaderboard`, and `profile`; `Soo` and `Min`
 are always separate model namespaces.
 
+Every command runs the real production services, so each one requires an
+explicit `--config` (a strict production config JSON) and `--checkpoint` (a
+bootstrap or champion checkpoint whose compatibility spec and
+`training_config` match that config). Reference configs live in
+`configs/alphazero/`.
+
 ```powershell
 $py = 'C:\ProgramData\miniforge3\envs\alphadiamond\python.exe'
-& $py -m diamond.alphazero.orchestration.cli train --runtime-dir runtime --model Soo --run-id soo-001
-& $py -m diamond.alphazero.orchestration.cli resume --runtime-dir runtime --model Soo --run-id soo-001
-& $py -m diamond.alphazero.orchestration.cli benchmark --runtime-dir runtime --model Soo --run-id soo-001
-& $py -m diamond.alphazero.orchestration.cli leaderboard --runtime-dir runtime --model Soo --run-id soo-001
-& $py -m diamond.alphazero.orchestration.cli profile --runtime-dir runtime --model Soo --seconds 1
+$cfg = 'configs\alphazero\soo-production.json'
+$ckpt = 'runtime\soo\soo-001\bootstrap.pt'
+& $py -m diamond.alphazero.orchestration.cli train --runtime-dir runtime --model Soo --run-id soo-001 --config $cfg --checkpoint $ckpt
+& $py -m diamond.alphazero.orchestration.cli resume --runtime-dir runtime --model Soo --run-id soo-001 --config $cfg --checkpoint $ckpt
+& $py -m diamond.alphazero.orchestration.cli benchmark --runtime-dir runtime --model Soo --run-id soo-001 --config $cfg --checkpoint $ckpt
+& $py -m diamond.alphazero.orchestration.cli leaderboard --runtime-dir runtime --model Soo --run-id soo-001 --config $cfg --checkpoint $ckpt
+& $py -m diamond.alphazero.orchestration.cli profile --runtime-dir runtime --model Soo --seconds 1 --config $cfg --checkpoint $ckpt
 ```
+
+`--run-id` is validated before any runtime path is resolved, so traversal or
+absolute identifiers fail with an argument error and write nothing.
+
+The reference configs target a CUDA training host. Self-play only contributes
+replay samples from games that actually finish, so `self_play.max_moves` must
+be large enough for real Diamond games to reach a podium; a truncated game is
+recorded as `max_game_moves_exceeded` and yields zero samples. Likewise
+`inference.response_timeout_s` bounds the self-play worker timeout
+(`max(60, response_timeout_s * 4)`), so short timeouts abort long searches.
 
 The current default services place a run under the supplied runtime root by
 model and run ID (for example, `runtime/soo/soo-001/`), with state, replay,

@@ -29,7 +29,7 @@ class CommandServices(Protocol):
     def profile(self, *, model_name: str, max_seconds: int) -> object: ...
 
 
-ServicesFactory = Callable[[Path, str], CommandServices]
+ServicesFactory = Callable[[Path, str, Path, Path], CommandServices]
 
 
 class _ArgumentError(ValueError):
@@ -49,19 +49,25 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--runtime-dir", required=True, type=Path)
         subparser.add_argument("--model", required=True, choices=("Soo", "Min"))
         subparser.add_argument("--run-id", required=True)
+        subparser.add_argument("--config", required=True, type=Path)
+        subparser.add_argument("--checkpoint", required=True, type=Path)
     profile = subcommands.add_parser("profile")
     profile.add_argument("--seconds", type=int, default=1)
-    profile.add_argument("--runtime-dir", type=Path, default=Path("runtime"))
-    profile.add_argument("--model", choices=("Soo", "Min"), default="Soo")
+    profile.add_argument("--runtime-dir", required=True, type=Path)
+    profile.add_argument("--model", required=True, choices=("Soo", "Min"))
+    profile.add_argument("--config", required=True, type=Path)
+    profile.add_argument("--checkpoint", required=True, type=Path)
     return parser
 
 
-def _default_services(root: Path, model_name: str) -> CommandServices:
+def _default_services(
+    root: Path, model_name: str, config_path: Path, checkpoint_path: Path
+) -> CommandServices:
     # Torch and all orchestration dependencies remain lazy so this module is
     # importable in environments that intentionally do not initialize a GUI.
-    from ..milestone2_smoke import build_tiny_services
+    from .production import build_production_services
 
-    return build_tiny_services(root, model_name)
+    return build_production_services(root, model_name, config_path, checkpoint_path)
 
 
 def _emit(payload: Mapping[str, object], stream: TextIO) -> None:
@@ -80,10 +86,19 @@ def main(
     command_hint = argv[0] if argv else None
     try:
         args = parser.parse_args(argv)
+        if hasattr(args, "run_id"):
+            from .run_state import validate_run_id
+
+            validate_run_id(args.run_id)
         if args.command == "profile":
             if args.seconds <= 0:
                 raise ValueError("--seconds must be positive")
-            services = services_factory(args.runtime_dir, args.model)
+            services = services_factory(
+                args.runtime_dir,
+                args.model,
+                getattr(args, "config", Path()),
+                getattr(args, "checkpoint", Path()),
+            )
             result = services.profile(model_name=args.model, max_seconds=args.seconds)
             to_dict = getattr(result, "to_dict", None)
             if not callable(to_dict):
@@ -98,7 +113,12 @@ def main(
             )
             return EXIT_OK
 
-        services = services_factory(args.runtime_dir, args.model)
+        services = services_factory(
+            args.runtime_dir,
+            args.model,
+            getattr(args, "config", Path()),
+            getattr(args, "checkpoint", Path()),
+        )
         operation = getattr(services, args.command)
         result = operation(model_name=args.model, run_id=args.run_id)
         _emit(

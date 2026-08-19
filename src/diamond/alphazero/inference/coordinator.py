@@ -40,6 +40,11 @@ class InferenceMetrics:
     requests_completed: int = 0
     max_batch_size: int = 0
     total_queue_latency_s: float = 0.0
+    admission_latency_samples: tuple[float, ...] = ()
+    queue_to_dispatch_latency_samples: tuple[float, ...] = ()
+    inference_latency_samples: tuple[float, ...] = ()
+    response_latency_samples: tuple[float, ...] = ()
+    batch_sizes: tuple[int, ...] = ()
 
 
 @dataclass(slots=True)
@@ -47,6 +52,7 @@ class _QueuedRequest:
     request: object
     reply_queue: Queue[object]
     submitted_at: float
+    admitted_at: float | None
     admitted: bool
     client_id: str | None
     request_id: str | None
@@ -121,11 +127,13 @@ class InferenceCoordinator:
                     self._worker = None
 
     def submit(self, request: object, reply_queue: Queue[object]) -> None:
+        submitted_at = monotonic()
         client_id, request_id, model_key = self._extract_identity(request)
         item = _QueuedRequest(
             request=request,
             reply_queue=reply_queue,
-            submitted_at=monotonic(),
+            submitted_at=submitted_at,
+            admitted_at=None,
             admitted=False,
             client_id=client_id,
             request_id=request_id,
@@ -139,6 +147,7 @@ class InferenceCoordinator:
                 rejection = Full("inference request capacity is full")
             else:
                 item.admitted = True
+                item.admitted_at = monotonic()
                 self._outstanding[id(item)] = item
                 try:
                     self._requests.put_nowait(item)
@@ -215,9 +224,12 @@ class InferenceCoordinator:
 
     def _flush(self, batch: list[_QueuedRequest]) -> None:
         requests = tuple(item.request for item in batch)
+        dispatch_started = monotonic()
+        inference_started = dispatch_started
         try:
             assert all(isinstance(request, InferenceRequest) for request in requests)
             responses = self.evaluator.evaluate(requests)  # type: ignore[arg-type]
+            inference_completed = monotonic()
             if len(responses) != len(batch):
                 raise ValueError("inference worker returned an unexpected response count")
             validated: list[InferenceResponse] = []
@@ -231,11 +243,22 @@ class InferenceCoordinator:
                 raise RuntimeError("inference coordinator is closed")
             for item, response in zip(batch, validated, strict=True):
                 self._complete(item, response)
-            self._record_batch(batch)
+            self._record_batch(
+                batch,
+                dispatch_started=dispatch_started,
+                inference_duration_s=inference_completed - inference_started,
+                response_completed=monotonic(),
+            )
         except Exception as error:
+            inference_completed = monotonic()
             for item in batch:
                 self._reply_failure(item, error)
-            self._record_batch(batch)
+            self._record_batch(
+                batch,
+                dispatch_started=dispatch_started,
+                inference_duration_s=inference_completed - inference_started,
+                response_completed=monotonic(),
+            )
 
     def _reply_failure(self, item: _QueuedRequest, error: Exception) -> None:
         if item.client_id is None or item.request_id is None or item.model_key is None:
@@ -317,14 +340,48 @@ class InferenceCoordinator:
             if isinstance(item, _QueuedRequest):
                 self._reply_failure(item, RuntimeError("inference coordinator is closed"))
 
-    def _record_batch(self, batch: list[_QueuedRequest]) -> None:
-        latency = sum(monotonic() - item.submitted_at for item in batch)
+    def _record_batch(
+        self,
+        batch: list[_QueuedRequest],
+        *,
+        dispatch_started: float,
+        inference_duration_s: float,
+        response_completed: float,
+    ) -> None:
+        admission = tuple(
+            max(0.0, (item.admitted_at or item.submitted_at) - item.submitted_at)
+            for item in batch
+        )
+        queue = tuple(
+            max(0.0, dispatch_started - (item.admitted_at or item.submitted_at))
+            for item in batch
+        )
+        response = tuple(
+            max(0.0, response_completed - item.submitted_at) for item in batch
+        )
         with self._metrics_lock:
             self._metrics = InferenceMetrics(
                 batches_completed=self._metrics.batches_completed + 1,
                 requests_completed=self._metrics.requests_completed + len(batch),
                 max_batch_size=max(self._metrics.max_batch_size, len(batch)),
-                total_queue_latency_s=self._metrics.total_queue_latency_s + latency,
+                total_queue_latency_s=self._metrics.total_queue_latency_s + sum(queue),
+                admission_latency_samples=(
+                    *self._metrics.admission_latency_samples,
+                    *admission,
+                ),
+                queue_to_dispatch_latency_samples=(
+                    *self._metrics.queue_to_dispatch_latency_samples,
+                    *queue,
+                ),
+                inference_latency_samples=(
+                    *self._metrics.inference_latency_samples,
+                    max(0.0, inference_duration_s),
+                ),
+                response_latency_samples=(
+                    *self._metrics.response_latency_samples,
+                    *response,
+                ),
+                batch_sizes=(*self._metrics.batch_sizes, len(batch)),
             )
 
 

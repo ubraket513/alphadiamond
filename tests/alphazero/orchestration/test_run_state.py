@@ -8,6 +8,7 @@ import pytest
 
 from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
+from diamond.alphazero.inference.protocol import ModelKey
 from diamond.alphazero.orchestration.run_state import (
     RunStage,
     RunStateError,
@@ -56,6 +57,23 @@ def test_initialize_freezes_identity_and_json_state(tmp_path) -> None:
         state.run_id = "other"  # type: ignore[misc]
     with pytest.raises(TypeError):
         state.protocol_ids["rating"] = "changed"  # type: ignore[index]
+
+
+def test_champion_checkpoint_model_key_round_trips_as_durable_identity(tmp_path) -> None:
+    store = RunStateStore(tmp_path)
+    champion_key = ModelKey("Soo", "2.0.0", "a" * 64)
+
+    state = store.initialize(
+        run_id="champion-bound",
+        compatibility=_compatibility("soo"),
+        run_seed=7401,
+        protocol_ids={"promotion": "promotion-v1", "rating": "soo-rating-v1"},
+        champion_checkpoint="checkpoints/champion.pt",
+        champion_model_key=champion_key,
+    )
+
+    assert state.champion_model_key == champion_key
+    assert store.load(state.run_id, "Soo").champion_model_key == champion_key
 
 
 def test_same_run_id_has_independent_soo_and_min_state(tmp_path) -> None:
@@ -258,7 +276,7 @@ def test_unknown_schema_version_is_rejected(tmp_path) -> None:
     state = _initialize(tmp_path)
     path = store.state_path(state.run_id, "Soo")
     payload = state.to_payload()
-    payload["schema_version"] = 2
+    payload["schema_version"] = 99
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(RunStateError, match="unsupported training run schema version"):
