@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+import random
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import BoundedSemaphore, Lock, Thread
 from time import monotonic
 from typing import Protocol
 
 from .protocol import InferenceFailure, InferenceRequest, InferenceResponse, ModelKey
+from .summary import StreamingSeries
 
 
 class BatchEvaluator(Protocol):
@@ -34,17 +36,88 @@ class InferenceConfig:
             raise ValueError("response_timeout_s must be positive")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class InferenceMetrics:
+    """Batching and latency statistics accumulated in constant memory.
+
+    Series are reservoir-summarized rather than retained per request: a GPU
+    iteration issues tens of thousands of requests, and keeping every sample
+    made recording quadratic in the inference thread's own hot path.
+    """
+
     batches_completed: int = 0
     requests_completed: int = 0
-    max_batch_size: int = 0
     total_queue_latency_s: float = 0.0
-    admission_latency_samples: tuple[float, ...] = ()
-    queue_to_dispatch_latency_samples: tuple[float, ...] = ()
-    inference_latency_samples: tuple[float, ...] = ()
-    response_latency_samples: tuple[float, ...] = ()
-    batch_sizes: tuple[int, ...] = ()
+    batch_size_series: StreamingSeries = field(default_factory=StreamingSeries)
+    admission_latency_series: StreamingSeries = field(default_factory=StreamingSeries)
+    queue_to_dispatch_series: StreamingSeries = field(default_factory=StreamingSeries)
+    inference_latency_series: StreamingSeries = field(default_factory=StreamingSeries)
+    response_latency_series: StreamingSeries = field(default_factory=StreamingSeries)
+
+    @property
+    def max_batch_size(self) -> int:
+        largest = self.batch_size_series.maximum
+        return 0 if largest is None else int(largest)
+
+    # Retained sample views, kept under their original names for the profiler.
+    # Complete for a profiling run and bounded past RESERVOIR_CAPACITY, so a
+    # long GPU session cannot grow them without limit.
+    @property
+    def batch_sizes(self) -> tuple[float, ...]:
+        return self.batch_size_series.reservoir
+
+    @property
+    def admission_latency_samples(self) -> tuple[float, ...]:
+        return self.admission_latency_series.reservoir
+
+    @property
+    def queue_to_dispatch_latency_samples(self) -> tuple[float, ...]:
+        return self.queue_to_dispatch_series.reservoir
+
+    @property
+    def inference_latency_samples(self) -> tuple[float, ...]:
+        return self.inference_latency_series.reservoir
+
+    @property
+    def response_latency_samples(self) -> tuple[float, ...]:
+        return self.response_latency_series.reservoir
+
+    def record_batch(
+        self,
+        *,
+        batch_size: int,
+        queue_to_dispatch_s: Sequence[float],
+        inference_duration_s: float,
+        response_latencies_s: Sequence[float],
+        admission_latencies_s: Sequence[float],
+        rng: random.Random,
+    ) -> "InferenceMetrics":
+        """Record one completed batch in place; returns self so calls can chain."""
+        self.batches_completed += 1
+        self.requests_completed += batch_size
+        self.total_queue_latency_s += sum(queue_to_dispatch_s)
+        self.batch_size_series.observe(batch_size, rng=rng)
+        self.inference_latency_series.observe(max(0.0, inference_duration_s), rng=rng)
+        for value in admission_latencies_s:
+            self.admission_latency_series.observe(value, rng=rng)
+        for value in queue_to_dispatch_s:
+            self.queue_to_dispatch_series.observe(value, rng=rng)
+        for value in response_latencies_s:
+            self.response_latency_series.observe(value, rng=rng)
+        return self
+
+    def snapshot(self) -> "InferenceMetrics":
+        """An independent copy, safe to read while the worker keeps recording."""
+        return InferenceMetrics(
+            batches_completed=self.batches_completed,
+            requests_completed=self.requests_completed,
+            total_queue_latency_s=self.total_queue_latency_s,
+            batch_size_series=self.batch_size_series.snapshot(),
+            admission_latency_series=self.admission_latency_series.snapshot(),
+            queue_to_dispatch_series=self.queue_to_dispatch_series.snapshot(),
+            inference_latency_series=self.inference_latency_series.snapshot(),
+            response_latency_series=self.response_latency_series.snapshot(),
+        )
 
 
 @dataclass(slots=True)
@@ -77,6 +150,9 @@ class InferenceCoordinator:
         self._requests: Queue[object] = Queue(maxsize=config.request_queue_capacity)
         self._admission = BoundedSemaphore(config.request_queue_capacity)
         self._metrics = InferenceMetrics()
+        # Fixed seed: reservoir sampling only shapes which latency samples are
+        # retained, and a reproducible choice keeps ledgers comparable.
+        self._sample_rng = random.Random(0)
         self._metrics_lock = Lock()
         self._state_lock = Lock()
         self._closed = False
@@ -87,7 +163,7 @@ class InferenceCoordinator:
     @property
     def metrics(self) -> InferenceMetrics:
         with self._metrics_lock:
-            return replace(self._metrics)
+            return self._metrics.snapshot()
 
     @property
     def is_running(self) -> bool:
@@ -360,28 +436,13 @@ class InferenceCoordinator:
             max(0.0, response_completed - item.submitted_at) for item in batch
         )
         with self._metrics_lock:
-            self._metrics = InferenceMetrics(
-                batches_completed=self._metrics.batches_completed + 1,
-                requests_completed=self._metrics.requests_completed + len(batch),
-                max_batch_size=max(self._metrics.max_batch_size, len(batch)),
-                total_queue_latency_s=self._metrics.total_queue_latency_s + sum(queue),
-                admission_latency_samples=(
-                    *self._metrics.admission_latency_samples,
-                    *admission,
-                ),
-                queue_to_dispatch_latency_samples=(
-                    *self._metrics.queue_to_dispatch_latency_samples,
-                    *queue,
-                ),
-                inference_latency_samples=(
-                    *self._metrics.inference_latency_samples,
-                    max(0.0, inference_duration_s),
-                ),
-                response_latency_samples=(
-                    *self._metrics.response_latency_samples,
-                    *response,
-                ),
-                batch_sizes=(*self._metrics.batch_sizes, len(batch)),
+            self._metrics = self._metrics.record_batch(
+                batch_size=len(batch),
+                queue_to_dispatch_s=queue,
+                inference_duration_s=inference_duration_s,
+                response_latencies_s=response,
+                admission_latencies_s=admission,
+                rng=self._sample_rng,
             )
 
 

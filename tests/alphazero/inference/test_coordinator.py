@@ -443,3 +443,36 @@ def test_worker_exits_after_full_queue_rejects_stop_sentinel() -> None:
     finally:
         requests.reject_timed_put = False
         coordinator.stop()
+
+
+def test_metrics_stay_bounded_under_gpu_scale_request_volume() -> None:
+    """Guards the quadratic accumulation this replaced from creeping back."""
+    import random
+
+    from diamond.alphazero.inference.coordinator import InferenceMetrics
+    from diamond.alphazero.inference.summary import RESERVOIR_CAPACITY
+
+    metrics = InferenceMetrics()
+    rng = random.Random(11)
+    for _ in range(2_000):
+        metrics = metrics.record_batch(
+            batch_size=16,
+            queue_to_dispatch_s=(0.001,) * 16,
+            inference_duration_s=0.004,
+            response_latencies_s=(0.006,) * 16,
+            admission_latencies_s=(0.0,) * 16,
+            rng=rng,
+        )
+
+    # Exact counts survive; retained samples do not grow with the request count.
+    assert metrics.requests_completed == 32_000
+    assert metrics.batches_completed == 2_000
+    assert metrics.max_batch_size == 16
+    for series in (
+        metrics.batch_size_series,
+        metrics.queue_to_dispatch_series,
+        metrics.inference_latency_series,
+        metrics.response_latency_series,
+        metrics.admission_latency_series,
+    ):
+        assert len(series.reservoir) <= RESERVOIR_CAPACITY
