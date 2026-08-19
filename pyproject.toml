@@ -47,6 +47,9 @@ diamond = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+markers = [
+    "gui: needs PySide6 and a Qt platform plugin; deselect with -m 'not gui'",
+]
 
 [tool.ruff]
 line-length = 100

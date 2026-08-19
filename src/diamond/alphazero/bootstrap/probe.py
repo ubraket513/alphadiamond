@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import median
 
+from ...game.state import build_players
 from ..config import MCTSConfig, NetworkConfig, SelfPlayConfig
 from ..evaluator.base import Evaluator
 from ..evaluator.dummy import DummyEvaluator
@@ -18,7 +19,6 @@ from ..game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from ..identity import MIN_MODEL_NAME, SOO_MODEL_NAME, CheckpointCompatibilitySpec
 from ..selfplay.runner_2p import SooSelfPlayRunner
 from ..selfplay.runner_3p import MinSelfPlayRunner
-from ...game.state import build_players
 from .evaluator import bootstrap_evaluator
 from .heuristic import BOOTSTRAP_PRIOR_NONE
 
@@ -126,8 +126,8 @@ def format_report(report: ProbeReport) -> str:
     return (
         f"{report.model_name:4s} {report.bootstrap_prior:38s} "
         f"completion {report.completion_rate:6.1%} "
-        f"median {str(report.median_moves):>6s} "
-        f"p90 {str(report.p90_moves):>6s} "
+        f"median {report.median_moves!s:>6s} "
+        f"p90 {report.p90_moves!s:>6s} "
         f"samples/ep {report.samples_per_episode:8.1f} "
         f"aborts {report.abort_reasons or '{}'}"
     )

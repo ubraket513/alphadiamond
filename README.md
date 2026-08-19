@@ -1,5 +1,7 @@
 # Diamond — Controller Console
 
+[![CI](https://github.com/ubraket513/alphadiamond/actions/workflows/ci.yml/badge.svg)](https://github.com/ubraket513/alphadiamond/actions/workflows/ci.yml)
+
 A desktop **tournament/operator console** for running a real 2- or 3-player
 Diamond match. It is not an online game: one human *Controller* sits at the
 computer, records the moves the human players make, asks the agent for its

@@ -14,7 +14,8 @@
     "max_moves": 2000,
     "temperature_moves": 20,
     "temperature": 1.0,
-    "seed": 7
+    "seed": 7,
+    "bootstrap_prior": "none"
   },
   "replay": {"capacity": 200000, "seed": 7},
   "training": {

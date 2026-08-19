@@ -2,9 +2,12 @@
   "schema_version": 1,
   "model_name": "Soo",
   "model_version": "2.0.0",
-  "network": {"width": 128, "residual_blocks": 6},
+  "network": {
+    "width": 128,
+    "residual_blocks": 6
+  },
   "mcts": {
-    "simulations": 400,
+    "simulations": 128,
     "c_puct": 1.5,
     "dirichlet_alpha": 0.3,
     "dirichlet_epsilon": 0.25,
@@ -15,14 +18,17 @@
     "temperature_moves": 20,
     "temperature": 1.0,
     "seed": 7,
-    "bootstrap_prior": "none"
+    "bootstrap_prior": "canonical-target-vacancy-distance-v2"
   },
-  "replay": {"capacity": 200000, "seed": 7},
+  "replay": {
+    "capacity": 50000,
+    "seed": 7
+  },
   "training": {
     "batch_size": 256,
     "learning_rate": 0.001,
     "weight_decay": 0.0001,
-    "device": "cuda",
+    "device": "cpu",
     "seed": 7
   },
   "arena": {
@@ -32,8 +38,8 @@
     "promotion_threshold": 0.55
   },
   "workers": {
-    "worker_count": 8,
-    "games_per_iteration": 64,
+    "worker_count": 4,
+    "games_per_iteration": 32,
     "retry_id": "attempt-0"
   },
   "inference": {

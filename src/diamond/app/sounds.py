@@ -13,9 +13,20 @@ therefore recorded in :attr:`status` and surfaced by the controller.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl, Signal
+
+# Qt picks a media backend the first time QtMultimedia is imported, so this has
+# to be set before that import.  Conda-forge ships both the ffmpeg and the
+# native Windows plugin and defaults to ffmpeg, which loads no media at all for
+# our .m4a on Windows -- setSource() just settles on NoMedia with no error to
+# report.  Prefer the native backend there and leave any explicit user choice
+# alone.
+if sys.platform == "win32":
+    os.environ.setdefault("QT_MEDIA_BACKEND", "windows")
 
 try:  # Audio is optional; the GUI must still run if QtMultimedia is unavailable.
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer

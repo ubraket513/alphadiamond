@@ -6,9 +6,9 @@ satisfying the public ``Evaluator`` protocol, local or remote alike.
 
 from __future__ import annotations
 
+from ...game.board import Board, Camp
 from ..action_codec import ActionCodec, ActionSpaceSpec
 from ..evaluator.base import EvalRequest, EvalResult, Evaluator
-from ...game.board import Board, Camp
 from .heuristic import (
     CANONICAL_TARGET_DISTANCE_V1,
     CANONICAL_TARGET_VACANCY_DISTANCE_V2,

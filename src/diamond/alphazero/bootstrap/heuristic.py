@@ -11,10 +11,9 @@ from collections import deque
 from dataclasses import dataclass
 from math import exp
 
-from ..action_codec import ActionCodec
 from ...game.board import Board, Camp
-
-from ..config import (  # noqa: F401  (re-exported for the bootstrap package)
+from ..action_codec import ActionCodec
+from ..config import (
     BOOTSTRAP_PRIOR_NONE,
     CANONICAL_TARGET_DISTANCE_V1,
     CANONICAL_TARGET_VACANCY_DISTANCE_V2,
@@ -65,7 +64,7 @@ class CanonicalTargetDistancePrior:
     temperature: float = TEMPERATURE_V1
 
     @classmethod
-    def for_diamond73(cls) -> "CanonicalTargetDistancePrior":
+    def for_diamond73(cls) -> CanonicalTargetDistancePrior:
         return cls()
 
     def priors(

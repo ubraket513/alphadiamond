@@ -50,3 +50,24 @@ def pump(app, predicate, timeout: float = 5.0, interval: float = 0.005) -> bool:
         time.sleep(interval)
     app.processEvents()
     return predicate()
+
+# Modules whose tests need a real Qt stack.  Marking them here rather than in
+# each file keeps the list in one place, so a GUI-free run (CI, a machine with
+# no Qt platform plugin) is exactly ``-m "not gui"``.
+_GUI_MODULES = frozenset(
+    {
+        "test_controller",
+        "test_fonts",
+        "test_icons",
+        "test_integration",
+        "test_sounds",
+        "test_window_chrome",
+    }
+)
+
+
+def pytest_collection_modifyitems(items):
+    gui = pytest.mark.gui
+    for item in items:
+        if item.module.__name__.rsplit(".", 1)[-1] in _GUI_MODULES:
+            item.add_marker(gui)

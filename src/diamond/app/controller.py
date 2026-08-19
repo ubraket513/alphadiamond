@@ -13,11 +13,13 @@ renders the properties and models this object publishes.
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
+from ..agents.alphazero_agent import AlphaZeroAgent
 from ..agents.base import Agent, MoveProposal, MoveRequest
 from ..agents.random_agent import RandomAgent
 from ..game.move import Move, MoveKind
@@ -43,6 +45,21 @@ _PLACE_LABELS = {1: "1st", 2: "2nd", 3: "3rd"}
 
 DEFAULT_SAVE_DIR = Path.home() / ".alphadiamond" / "saves"
 
+
+def default_agents(players: tuple[PlayerSpec, ...]) -> dict[int, Agent]:
+    """Build the AI seats for ``players``.
+
+    AlphaZero is the default opponent.  ``DIAMOND_AGENT=random`` falls back to
+    ``RandomAgent``, which keeps the fast path available for UI work that does
+    not want to pay for a search on every turn.
+    """
+    if os.environ.get("DIAMOND_AGENT", "").strip().lower() == "random":
+        return {spec.id: RandomAgent() for spec in players if spec.kind is PlayerKind.AI}
+    return {
+        spec.id: AlphaZeroAgent(players)
+        for spec in players
+        if spec.kind is PlayerKind.AI
+    }
 
 class Phase(StrEnum):
     """UI-relevant turn states.  Every enabled/disabled control derives from this."""
@@ -88,9 +105,7 @@ class GameController(QObject):
         super().__init__(parent)
         self._session = GameSession(players, initial=initial_state)
         self._players = players
-        self._agents: dict[int, Agent] = agents or {
-            spec.id: RandomAgent() for spec in players if spec.kind is PlayerKind.AI
-        }
+        self._agents: dict[int, Agent] = agents or default_agents(players)
         self._animate = animate
         # Opt-in, not opt-out: constructing a QMediaPlayer reserves an audio
         # backend, and a process that builds many controllers (the test suite)
@@ -486,8 +501,9 @@ class GameController(QObject):
         self._session.reset()
         self._game_number += 1
         for agent in self._agents.values():
-            if isinstance(agent, RandomAgent):
-                agent.reset()
+            reset = getattr(agent, "reset", None)
+            if callable(reset):
+                reset()
         self._reset_transient()
         self._last_move = None
         self._board_model.set_last_move(None)
@@ -518,9 +534,7 @@ class GameController(QObject):
 
         self._players = players
         self._session = GameSession(players)
-        self._agents = {
-            spec.id: RandomAgent() for spec in players if spec.kind is PlayerKind.AI
-        }
+        self._agents = default_agents(players)
         agent_names = {pid: agent.name for pid, agent in self._agents.items()}
 
         self._piece_model.set_players(players)
