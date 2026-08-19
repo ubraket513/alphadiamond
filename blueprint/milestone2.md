@@ -45,6 +45,37 @@ environment had a PySide6.QtCore DLL loading mismatch, preventing one unified
 interpreter from collecting both suites, while both suites passed separately
 in working interpreters.
 
+======================================================================
+IMPLEMENTATION STATUS / EVIDENCE — TASK 14, 2026-08-19
+======================================================================
+
+Milestone 2 implementation is complete against the requirements below. This
+section records evidence only; it does not alter the authoritative design.
+
+- Independently versioned Soo and Min checkpoint artifacts are compatibility
+  gated. Rating events bind artifact, compatibility, and benchmark-protocol
+  identities.
+- Soo uses Elo. Min uses official TrueSkill with `tau=0` for immutable
+  checkpoints; a Min rating event requires three distinct artifacts, and the
+  conservative exposure is the leaderboard key.
+- Promotion and historical rating are separate: the promotion arena is 18
+  games, while the Min historical rating schedule is 36 games.
+- The versioned opening suite includes the standard initial position and
+  authoritative legal action sequences; fixed search configuration and its
+  opening/protocol identity prevent cross-namespace rating mixtures.
+- Headless `train`, `resume`, `benchmark`, `leaderboard`, and `profile`
+  commands; atomic run/stage artifacts; and idempotent replay ingestion are
+  implemented. The CPU smoke exercises real Soo and Min workflow stages.
+- Task 14 verification recorded 287 passed, 1 skipped for AlphaZero; 134
+  passed, 5 skipped for the Qt suite; both smoke modules exited 0; and the
+  MCTS import guard passed. See `task-14-report.md` for commands and outputs.
+- This host has no `nvidia-smi`, CUDA device, or A30. The CPU profile therefore
+  records `gpu_verified=false` and no GPU rows. There are no production A30
+  stage percentages, so no C++ implementation is recommended. Reconsider only
+  with reproducible production A30 evidence of CPU search/game/tree dominance.
+
+Deferred: C++ implementation, OpenVINO, GUI routing, and multi-node training.
+
 Do not simply trust these numbers.
 
 Re-run the relevant tests in the environment available to you and record the

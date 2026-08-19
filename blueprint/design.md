@@ -29,6 +29,21 @@ Current value-semantics identities:
     Soo: current-player-scalar-winloss-v1
     Min: canonical-placement-utility-1-0-minus1-v1
 
+Milestone 2 implementation status (Task 14, 2026-08-19):
+
+- Completed: independent checkpoint artifact/compatibility identities; Soo Elo
+  and Min TrueSkill (`tau=0`) historical ratings; distinct-artifact Min
+  rating events; 18-game promotion and 36-game league schedules; protocol- and
+  opening-suite-bound benchmarks; centralized inference, workers, atomic
+  replay/run persistence, headless CLI, CPU smoke, and bounded profiling.
+- Verification: AlphaZero suite 287 passed, 1 skipped; Qt/system suite 134
+  passed, 5 skipped; both smoke modules exit 0; MCTS dependency guard passes.
+- This host has no CUDA/A30 and the CPU profile reports `gpu_verified=false`.
+  No production A30 stage percentages exist; C++ remains deferred pending
+  measured production evidence that a CPU search/game/tree stage dominates.
+- Deferred: C++ implementation, OpenVINO, GUI AlphaZero routing, and
+  multi-node training. Requirements below remain authoritative.
+
 Completed and verified:
 
 - Phase 0 repository inspection and baseline: 134 passed, 5 skipped.
