@@ -8,6 +8,8 @@
 
 **Spec:** `blueprint/gpu_train.md`
 
+**Operator amendment (2026-08-20):** training continues *in place* in the existing run `runtime/runs/soo/cpu8h-soo-20260819` (step 72, 26,027 replay samples), migrating its checkpoint from CPU to CUDA, rather than forking into a separate GPU run as the blueprint specified. `/runtime/` stays un-ignored so committed checkpoints travel to the cloud VM via `git clone`. See Task 6 and the Self-Review for what this gains and costs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 ---
@@ -53,7 +55,9 @@ These values belong in the new run's provenance record, discovered at runtime. T
 
 ### Findings that change the design (discovered, not in the prompt)
 
-1. **`load_checkpoint` rejects a cross-device checkpoint.** `checkpoint.py:126-133` compares the checkpoint's `training_config.device` against `trainer.device` and raises `CheckpointError`. The source checkpoint records `device: "cpu"`; a `cuda:0` trainer therefore **cannot** load it through `load_checkpoint`. This is the central reason the fork needs its own explicit code path (Task 5), not just a CLI flag. `load_inference_checkpoint` has **no** such check and already accepts `device=`, so self-play inference on CUDA works today.
+1. **`load_checkpoint` rejects a cross-device checkpoint.** `checkpoint.py:126-133` compares the checkpoint's `training_config.device` against `trainer.device` and raises `CheckpointError`. The checkpoint records `device: "cpu"`; a `cuda:0` trainer therefore **cannot** load it through `load_checkpoint`. This is the central reason the GPU migration needs its own explicit code path (Task 6), not just a CLI flag. `load_inference_checkpoint` has **no** such check and already accepts `device=`, so self-play inference on CUDA works today.
+
+   Verified caveat for whoever writes the test: `"cpu:0"` is **not** a usable CPU-only stand-in for this gate. `torch.load(map_location="cpu:0")` raises `RuntimeError: don't know how to restore data location of torch.storage.UntypedStorage (tagged with cpu:0)` from torch's own resolver — it never reaches the device comparison. `map_location="cuda:0"` on this CPU-only box raises `Attempting to deserialize object on a CUDA device but torch.cuda.is_available() is False`. So the cross-device gate is only genuinely testable on the GPU host, and the CPU-side tests must cover the decision logic instead.
 
 2. **`ProductionConfig._exact_keys` forbids unknown keys.** `production.py:60-67` and `_dataclass_from_payload` require the payload key set to equal the dataclass field set exactly. Adding `max_game_seconds` to `SelfPlayConfig` **invalidates all four** `configs/alphazero/*.json` files until they are updated, and `tests/alphazero/orchestration/test_reference_configs.py` turns that into a build failure. Task 2 updates those four files in the same commit.
 
@@ -67,7 +71,7 @@ These values belong in the new run's provenance record, discovered at runtime. T
 
 7. **This development machine is not the target.** It reports 8 CPUs, no `nvidia-smi`, and `torch 2.12.0` with `torch.version.cuda is None` (CPU-only build). The RTX 3060 / 32-CPU target is a **rented vast.ai instance reached over SSH**. Consequently: all logic must be verifiable on this CPU-only box, CUDA tests must skip cleanly, and GPU provisioning is an explicit rollout step (Task 10), not an assumption.
 
-8. **`/runtime/` is commented out in `.gitignore`** (line 13), so run artifacts currently show as untracked. The new GPU run directory must not be committed; Task 6 re-enables the ignore rule for the new run path only, without retroactively removing the existing CPU run from the index.
+8. **`/runtime/` is commented out in `.gitignore`** (line 13) **deliberately.** The operator keeps run artifacts in Git so that a `git clone` on the cloud VM carries every checkpoint across. Leave it commented out. Current footprint: `runtime/` is 208 MB (157 MB of archived checkpoints, 43 MB replay), 178 files tracked, 8 newer checkpoints still untracked and needing a commit before the VM clone.
 
 ### Baseline test state
 
@@ -96,7 +100,7 @@ These values belong in the new run's provenance record, discovered at runtime. T
 - `src/diamond/alphazero/hardware.py` — affinity-aware CPU/worker resolution. Pure stdlib, torch-free.
 - `src/diamond/alphazero/deadline.py` — `Deadline` value object and `DEADLINE_EXCEEDED` reason constant. Pure stdlib, torch-free.
 - `src/diamond/alphazero/inference/summary.py` — streaming batch/latency summarization for the ledger.
-- `src/diamond/alphazero/run_fork.py` — fresh-run initialization from an external checkpoint.
+- `src/diamond/alphazero/run_migrate.py` — one-time cross-device migration of an existing run's checkpoint.
 
 **Modified source files**
 
@@ -109,7 +113,7 @@ These values belong in the new run's provenance record, discovered at runtime. T
 - `src/diamond/alphazero/orchestration/selfplay_workers.py` — lane-aware pool timeout.
 - `src/diamond/alphazero/inference/coordinator.py` — streaming metrics.
 - `src/diamond/alphazero/checkpoint.py` — `load_checkpoint(..., allow_device_migration=False)`.
-- `tools/cpu_b0_train.py` — worker auto-resolution, `--init-checkpoint`, throughput/GPU ledger fields.
+- `tools/cpu_b0_train.py` — worker auto-resolution, `--migrate-device`, throughput/GPU ledger fields.
 
 **New config**
 
@@ -125,7 +129,7 @@ These values belong in the new run's provenance record, discovered at runtime. T
 - `tests/alphazero/test_deadline.py`
 - `tests/alphazero/test_cuda_parity.py`
 - `tests/alphazero/inference/test_summary.py`
-- `tests/alphazero/test_run_fork.py`
+- `tests/alphazero/test_run_migrate.py`
 
 **Modified test files**
 
@@ -340,16 +344,22 @@ The guard's meaning changes in the error message too: it now names a catastrophi
 
 ---
 
-### Task 6: Fresh-run fork from an external checkpoint
+### Task 6: Continue the existing run on CUDA (device migration in place)
 
-This is where finding 1 bites: the CPU checkpoint records `device: "cpu"` and `load_checkpoint` refuses to load it into a CUDA trainer. Rather than weaken that guard for everyone, add an explicit opt-in used only by the fork path.
+**Decision (operator, supersedes the blueprint's fork requirement):** continue training Soo *in the existing run* `cpu8h-soo-20260819` on the GPU, rather than forking into a separate `rtx3060-…` run. The blueprint asked for a fork so the CPU experiment stayed pristine for comparison; the operator wants one continuous Soo training history instead. The run's 26,027-sample replay buffer and its 18 iterations of ledger history therefore **carry forward**, which is the main practical gain — a fork would have restarted self-play from an empty replay.
+
+What this costs, stated plainly: after the first GPU iteration the run is no longer a clean CPU-only baseline, so the "CPU vs GPU learning quality at equal wall-clock" comparison in Task 11 Step 4 can no longer be run against this run. Task 11 is amended accordingly — throughput benchmarking (Steps 1–3) still works from disposable scratch runs, and the CPU baseline numbers already recorded in the existing ledger (18 iterations, 16 games/iter, ~400 s self-play per iteration) serve as the historical CPU reference.
+
+This is where finding 1 bites: the checkpoint records `device: "cpu"` and `load_checkpoint` refuses to load it into a CUDA trainer. Rather than weaken that guard for everyone, add an explicit opt-in used only by a deliberate device migration.
 
 **Files:**
 - Modify: `src/diamond/alphazero/checkpoint.py`
-- Create: `src/diamond/alphazero/run_fork.py`
+- Create: `src/diamond/alphazero/run_migrate.py`
 - Modify: `tests/alphazero/test_checkpoint.py`
-- Create: `tests/alphazero/test_run_fork.py`
-- Modify: `.gitignore`
+- Create: `tests/alphazero/test_run_migrate.py`
+- Modify: `tools/cpu_off_probe.py`
+
+**Not modified:** `.gitignore`. `/runtime/` stays commented out **by operator intent** — run artifacts are committed so that a `git clone` on the cloud VM brings every checkpoint along. Do not re-enable the ignore rule. (Current cost: `runtime/` is 208 MB, 157 MB of it the 18 archived checkpoints; 178 files are already tracked and 8 newer checkpoints are still untracked.)
 
 **Interfaces:**
 
@@ -358,45 +368,46 @@ def load_checkpoint(path, trainer, *, expected, allow_device_migration: bool = F
     ...
 ```
 
-When `allow_device_migration` is `True`, the device equality gate at `checkpoint.py:129-133` is skipped; every other gate (format version, semantic metadata, optimizer param-group lr/weight_decay, staged load) still runs unchanged. `torch.load` already uses `map_location=trainer.device`, so tensors land on the right device; AdamW's exponential-average states move with them. The returned `CheckpointInfo.training_config` still reports the *source* config — callers that care use `trainer.config`, which the loader overwrites at line 166. The fork therefore re-applies the destination `TrainingConfig` after loading (see below), so the new run's checkpoints record `cuda:0` and subsequent same-run resumes need no migration flag at all.
+When `allow_device_migration` is `True`, the device equality gate at `checkpoint.py:129-133` is skipped; every other gate (format version, semantic metadata, optimizer param-group lr/weight_decay, staged load) still runs unchanged. `torch.load` already uses `map_location=trainer.device`, so tensors land on the right device and AdamW's exponential-average states move with them. The loader overwrites `trainer.config` at line 166 with the *checkpoint's* config, so the migration helper must re-apply the destination `TrainingConfig` afterwards — otherwise the very next `save_checkpoint` would write `device: "cpu"` back into a GPU run and the run would need the migration flag forever.
 
 ```python
 @dataclass(frozen=True, slots=True)
-class ForkProvenance:
-    source_path: str
-    source_sha256: str
-    source_training_step: int
+class MigrationRecord:
+    checkpoint_path: str
+    checkpoint_sha256: str
+    training_step: int
     source_device: str
     target_device: str
+    backup_path: str
 
-def initialize_run_from_checkpoint(
-    *, run_root: Path, source: Path, trainer: AlphaZeroTrainer,
+def migrate_run_to_device(
+    *, run_root: Path, trainer: AlphaZeroTrainer,
     expected: CheckpointCompatibilitySpec, operation_id: str,
-) -> ForkProvenance:
-    """Seed an uninitialized run directory from an external checkpoint.
+) -> MigrationRecord | None:
+    """Load run_root/latest.pt onto the trainer's device, once.
 
-    Raises FileExistsError if run_root/latest.pt already exists.
+    Returns None when the checkpoint already records the trainer's device
+    (an ordinary same-device resume, no migration needed).
     """
 ```
 
-Semantics, matching the spec's required table exactly:
+Semantics:
 
-- `run_root/latest.pt` exists → raise `FileExistsError`. An initialized run is never silently re-forked.
-- otherwise → `load_checkpoint(source, trainer, expected=expected, allow_device_migration=True)`, restore `trainer.config` to the destination `TrainingConfig` (so the new `latest.pt` records the GPU device), then `save_checkpoint(run_root/"latest.pt", trainer, operation_id=operation_id)`.
-- The source file is opened read-only and hashed; it is never written, moved, or truncated.
-- Loop state, ledger, and replay store are **not** copied — the new run starts at iteration 0 with an empty replay, which is the point of a fork.
-- `trainer.training_step` is inherited from the source, so training-step provenance stays continuous across the fork.
+- Read `latest.pt`'s recorded device without mutating anything. If it already equals `trainer.device`, return `None` and let the normal resume path run — migration is a one-time event, not something that repeats every launch.
+- Otherwise: copy `latest.pt` to `latest.pt.cpu-backup` **first** (never overwrite an existing backup — if one exists, the migration already happened and this is a bug, so raise), then `load_checkpoint(..., allow_device_migration=True)`, re-apply the destination `TrainingConfig`, and `save_checkpoint` back to `latest.pt`.
+- `trainer.training_step` is preserved exactly, so the run's step counter stays continuous across the device change.
+- The archived per-iteration checkpoints under `checkpoints/` are **not** rewritten. They stay CPU-tagged historical artifacts, and any tool loading them on GPU uses the same migration flag.
 
-- [ ] **Step 1: Write failing checkpoint tests** in `tests/alphazero/test_checkpoint.py`: a checkpoint saved by a `cpu` trainer, loaded into another `cpu` trainer with `allow_device_migration=True`, still succeeds and still rejects mismatched *semantic* metadata (proving the flag relaxes only the device gate); loading a `device: "cpu"` checkpoint into a trainer whose `TrainingConfig.device` differs raises `CheckpointError` when the flag is absent and succeeds when it is set. Express the second case without needing CUDA by constructing the destination `TrainingConfig` with a device string that differs textually from the source — e.g. save with `device="cpu"` and load into a trainer built with `device="cpu:0"`, which `torch.device` normalizes differently enough to exercise the comparison on CPU-only hosts. Add a CUDA-gated variant asserting real `cpu` → `cuda:0` migration, skipped when `torch.cuda.is_available()` is false.
+- [ ] **Step 1: Write failing checkpoint tests** in `tests/alphazero/test_checkpoint.py`: a checkpoint saved by a `cpu` trainer and loaded into another `cpu` trainer with `allow_device_migration=True` still succeeds and still rejects mismatched *semantic* metadata, proving the flag relaxes only the device gate; the flag defaults to `False` so existing callers keep the strict behavior. Guard the real cross-device assertions with `@pytest.mark.skipif(not torch.cuda.is_available(), ...)`: a `device: "cpu"` checkpoint loaded into a `cuda:0` trainer raises `CheckpointError` without the flag and succeeds with it, and afterwards every model parameter and every optimizer state tensor reports `.device.type == "cuda"`. **Do not** attempt to fake a cross-device load on a CPU-only host by using `"cpu:0"` — verified on this repo, `torch.load(map_location="cpu:0")` raises `RuntimeError: don't know how to restore data location ... tagged with cpu:0` inside torch's resolver, i.e. it fails *before* reaching the device gate and would pass the test for entirely the wrong reason.
 - [ ] **Step 2: Run `python -m pytest tests/alphazero/test_checkpoint.py -v`.** Expected failure: `TypeError: load_checkpoint() got an unexpected keyword argument 'allow_device_migration'`.
 - [ ] **Step 3: Implement** the `allow_device_migration` parameter.
-- [ ] **Step 4: Run `python -m pytest tests/alphazero/test_checkpoint.py -v`.** Expected: all pass.
-- [ ] **Step 5: Write failing fork tests** in `tests/alphazero/test_run_fork.py`: forking into an empty `tmp_path` run creates `latest.pt`, preserves `trainer.training_step` from the source, and returns a `ForkProvenance` whose `source_sha256` equals the SHA-256 of the source bytes and whose `source_training_step` is read from the file (never hard-coded); the source file's bytes and mtime are unchanged after the fork; forking a second time into the same directory raises `FileExistsError` and leaves the existing `latest.pt` byte-identical; a run forked then loaded normally (no migration flag) resumes cleanly, proving the new run's checkpoint records the destination device; the new run's `loop_state.json`, `ledger.jsonl`, and `replay/` do not exist yet, i.e. the fork does not inherit the source run's history.
-- [ ] **Step 6: Run `python -m pytest tests/alphazero/test_run_fork.py -v`.** Expected failure: `ModuleNotFoundError: No module named 'diamond.alphazero.run_fork'`.
-- [ ] **Step 7: Implement** `run_fork.py`. Also uncomment `/runtime/` in `.gitignore` so new GPU run artifacts stay out of Git; do **not** `git rm --cached` the already-tracked CPU run in this task, so the existing run's history is untouched.
-- [ ] **Step 8: Run `python -m pytest tests/alphazero/test_run_fork.py tests/alphazero/test_checkpoint.py -v`.** Expected: all pass.
+- [ ] **Step 4: Run `python -m pytest tests/alphazero/test_checkpoint.py -v`.** Expected: pass on CPU with the cross-device cases skipped.
+- [ ] **Step 5: Write failing migration tests** in `tests/alphazero/test_run_migrate.py`. A genuine cross-device migration cannot be exercised on a CPU-only host, so these tests cover the decision logic and the file choreography, with the real device change left to the CUDA-gated case below: `migrate_run_to_device` returns `None` when the recorded device already matches (assert no backup file is created and `latest.pt` is byte-identical afterwards); when devices differ it writes `latest.pt.cpu-backup` whose bytes equal the original `latest.pt` exactly; running migration twice raises rather than clobbering an existing backup; `training_step` is preserved across the migration; the archived `checkpoints/*.pt` files are byte-identical afterwards. Add one CUDA-gated end-to-end test performing a genuine `cpu` → `cuda:0` migration of a real saved checkpoint and asserting the rewritten `latest.pt` records `device: "cuda:0"` and reloads *without* the migration flag.
+- [ ] **Step 6: Run `python -m pytest tests/alphazero/test_run_migrate.py -v`.** Expected failure: `ModuleNotFoundError: No module named 'diamond.alphazero.run_migrate'`.
+- [ ] **Step 7: Implement** `run_migrate.py`, and wire `tools/cpu_off_probe.py:80` to pass `allow_device_migration=True` so the probe can score CPU-tagged archived checkpoints on the GPU box and GPU-tagged checkpoints on a CPU box.
+- [ ] **Step 8: Run `python -m pytest tests/alphazero/test_run_migrate.py tests/alphazero/test_checkpoint.py -v`.** Expected: all pass.
 - [ ] **Step 9: Run `python -m pytest tests/alphazero tests/tools -q`.** Expected: green.
-- [ ] **Step 10: Commit** `feat(alphazero): fork a fresh run from an external checkpoint`.
+- [ ] **Step 10: Commit** `feat(alphazero): migrate an existing run's checkpoint across devices`.
 
 ---
 
@@ -493,12 +504,12 @@ Because `tests/tools/test_cpu_b0_train.py:17-22` loads the module by file path w
 **New CLI arguments on `az_train.py`:**
 
 ```text
---init-checkpoint PATH   Seed an uninitialized run from an external checkpoint.
+--migrate-device         Migrate this run's latest.pt onto the config's device, once.
 --workers N              Explicit worker count; default is available CPUs - 2.
 --per-game-seconds S     Override self_play.max_game_seconds.
 ```
 
-`--init-checkpoint` routes to `initialize_run_from_checkpoint` and is refused when `latest.pt` already exists; the resulting `ForkProvenance` is written into the `run_start` ledger record. Worker count resolves via `resolve_worker_count(config["workers"].get("worker_count"))` — note the existing configs set `worker_count: 4` explicitly, so **CPU behavior is unchanged**; the GPU config omits the key (or sets it to `null`) to opt into automatic resolution.
+`--migrate-device` routes to `migrate_run_to_device` before the resume path runs, and is a no-op returning `None` when the checkpoint already records the config's device — so leaving the flag on in a shell script is safe and idempotent. Without the flag, a device mismatch raises `CheckpointError` as it does today, which keeps an accidental GPU launch against a CPU run loud rather than silent. The resulting `MigrationRecord` is written into the `run_start` ledger record. Worker count resolves via `resolve_worker_count(config["workers"].get("worker_count"))` — note the existing configs set `worker_count: 4` explicitly, so **CPU behavior is unchanged**; the GPU config omits the key (or sets it to `null`) to opt into automatic resolution.
 
 **`run_start` ledger record gains:**
 
@@ -507,9 +518,10 @@ Because `tests/tools/test_cpu_b0_train.py:17-22` loads the module by file path w
                  "cuda_device": "cuda:0", "gpu_name": "NVIDIA GeForce RTX 3060",
                  "vram_total_bytes": 12884901888, "available_cpus": 32,
                  "resolved_workers": 30},
- "fork_source": {"source_path": "...", "source_sha256": "...",
-                 "source_training_step": 72, "source_device": "cpu",
-                 "target_device": "cuda:0"}}
+ "device_migration": {"checkpoint_path": "...", "checkpoint_sha256": "...",
+                      "training_step": 72, "source_device": "cpu",
+                      "target_device": "cuda:0",
+                      "backup_path": ".../latest.pt.cpu-backup"}}
 ```
 
 GPU fields come from `torch.cuda.get_device_properties(0)` and `torch.version.cuda` — no NVML, no new dependency. All are `null` when CUDA is unavailable.
@@ -527,6 +539,8 @@ GPU fields come from `torch.cuda.get_device_properties(0)` and `torch.version.cu
 ```
 
 `network`, `replay`, `arena`, `model_version`, `run_seed`, and the rest of `self_play` are byte-identical to the CPU config, preserving the immutability the existing test asserts. `training.batch_size` stays 256 as instructed. Ratio preservation: 32 games/iteration with `--train-steps-per-iteration 8` keeps the shipped 16:4 = 4:1 games-per-update ratio exactly.
+
+**`bootstrap_prior` and phase, for the continuing run.** The existing run is mid-B0 with `canonical-target-vacancy-distance-v2`, and the GPU config inherits that value unchanged so a resumed iteration keeps generating data under the same prior the replay buffer was built from. Switching to `bootstrap_prior: none` (phase A0) is a **learning-semantics decision, not a hardware one** — it changes what the self-play data means, and mixing A0 and B0 episodes in one replay buffer is exactly the kind of silent semantic change this plan is meant to prevent. Do it as a deliberate, separately-flagged operator step (`--bootstrap-prior none --phase A0`) once the GPU path is proven, not as part of the device migration. The blueprint's target configuration of "heuristic-off A0 at 64 sims" is where this run is headed, but it should get there in one explicit move that is recorded in the ledger.
 
 - [ ] **Step 1: Write failing tests** in `tests/tools/test_cpu_b0_train.py`: the existing module-level `runner` fixture still exposes `LoopState`, `append_ledger`, `build_compatibility`, `new_model` (regression guard on the alias); a new `az_runner` fixture loading `az_train` exposes the same names; `runtime_config("soo-rtx3060.json")` has `training.device == "cuda:0"`, `workers.games_per_iteration == 32`, `self_play.max_game_seconds == 900.0`, `inference.max_batch_size == 32`, and `mcts.simulations == 32`; the GPU config's `network`, `replay`, `arena`, and `model_version` equal `configs/alphazero/soo-bootstrap.json`'s, and its `self_play` equals the CPU config's `self_play` plus exactly the `max_game_seconds` key; `build_compatibility(runtime_config("soo-rtx3060.json"))` yields Soo/2 players; the GPU config's `worker_count` is absent-or-null so automatic resolution applies, while both CPU configs keep an explicit `worker_count == 4`. Extend `test_runtime_configs_keep_authoritative_identity` to skip the `device == "cpu"` assertion for the GPU config rather than weakening it for the CPU ones.
 - [ ] **Step 2: Run `python -m pytest tests/tools/test_cpu_b0_train.py -v`.** Expected failure: `FileNotFoundError` on `soo-rtx3060.json` and `ModuleNotFoundError: No module named 'az_train'`.
@@ -552,15 +566,14 @@ The target is a rented vast.ai instance reached over SSH, and this box's torch i
   ```
   Expected: a non-`None` CUDA version, `True`, and `NVIDIA GeForce RTX 3060`. **If `cuda_available` is `False`, stop** — every later step is meaningless.
 - [ ] **Step 3: Confirm the CPU allocation policy on the real box** — `python -c "from diamond.alphazero.hardware import available_cpu_count, resolve_worker_count; print(available_cpu_count(), resolve_worker_count())"`. Expected on a 32-CPU instance: `32 30`. If the container is cpuset-restricted, this is where affinity-awareness proves itself; record the actual numbers rather than assuming 30.
-- [ ] **Step 4: Transfer the source checkpoint** by SHA-256, not by trust:
+- [ ] **Step 4: Commit the untracked checkpoints, then clone onto the VM.** Because `/runtime/` is intentionally not ignored, the run travels with the repo: commit the 8 untracked `checkpoints/*.pt` plus the modified `latest.pt`, `ledger.jsonl`, `loop_state.json`, and replay chunks first, then on the VM `git clone` (expect ~208 MB of run artifacts). Verify the checkpoint survived the round trip:
   ```bash
-  scp runtime/runs/soo/cpu8h-soo-20260819/latest.pt vast:~/alphadiamond/seed/soo-step72.pt
-  ssh vast 'sha256sum ~/alphadiamond/seed/soo-step72.pt'
+  ssh vast 'cd alphadiamond && sha256sum runtime/runs/soo/cpu8h-soo-20260819/latest.pt'
   ```
-  Expected digest: `4b2a32ff15179e890d4266346bca178d9a255eebe16af3a6e3d0482f0ceb1320`. A mismatch means a corrupt transfer; re-copy.
-- [ ] **Step 5: Run the full suite on the GPU box** — `python -m pytest tests/alphazero tests/tools -q`. Expected: the same 377+ passing, and the Task 7 CUDA parity tests now **run rather than skip**, and pass.
-- [ ] **Step 6: Fork the GPU run** (see CLI examples below) and confirm the new run directory has its own `latest.pt`, that `ledger.jsonl`'s `run_start` carries the recorded `fork_source` and GPU environment, and that the source seed file's digest is unchanged.
-- [ ] **Step 7: 32-sim and 64-sim smoke runs** — a few minutes each, per the CLI examples. Expected: iterations complete, `nvidia-smi` shows non-trivial GPU utilization during self-play, mean batch size is reported, and no `max_game_time_exceeded` aborts appear at these short budgets.
+  Expected digest: `4b2a32ff15179e890d4266346bca178d9a255eebe16af3a6e3d0482f0ceb1320`. A mismatch means the clone is incomplete or Git LFS/line-ending mangling touched a binary; re-check before training on it.
+- [ ] **Step 5: Run the full suite on the GPU box** — `python -m pytest tests/alphazero tests/tools -q`. Expected: the same 377+ passing, and the Task 6/7 CUDA-gated tests now **run rather than skip**, and pass.
+- [ ] **Step 6: Back up and migrate the run's checkpoint to CUDA.** Run the migration command from the CLI examples below. Confirm `latest.pt.cpu-backup` exists with the digest above, that the rewritten `latest.pt` records `device: "cuda:0"` and `training_step: 72`, that `loop_state.json` still reads `iteration: 18` with 26,027 samples, and that the replay store loads at its prior size. **Keep a copy of the pre-migration run off-box** (the backup file plus the Git history) so a bad migration is recoverable.
+- [ ] **Step 7: 32-sim and 64-sim smoke runs into throwaway run IDs** — a few minutes each, per the CLI examples. Use scratch run directories, not the real run, so a smoke test can never pollute the continuing training history. Expected: iterations complete, `nvidia-smi` shows non-trivial GPU utilization during self-play, mean batch size is reported, and no `max_game_time_exceeded` aborts appear at these short budgets.
 - [ ] **Step 8: Write `docs/gpu_training.md`** with the provisioning steps, the verified environment block, and the exact commands used.
 - [ ] **Step 9: Commit** `docs: record RTX 3060 provisioning and GPU smoke procedure`.
 
@@ -568,10 +581,13 @@ The target is a rented vast.ai instance reached over SSH, and this box's torch i
 
 ### Task 11: Benchmark execution and the CPU-vs-GPU learning comparison
 
-- [ ] **Step 1: Throughput sweep.** From the same immutable seed checkpoint, run each configuration for an identical wall-clock budget (30 min suggested) into a *separate* run directory, so no configuration inherits another's replay: CPU baseline / 32 sims; RTX 3060 FP32 / 32 sims; RTX 3060 FP32 / 64 sims. Record from each ledger: `completed_games_per_hour`, `samples_per_hour`, `training_steps_per_hour`, median and p90 moves, abort counts by reason, and the `inference` batch/latency summary.
+**Amended for continue-in-place.** The operator continues one Soo history rather than forking, so the equal-wall-clock CPU-vs-GPU learning experiment the blueprint asked for is no longer available against the real run — the run becomes GPU-trained the moment migration happens. Benchmarking therefore uses **disposable scratch runs seeded by copying `latest.pt` into a temporary run directory**, and the CPU reference comes from the 18 iterations already in the existing ledger (16 games/iter, 4 updates/iter, ~400 s self-play per iteration, 0 aborts). Do all benchmarking **before** Step 6's migration, or from copies, so the real run is only ever touched by real training.
+
+- [ ] **Step 1: Throughput sweep.** Copy `latest.pt` into three scratch run directories so each starts from the identical checkpoint with an empty replay, then run each for an identical wall-clock budget (30 min suggested): CPU baseline / 32 sims; RTX 3060 FP32 / 32 sims; RTX 3060 FP32 / 64 sims. Record from each ledger: `completed_games_per_hour`, `samples_per_hour`, `training_steps_per_hour`, median and p90 moves, abort counts by reason, and the `inference` batch/latency summary. Note the scratch runs start with an empty replay while the real run resumes with 26,027 samples, so scratch *training* throughput is comparable across configurations but not directly to the real run's.
 - [ ] **Step 2: Narrow secondary sweep**, only on the better simulation count from Step 1, and only if Step 1 shows the GPU is under-fed (mean batch size well below 32 or low GPU utilization): `max_batch_size` ∈ {16, 32} × `max_wait_ms` ∈ {1, 2, 5}. Six short runs, not a combinatorial explosion. Note that with ~30 workers doing synchronous leaf evaluation the achievable batch is bounded by concurrent workers — a mean batch far below 32 is expected, not a bug.
 - [ ] **Step 3: Profile the `TorchEvaluator` transfer path** (finding 6). Time a fixed batch of 32 requests on CUDA, then compare against a variant that hoists the per-row `.cpu()` calls into one batched transfer. Only if this shows a material share of inference wall-clock, implement the batched transfer as its own TDD task guarded by the Task 7 parity tests. Otherwise record the measurement and stop.
-- [ ] **Step 4: Fair learning experiment.** From the *same* seed checkpoint, train CPU and GPU for the same wall-clock interval (4 h suggested) with the same games-per-update ratio (4:1), then run the identical heuristic-off probe against both resulting checkpoints with identical `--episodes`, `--base-seed`, and simulation budgets. Compare off-probe completion rate, median moves, p90 moves, abort rate, and samples/training-steps generated. Treat loss as secondary information only — the spec is explicit that loss alone is not the success criterion, and the two runs see different data volumes, which makes their losses non-comparable in isolation.
+- [ ] **Step 4: Learning-quality tracking on the continuing run.** A symmetric CPU-vs-GPU learning A/B is no longer possible once the run is migrated, so instead track learning quality *along* the continuing run: capture a heuristic-off probe at the pre-migration checkpoint (step 72) as the baseline, then re-probe at fixed training-step intervals afterwards using identical `--episodes`, `--base-seed`, and simulation budgets. Compare off-probe completion rate, median moves, p90 moves, and abort rate against the step-72 baseline. This answers the question that actually matters — is GPU training improving the model — without pretending to a controlled comparison the operator's choice rules out. Treat loss as secondary information only; the blueprint is explicit that loss alone is not the success criterion.
+- [ ] **Step 4b (optional, only if a controlled comparison is later wanted):** run the equal-wall-clock CPU and GPU arms from copies of the step-72 checkpoint in scratch runs. This is the blueprint's original experiment, preserved here because it stays valid as long as it is run from copies rather than the live run.
 - [ ] **Step 5: Record all results** in `docs/gpu_training.md` with the exact commands, run IDs, and checkpoint digests, so the comparison is reproducible.
 
 ---
@@ -597,12 +613,14 @@ The target is a rented vast.ai instance reached over SSH, and this box's torch i
 | one timeout keeps siblings | `test_a_single_timed_out_game_does_not_discard_completed_siblings` | `test_selfplay_workers.py` | yes |
 | pool still cleans up children | `test_timeout_terminates_worker_and_leaves_no_children` (existing) | `test_selfplay_workers.py` | yes |
 | lane-aware pool timeout | `test_pool_timeout_accounts_for_multiple_jobs_per_lane` | `test_selfplay_workers.py` | yes |
-| fork from external checkpoint | `test_fork_creates_new_run_from_source` | `test_run_fork.py` | yes |
-| source run untouched | `test_fork_never_modifies_the_source` | `test_run_fork.py` | yes |
-| independent loop/replay/ledger | `test_forked_run_starts_with_no_history` | `test_run_fork.py` | yes |
-| no accidental re-init | `test_reforking_an_initialized_run_raises` | `test_run_fork.py` | yes |
-| normal resume still works | `test_forked_run_resumes_without_migration` | `test_run_fork.py` | yes |
-| device-migration gate | `test_load_checkpoint_rejects_device_mismatch_by_default` | `test_checkpoint.py` | yes |
+| same-device resume needs no migration | `test_matching_device_returns_none` | `test_run_migrate.py` | yes |
+| migration backs up the original | `test_migration_writes_a_byte_identical_backup` | `test_run_migrate.py` | yes |
+| no double migration | `test_second_migration_refuses_to_clobber_backup` | `test_run_migrate.py` | yes |
+| training_step preserved | `test_migration_preserves_training_step` | `test_run_migrate.py` | yes |
+| archived checkpoints untouched | `test_migration_leaves_archived_checkpoints_intact` | `test_run_migrate.py` | yes |
+| real cpu→cuda migration | `test_migrated_checkpoint_records_target_device` | `test_run_migrate.py` | **skips** |
+| migration flag defaults off | `test_load_checkpoint_rejects_device_mismatch_by_default` | `test_checkpoint.py` | yes |
+| cross-device load with flag | `test_cuda_trainer_loads_cpu_checkpoint_with_migration` | `test_checkpoint.py` | **skips** |
 | CUDA FP32 parity | `test_cpu_and_cuda_agree_on_priors_and_values` | `test_cuda_parity.py` | **skips** |
 | batching invariance | `test_batched_matches_single_request_evaluation` | `test_cuda_parity.py` | **skips** |
 | device-portable save/load | `test_cuda_checkpoint_reloads_on_cpu` | `test_cuda_parity.py` | **skips** |
@@ -638,10 +656,12 @@ Fairness rules: identical seed checkpoint; identical wall-clock budget; identica
 1. Tasks 1–9 land on a feature branch, each with its own commit, `pytest tests/alphazero tests/tools` green after every one.
 2. Task 9 Step 6 proves the CPU workflow is unbroken on this machine.
 3. Task 10 provisions the vast.ai box and proves CUDA parity on real hardware.
-4. Fork the GPU run; confirm `runtime/runs/soo/cpu8h-soo-20260819` is byte-identical (compare `latest.pt` digests before and after).
-5. Smoke runs at 32 and 64 sims.
-6. Task 11 benchmark and learning comparison.
-7. Merge only after CPU regression, GPU smoke, and CUDA parity all pass.
+4. Commit the untracked run artifacts and clone onto the VM; verify `latest.pt`'s digest survived the transfer.
+5. Benchmark from scratch copies (Task 11 Steps 1–3) **before** migrating, while the run is still CPU-tagged.
+6. Migrate `latest.pt` to `cuda:0`, keeping `latest.pt.cpu-backup` and an off-box copy.
+7. Smoke runs at 32 and 64 sims into throwaway run IDs.
+8. Resume real training on the migrated run; probe learning quality against the step-72 baseline.
+9. Merge only after CPU regression, GPU smoke, and CUDA parity all pass.
 
 ## Rollback Criteria
 
@@ -651,83 +671,108 @@ Stop and revert if any of these hold:
 - The CPU workflow regresses: `tools/cpu_b0_train.py` changes behavior on `soo-cpu8h.json`, or any existing test fails.
 - A game timeout crashes an iteration, or a completed sibling episode is lost.
 - Aborted games contribute a non-zero sample count.
-- The forked run mutates the source run or the seed checkpoint's digest.
-- GPU useful throughput fails to beat the CPU baseline — in that case keep the timeout/fork/metrics work (independently valuable) and revert only the GPU configuration.
+- Migration loses or corrupts run state: `training_step`, `iteration`, or the replay sample count changes across the migration, or `latest.pt.cpu-backup` does not match the pre-migration digest.
+- GPU useful throughput fails to beat the CPU baseline — in that case keep the timeout/migration/metrics work (independently valuable) and revert only the GPU configuration.
 
-Every task is an independent commit, so rollback is `git revert` of a contiguous range; the deadline, fork, and metrics work has no dependency on CUDA being used.
+**Recovering the run specifically.** Because training continues in place, a bad GPU run cannot be discarded by deleting a fork directory. Recovery is: stop training, restore `latest.pt` from `latest.pt.cpu-backup` (or from Git, since run artifacts are committed), and roll `loop_state.json` back to the matching iteration. This is why Task 10 Step 6 requires an off-box copy before the first GPU iteration — take it, and commit the pre-migration state, before training writes anything new.
+
+Every task is an independent commit, so code rollback is `git revert` of a contiguous range; the deadline, migration, and metrics work has no dependency on CUDA being used.
 
 ---
 
 ## Expected CLI Examples
 
-**Fork a new RTX 3060 run from the existing CPU checkpoint**
+All examples continue the existing run `cpu8h-soo-20260819`. The run ID is kept even though it now trains on a GPU: it names one continuous Soo training history, and renaming it would orphan the ledger and replay paths.
+
+**Migrate the existing run's checkpoint to CUDA (one time, before the first GPU iteration)**
 
 ```bash
+# Back up off-box first -- this rewrites latest.pt in place.
+cp runtime/runs/soo/cpu8h-soo-20260819/latest.pt ~/soo-step72-cpu.pt
+
 python tools/az_train.py \
   --config runtime/configs/soo-rtx3060.json \
   --runtime-dir runtime/runs \
-  --run-id rtx3060-soo-20260820 \
-  --init-checkpoint runtime/runs/soo/cpu8h-soo-20260819/latest.pt \
-  --phase A0 --bootstrap-prior none \
+  --run-id cpu8h-soo-20260819 \
+  --migrate-device \
   --train-steps-per-iteration 8 \
   --hours 0.05
 ```
 
-Creates `runtime/runs/soo/rtx3060-soo-20260820/` with its own `latest.pt`, `loop_state.json`, `ledger.jsonl`, `replay/`, `checkpoints/`, and `config.json`. Re-running with `--init-checkpoint` against the now-initialized run exits with an error rather than overwriting it.
+Writes `latest.pt.cpu-backup`, rewrites `latest.pt` with `device: "cuda:0"` at the same `training_step`, records a `device_migration` block in the ledger, then runs a short GPU session. `loop_state.json`, `ledger.jsonl`, and the 26,027-sample replay all carry forward. Re-running with `--migrate-device` afterwards is a no-op, because the checkpoint already records `cuda:0`.
 
-**Short 32-simulation GPU smoke test**
+**Short 32-simulation GPU smoke test (throwaway run, never touches the real one)**
 
 ```bash
+mkdir -p /tmp/az-smoke/soo/smoke-32
+cp runtime/runs/soo/cpu8h-soo-20260819/latest.pt /tmp/az-smoke/soo/smoke-32/latest.pt
+
 python tools/az_train.py \
   --config runtime/configs/soo-rtx3060.json \
-  --runtime-dir runtime/runs --run-id rtx3060-smoke-32 \
-  --init-checkpoint runtime/runs/soo/cpu8h-soo-20260819/latest.pt \
-  --simulations 32 --phase A0 --bootstrap-prior none \
+  --runtime-dir /tmp/az-smoke --run-id smoke-32 \
+  --migrate-device --simulations 32 \
   --train-steps-per-iteration 8 --hours 0.1
 ```
 
 **Short 64-simulation GPU smoke test**
 
 ```bash
+mkdir -p /tmp/az-smoke/soo/smoke-64
+cp runtime/runs/soo/cpu8h-soo-20260819/latest.pt /tmp/az-smoke/soo/smoke-64/latest.pt
+
 python tools/az_train.py \
   --config runtime/configs/soo-rtx3060.json \
-  --runtime-dir runtime/runs --run-id rtx3060-smoke-64 \
-  --init-checkpoint runtime/runs/soo/cpu8h-soo-20260819/latest.pt \
-  --simulations 64 --phase A0 --bootstrap-prior none \
+  --runtime-dir /tmp/az-smoke --run-id smoke-64 \
+  --migrate-device --simulations 64 \
   --train-steps-per-iteration 8 --hours 0.1
 ```
 
-**Fixed-duration GPU training session**
+**Fixed-duration GPU training session on the continuing run**
 
 ```bash
 python tools/az_train.py \
   --config runtime/configs/soo-rtx3060.json \
-  --runtime-dir runtime/runs --run-id rtx3060-soo-20260820 \
-  --simulations 64 --phase A0 --bootstrap-prior none \
+  --runtime-dir runtime/runs --run-id cpu8h-soo-20260819 \
+  --simulations 64 \
   --train-steps-per-iteration 8 --hours 4
 ```
 
-No `--init-checkpoint`: the run already exists, so this is a normal resume of its own `latest.pt`.
+No `--migrate-device`: the checkpoint already records `cuda:0`, so this is an ordinary resume. The prior stays `canonical-target-vacancy-distance-v2` (phase B0) unless you deliberately switch — see the config note in Task 9. To make that switch explicitly:
+
+```bash
+python tools/az_train.py \
+  --config runtime/configs/soo-rtx3060.json \
+  --runtime-dir runtime/runs --run-id cpu8h-soo-20260819 \
+  --simulations 64 --bootstrap-prior none --phase A0 \
+  --train-steps-per-iteration 8 --hours 4
+```
 
 **Heuristic-off probe against the resulting checkpoint**
 
 ```bash
 python tools/cpu_off_probe.py \
   --config runtime/configs/soo-rtx3060.json \
-  --checkpoint runtime/runs/soo/rtx3060-soo-20260820/latest.pt \
+  --checkpoint runtime/runs/soo/cpu8h-soo-20260819/latest.pt \
   --episodes 30 --simulations 32,64 --base-seed 9000 \
-  --out runtime/runs/soo/rtx3060-soo-20260820/off-probe.json
+  --out runtime/runs/soo/cpu8h-soo-20260819/off-probe-gpu.json
 ```
 
-The probe reads `training.device` from the config (`cpu_off_probe.py:82`), so this runs the probe on CUDA. To probe the GPU checkpoint on a CPU-only machine, point `--config` at `runtime/configs/soo-cpu8h.json` instead — same network and identity, `device: "cpu"`. Note the probe's `load_checkpoint` call enforces the device gate, so the config's device must match the checkpoint's recorded device; a GPU-trained checkpoint records `cuda:0`, which is why the CPU-side probe needs the CPU config **and** the `allow_device_migration` path from Task 6. Wire `cpu_off_probe.py` to pass `allow_device_migration=True` as part of Task 6 Step 7 so both directions work.
+The probe reads `training.device` from the config (`cpu_off_probe.py:82`), so this runs on CUDA. Write to a *new* `--out` path rather than overwriting the existing `off-probe.json`, which holds the step-72 CPU baseline used for comparison. To probe a GPU-trained checkpoint from a CPU-only machine, point `--config` at `runtime/configs/soo-cpu8h.json` — same network and identity, `device: "cpu"` — which works because Task 6 Step 7 wires the probe's `load_checkpoint` call to pass `allow_device_migration=True`. The same flag lets the GPU box score the CPU-tagged archived checkpoints under `checkpoints/`.
 
 ---
 
 ## Self-Review
 
-**Requirements coverage.** All ten concerns in the prompt's recommended decomposition are covered: hardware resolution (1), deadline abstraction (3), MCTS propagation (4), pool timeout behavior (5), fork semantics (6), RTX 3060 config (9), CUDA FP32 correctness (7), inference metrics (8), benchmark tooling (10–11), and end-to-end CPU regression plus GPU smoke (9 Step 6, 10 Steps 5–7). Config schema (Task 2) was split out of the config task because it forces a repo-wide atomic change the prompt did not anticipate.
+**Operator deviations from the blueprint.** Two requirements were deliberately overridden by the operator and are implemented as directed, with consequences stated rather than silently absorbed:
+
+1. **Continue in place instead of forking.** The blueprint required a fresh `rtx3060-…` run forked from an immutable seed, so the CPU run stayed a pristine comparison baseline. The operator wants one continuous Soo history. Gained: the 26,027-sample replay and 18 iterations of ledger carry forward instead of restarting from empty. Lost: the symmetric equal-wall-clock CPU-vs-GPU learning experiment, which Task 11 Step 4 replaces with baseline-relative probing along the continuing run (and preserves as optional Step 4b, runnable from copies). Also lost: the fork's inherent safety property, which is why Task 6 adds a mandatory `latest.pt.cpu-backup` and Task 10 Step 6 requires an off-box copy.
+2. **`/runtime/` stays un-ignored.** Run artifacts remain committed so a `git clone` carries every checkpoint to the VM. Cost: ~208 MB in Git and growing with each archived checkpoint. Worth revisiting if the repo becomes unwieldy, but not changed here.
+
+**Requirements coverage.** All ten concerns in the prompt's recommended decomposition are covered: hardware resolution (1), deadline abstraction (3), MCTS propagation (4), pool timeout behavior (5), checkpoint/run continuation semantics (6 — re-scoped from fork to in-place migration per the operator), RTX 3060 config (9), CUDA FP32 correctness (7), inference metrics (8), benchmark tooling (10–11), and end-to-end CPU regression plus GPU smoke (9 Step 6, 10 Steps 5–7). Config schema (Task 2) was split out of the config task because it forces a repo-wide atomic change the prompt did not anticipate.
 
 **Missing tests.** The initial draft lacked a batching-invariance test; without it, CPU/CUDA parity on single requests could pass while batched GPU inference silently corrupted results — the exact path this architecture depends on. Added to Task 7. Also added a bounded-memory regression test in Task 8, since the O(n²) fix is invisible to functional tests.
+
+**Corrected during review.** The first draft proposed testing the cross-device gate on CPU-only hosts using `device="cpu:0"`. Executed against this repo, that raises inside torch's map_location resolver *before* reaching the device comparison — the test would have passed for the wrong reason and given false confidence in the migration path. Task 6 now marks the genuine cross-device assertions CUDA-gated and tests decision logic and file choreography on CPU, with finding 1 recording the verified error messages.
 
 **Backward compatibility.** `max_game_seconds` defaults to `None` (old behavior exactly). `worker_timeout_s` still works and still wins. `cpu_b0_train.py` keeps its name, CLI, and importable symbols. Existing configs keep `worker_count: 4`, so CPU worker resolution is unchanged. `allow_device_migration` defaults to `False`, so the existing device gate is unweakened for every current caller.
 
@@ -737,7 +782,7 @@ The probe reads `training.device` from the config (`cpu_off_probe.py:82`), so th
 
 **Timeout edge cases.** Boundary is inclusive at exactly the budget. `remaining_s` clamps at zero. Root expansion is never skipped, so a deadline-truncated search still returns a legal action. An expired game returns before appending a sample, satisfying `EpisodeResult`'s zero-samples invariant. The four failure modes stay textually distinct. No test waits on real time — expiry is driven by injected clocks or by an infinitesimal budget.
 
-**Resume/fork safety.** Re-forking raises rather than overwriting. The source is opened read-only and digest-verified. The forked run inherits `training_step` but no replay, loop state, or ledger. After the fork, the new run's checkpoint records the destination device, so ordinary resume needs no migration flag.
+**Resume/migration safety.** Migration is idempotent: it returns `None` and does nothing when the checkpoint already records the trainer's device, so the flag is safe to leave in a launch script. It refuses to run twice over an existing backup rather than clobbering it. `training_step`, loop state, and replay are preserved exactly; archived checkpoints are never rewritten. After migration the checkpoint records the destination device, so ordinary resume needs no flag. Without the flag a device mismatch still raises, keeping an accidental GPU launch against a CPU run loud.
 
 **Benchmark fairness.** Same seed checkpoint, same wall-clock budget, same 4:1 games-per-update ratio, separate replay stores, identical probe seeds. Loss is explicitly demoted to secondary evidence because the two runs consume different data volumes.
 
