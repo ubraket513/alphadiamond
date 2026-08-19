@@ -67,3 +67,79 @@ def test_two_player_search_is_reproducible_with_fixed_seed() -> None:
     second = MCTS2P(Toy2PGame(), DummyEvaluator(0.0), config).run(State("root", 1))
     assert first == second
 
+
+
+class FakeClock:
+    """Drives deadline expiry without spending real time."""
+
+    def __init__(self, start: float = 500.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_search_without_a_deadline_runs_every_simulation() -> None:
+    """The unlimited path must stay byte-for-byte the previous behaviour."""
+    search = MCTS2P(
+        Toy2PGame(),
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=32, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+    )
+
+    result = search.run(State("root", 1), temperature=0.0)
+
+    assert sum(result.visit_counts.values()) == 32
+
+
+def test_an_expired_deadline_truncates_the_simulation_loop() -> None:
+    from diamond.alphazero.deadline import Deadline
+
+    clock = FakeClock()
+    deadline = Deadline.start(10.0, clock=clock)
+    search = MCTS2P(
+        Toy2PGame(),
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=64, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+        deadline=deadline,
+    )
+    clock.advance(11.0)  # already past the budget when the search starts
+
+    result = search.run(State("root", 1), temperature=0.0)
+
+    # Truncated, but still a usable distribution: the root is always expanded.
+    assert sum(result.visit_counts.values()) < 64
+    assert result.selected_action in (10, 20)
+    assert sum(result.policy.values()) == pytest.approx(1.0)
+
+
+def test_a_deadline_that_expires_midway_stops_between_simulations() -> None:
+    from diamond.alphazero.deadline import Deadline
+
+    class CountingClock(FakeClock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        def __call__(self) -> float:
+            self.reads += 1
+            # Expire after a handful of simulation-loop checks.
+            if self.reads > 6:
+                self.now = 1000.0
+            return self.now
+
+    clock = CountingClock()
+    search = MCTS2P(
+        Toy2PGame(),
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=64, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+        deadline=Deadline.start(10.0, clock=clock),
+    )
+
+    result = search.run(State("root", 1), temperature=0.0)
+
+    total = sum(result.visit_counts.values())
+    assert 0 < total < 64

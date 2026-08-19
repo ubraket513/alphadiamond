@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..deadline import MAX_GAME_TIME_EXCEEDED
 from ..evaluator.base import EvalRequest
 from ..replay import TrainingSample
 
@@ -38,4 +39,15 @@ def sparse_policy(policy: dict[int, float]) -> tuple[tuple[int, float], ...]:
     return tuple(sorted((action, probability) for action, probability in policy.items() if probability > 0))
 
 
-__all__ = ["PendingSample", "SelfPlayEpisode", "SelfPlayGame", "sparse_policy"]
+MAX_GAME_MOVES_EXCEEDED = "max_game_moves_exceeded"
+"""The episode ran out of moves, as distinct from running out of time."""
+
+
+__all__ = [
+    "MAX_GAME_MOVES_EXCEEDED",
+    "MAX_GAME_TIME_EXCEEDED",
+    "PendingSample",
+    "SelfPlayEpisode",
+    "SelfPlayGame",
+    "sparse_policy",
+]

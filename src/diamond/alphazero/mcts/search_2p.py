@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
 from .tree import ScalarEdge, ScalarNode
 from ..config import MCTSConfig
+from ..deadline import Deadline
 from ..evaluator.base import EvalRequest, Evaluator
 
 
@@ -30,12 +31,20 @@ class SearchResult2P:
 
 
 class MCTS2P:
-    def __init__(self, game: TwoPlayerSearchGame, evaluator: Evaluator, config: MCTSConfig) -> None:
+    def __init__(
+        self,
+        game: TwoPlayerSearchGame,
+        evaluator: Evaluator,
+        config: MCTSConfig,
+        *,
+        deadline: Deadline | None = None,
+    ) -> None:
         if config.simulations <= 0:
             raise ValueError("simulations must be positive")
         self.game = game
         self.evaluator = evaluator
         self.config = config
+        self.deadline = deadline
         self.rng = random.Random(config.seed)
 
     def run(self, state: Any, *, temperature: float = 0.0) -> SearchResult2P:
@@ -44,7 +53,13 @@ class MCTS2P:
         root = ScalarNode(state=state, player_id=self.game.current_player_id(state))
         self._expand(root, root_noise=True)
 
-        for _ in range(self.config.simulations):
+        for simulation in range(self.config.simulations):
+            # Checked before the descent and before the expensive expansion, so
+            # a game stops inside a move rather than only between moves.  The
+            # first simulation always runs: a search that returns must return a
+            # usable visit distribution.
+            if simulation and self.deadline is not None and self.deadline.expired:
+                break
             node = root
             path: list[ScalarEdge] = []
             while node.expanded and not self.game.is_terminal(node.state):

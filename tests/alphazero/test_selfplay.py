@@ -119,3 +119,107 @@ def test_aborted_authoritative_game_discards_unlabelled_samples() -> None:
     assert episode.aborted_reason == "max_game_moves_exceeded"
     assert episode.samples == ()
     assert episode.move_count == 1
+
+
+class EndlessSelfPlayGame(ToySelfPlayGame):
+    """Never reaches a terminal state, so only a limit can stop the episode."""
+
+    def is_terminal(self, state: ToyState) -> bool:
+        return False
+
+    def legal_action_ids(self, state: ToyState) -> tuple[int, ...]:
+        return (10 + state.step,)
+
+
+class SteppingClock:
+    """Advances a fixed amount per read; no real time is ever spent."""
+
+    def __init__(self, step: float) -> None:
+        self.step = step
+        self.now = 0.0
+        self.reads = 0
+
+    def __call__(self) -> float:
+        value = self.now
+        self.reads += 1
+        self.now += self.step
+        return value
+
+
+def _soo_compatibility() -> CheckpointCompatibilitySpec:
+    return CheckpointCompatibilitySpec.soo(
+        model_version="0.1.0", network_config=NetworkConfig(width=16, residual_blocks=1)
+    )
+
+
+def test_a_game_that_outruns_its_budget_aborts_with_zero_samples() -> None:
+    clock = SteppingClock(step=100.0)
+
+    episode = SooSelfPlayRunner(
+        EndlessSelfPlayGame(2),
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
+        SelfPlayConfig(max_moves=500, temperature_moves=0, max_game_seconds=900.0),
+        _soo_compatibility(),
+        clock=clock,
+    ).run()
+
+    assert not episode.completed
+    assert episode.aborted_reason == "max_game_time_exceeded"
+    assert episode.samples == ()
+    assert episode.final_order is None
+    # Stopped on the clock, nowhere near the 500-move cap.
+    assert 0 < episode.move_count < 500
+
+
+def test_the_move_cap_and_the_time_cap_stay_distinct() -> None:
+    """A slow game and a long game are different failures."""
+    episode = SooSelfPlayRunner(
+        EndlessSelfPlayGame(2),
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
+        SelfPlayConfig(max_moves=3, temperature_moves=0, max_game_seconds=None),
+        _soo_compatibility(),
+        clock=SteppingClock(step=100_000.0),
+    ).run()
+
+    assert not episode.completed
+    assert episode.aborted_reason == "max_game_moves_exceeded"
+    assert episode.move_count == 3
+    assert episode.samples == ()
+
+
+def test_without_a_budget_a_slow_game_still_completes() -> None:
+    """No budget must mean exactly the previous behaviour, however slow."""
+    episode = SooSelfPlayRunner(
+        ToySelfPlayGame(2),
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=4, dirichlet_epsilon=0.0),
+        SelfPlayConfig(max_moves=5, temperature_moves=0),
+        _soo_compatibility(),
+        clock=SteppingClock(step=100_000.0),
+    ).run()
+
+    assert episode.completed
+    assert episode.final_order == (1, 2)
+    assert len(episode.samples) == 1
+
+
+def test_the_three_player_runner_honours_the_same_budget() -> None:
+    compatibility = CheckpointCompatibilitySpec.min(
+        model_version="0.7.0", network_config=NetworkConfig(width=16, residual_blocks=1)
+    )
+
+    episode = MinSelfPlayRunner(
+        EndlessSelfPlayGame(3),
+        DummyEvaluator((0.0, 0.0, 0.0)),
+        MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
+        SelfPlayConfig(max_moves=500, temperature_moves=0, max_game_seconds=900.0),
+        compatibility,
+        clock=SteppingClock(step=100.0),
+    ).run()
+
+    assert not episode.completed
+    assert episode.aborted_reason == "max_game_time_exceeded"
+    assert episode.samples == ()
+    assert episode.final_order is None

@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
 from .tree import VectorEdge, VectorNode
 from ..config import MCTSConfig
+from ..deadline import Deadline
 from ..evaluator.base import EvalRequest, Evaluator
 
 
@@ -30,12 +31,20 @@ class SearchResult3P:
 
 
 class MCTS3P:
-    def __init__(self, game: ThreePlayerSearchGame, evaluator: Evaluator, config: MCTSConfig) -> None:
+    def __init__(
+        self,
+        game: ThreePlayerSearchGame,
+        evaluator: Evaluator,
+        config: MCTSConfig,
+        *,
+        deadline: Deadline | None = None,
+    ) -> None:
         if config.simulations <= 0:
             raise ValueError("simulations must be positive")
         self.game = game
         self.evaluator = evaluator
         self.config = config
+        self.deadline = deadline
         self.rng = random.Random(config.seed)
 
     def run(self, state: Any, *, temperature: float = 0.0) -> SearchResult3P:
@@ -52,7 +61,11 @@ class MCTS3P:
         )
         self._expand(root, root_request, root_noise=True)
 
-        for _ in range(self.config.simulations):
+        for simulation in range(self.config.simulations):
+            # See MCTS2P.run: the first simulation always runs so the returned
+            # visit distribution is usable even under an expired deadline.
+            if simulation and self.deadline is not None and self.deadline.expired:
+                break
             node = root
             path: list[VectorEdge] = []
             while node.expanded and not self.game.is_terminal(node.state):
