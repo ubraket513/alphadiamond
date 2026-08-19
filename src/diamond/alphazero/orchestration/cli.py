@@ -1,0 +1,147 @@
+"""Headless command line entry points for AlphaZero training operations."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Protocol, TextIO
+
+EXIT_OK = 0
+EXIT_ARGUMENT_ERROR = 2
+EXIT_RUNTIME_ERROR = 3
+EXIT_INTERNAL_ERROR = 4
+
+
+class CommandServices(Protocol):
+    """The small headless service boundary used by command dispatch."""
+
+    def train(self, *, model_name: str, run_id: str) -> Mapping[str, object]: ...
+
+    def resume(self, *, model_name: str, run_id: str) -> Mapping[str, object]: ...
+
+    def benchmark(self, *, model_name: str, run_id: str) -> Mapping[str, object]: ...
+
+    def leaderboard(self, *, model_name: str, run_id: str) -> Mapping[str, object]: ...
+
+
+ServicesFactory = Callable[[Path, str], CommandServices]
+
+
+class _ArgumentError(ValueError):
+    pass
+
+
+class _JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise _ArgumentError(message)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = _JsonArgumentParser(prog="alphadiamond-train", add_help=True)
+    subcommands = parser.add_subparsers(dest="command", required=True)
+    for command in ("train", "resume", "benchmark", "leaderboard"):
+        subparser = subcommands.add_parser(command)
+        subparser.add_argument("--runtime-dir", required=True, type=Path)
+        subparser.add_argument("--model", required=True, choices=("Soo", "Min"))
+        subparser.add_argument("--run-id", required=True)
+    profile = subcommands.add_parser("profile")
+    profile.add_argument("--seconds", type=int, default=1)
+    return parser
+
+
+def _default_services(root: Path, model_name: str) -> CommandServices:
+    # Torch and all orchestration dependencies remain lazy so this module is
+    # importable in environments that intentionally do not initialize a GUI.
+    from ..milestone2_smoke import build_tiny_services
+
+    return build_tiny_services(root, model_name)
+
+
+def _emit(payload: Mapping[str, object], stream: TextIO) -> None:
+    print(json.dumps(dict(payload), sort_keys=True, separators=(",", ":")), file=stream)
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    services_factory: ServicesFactory = _default_services,
+    stdout: TextIO | None = None,
+) -> int:
+    """Dispatch one machine-readable headless command and return an exit code."""
+    stream = stdout or sys.stdout
+    parser = build_parser()
+    command_hint = argv[0] if argv else None
+    try:
+        args = parser.parse_args(argv)
+        if args.command == "profile":
+            if args.seconds <= 0:
+                raise ValueError("--seconds must be positive")
+            _emit(
+                {
+                    "command": "profile",
+                    "max_seconds": args.seconds,
+                    "status": "not_implemented",
+                },
+                stream,
+            )
+            return EXIT_OK
+
+        services = services_factory(args.runtime_dir, args.model)
+        operation = getattr(services, args.command)
+        result = operation(model_name=args.model, run_id=args.run_id)
+        _emit(
+            {"command": args.command, "status": "ok", **dict(result)},
+            stream,
+        )
+        return EXIT_OK
+    except _ArgumentError as error:
+        command = getattr(locals().get("args", None), "command", command_hint)
+        _emit(
+            {
+                "command": command,
+                "error": str(error),
+                "status": "error",
+            },
+            stream,
+        )
+        return EXIT_ARGUMENT_ERROR
+    except ValueError as error:
+        command = getattr(locals().get("args", None), "command", command_hint)
+        _emit(
+            {
+                "command": command,
+                "error": str(error),
+                "status": "error",
+            },
+            stream,
+        )
+        return EXIT_RUNTIME_ERROR
+    except Exception as error:  # Keep automation failures structured and stable.
+        command = getattr(locals().get("args", None), "command", command_hint)
+        _emit(
+            {
+                "command": command,
+                "error": f"{type(error).__name__}: {error}",
+                "status": "error",
+            },
+            stream,
+        )
+        return EXIT_INTERNAL_ERROR
+
+
+__all__ = [
+    "EXIT_ARGUMENT_ERROR",
+    "EXIT_INTERNAL_ERROR",
+    "EXIT_OK",
+    "EXIT_RUNTIME_ERROR",
+    "CommandServices",
+    "build_parser",
+    "main",
+]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

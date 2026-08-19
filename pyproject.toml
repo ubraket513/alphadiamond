@@ -25,6 +25,7 @@ alphazero = [
 
 [project.scripts]
 diamond = "diamond.main:main"
+alphadiamond-train = "diamond.alphazero.orchestration.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
