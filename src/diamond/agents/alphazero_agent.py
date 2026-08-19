@@ -1,4 +1,9 @@
-"""An :class:`Agent` that picks moves with the AlphaZero MCTS stack.
+"""An :class:`Agent` that plays the ``Soo`` and ``Min`` models via MCTS.
+
+AlphaZero is the *method*; the models are ``Soo`` (two-player) and ``Min``
+(three-player), and those are the names the operator sees.  Which one an agent
+plays follows from the seat count alone, exactly as it does for checkpoint
+identity, so there is no way to pair a three-player match with the Soo net.
 
 This is the GUI-facing seam the agent boundary was designed for: the controller
 still knows only ``Agent``/``MoveRequest``/``MoveProposal``, while everything
@@ -9,6 +14,8 @@ Torch is deliberately optional.  With no checkpoint the agent runs on the
 deterministic dummy evaluator wrapped in a bootstrap prior, which is exactly the
 configuration the bootstrap probe measured: strong enough to walk pieces home
 and finish games, and available on a machine with no trained network at all.
+Such an agent reports itself as ``Soo (bootstrap)`` / ``Min (bootstrap)`` --
+it is not playing a learned network and must not look like it is.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ from ..alphazero.config import (
 from ..alphazero.evaluator.base import Evaluator
 from ..alphazero.evaluator.dummy import DummyEvaluator
 from ..alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
+from ..alphazero.identity import MIN_MODEL_NAME, SOO_MODEL_NAME
 from ..alphazero.mcts.search_2p import MCTS2P
 from ..alphazero.mcts.search_3p import MCTS3P
 from ..game.state import PlayerSpec
@@ -60,6 +68,10 @@ class AlphaZeroAgent(Agent):
         if simulations <= 0:
             raise ValueError("simulations must be positive")
         self._players = tuple(players)
+        # Player count picks the model: Soo is the two-player net, Min the
+        # three-player one.  There is no third option and no separate knob --
+        # the same rule the checkpoint identity enforces.
+        self._model_name = SOO_MODEL_NAME if len(players) == 2 else MIN_MODEL_NAME
         self._bootstrap_prior = bootstrap_prior
         self._simulations = int(simulations)
         self._seed = int(seed)
@@ -72,8 +84,20 @@ class AlphaZeroAgent(Agent):
         return 0.0 if len(self._players) == 2 else (0.0, 0.0, 0.0)
 
     @property
+    def model_name(self) -> str:
+        """``"Soo"`` or ``"Min"`` -- the model this agent plays."""
+        return self._model_name
+
+    @property
     def name(self) -> str:
-        return "AlphaZero" if not self._untrained else "AlphaZero (bootstrap)"
+        """Display name.
+
+        The suffix is not decoration: an untrained agent is running the
+        bootstrap prior over a dummy evaluator, not a learned ``Soo``/``Min``
+        network, and the operator confirming its moves should be able to see
+        that difference at a glance.
+        """
+        return self._model_name if not self._untrained else f"{self._model_name} (bootstrap)"
 
     @property
     def seed(self) -> int:
@@ -116,6 +140,7 @@ class AlphaZeroAgent(Agent):
             move,
             metadata={
                 "agent": self.name,
+                "model": self._model_name,
                 "seed": seed,
                 "simulations": self._simulations,
                 "bootstrap_prior": self._bootstrap_prior,
