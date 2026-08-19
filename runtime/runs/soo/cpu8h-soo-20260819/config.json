@@ -12,8 +12,8 @@
     "opening_suite_version": "production-openings-v1"
   },
   "inference": {
-    "max_batch_size": 64,
-    "max_wait_ms": 5,
+    "max_batch_size": 32,
+    "max_wait_ms": 2,
     "request_queue_capacity": 1024,
     "response_timeout_s": 600.0
   },
@@ -38,6 +38,7 @@
   "schema_version": 1,
   "self_play": {
     "bootstrap_prior": "canonical-target-vacancy-distance-v2",
+    "max_game_seconds": 900.0,
     "max_moves": 2000,
     "seed": 7,
     "temperature": 1.0,
@@ -45,14 +46,14 @@
   },
   "training": {
     "batch_size": 256,
-    "device": "cpu",
+    "device": "cuda:0",
     "learning_rate": 0.001,
     "seed": 7,
     "weight_decay": 0.0001
   },
   "workers": {
-    "games_per_iteration": 16,
+    "games_per_iteration": 32,
     "retry_id": "attempt-0",
-    "worker_count": 4
+    "worker_count": null
   }
 }
