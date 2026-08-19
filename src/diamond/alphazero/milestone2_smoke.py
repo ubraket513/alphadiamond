@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import itertools
 import json
 import tempfile
 from collections.abc import Mapping
@@ -12,9 +11,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .arena import MinArena, SooArena
-from .checkpoint import load_inference_checkpoint, save_checkpoint
+from .checkpoint import load_checkpoint, load_inference_checkpoint, save_checkpoint
 from .config import ArenaConfig, MCTSConfig, NetworkConfig, SelfPlayConfig, TrainingConfig
-from .evaluator.base import EvalRequest, EvalResult
+from .evaluator.base import EvalResult
+from .evaluator.torch import TorchEvaluator
 from .identity import CheckpointCompatibilitySpec, MIN_MODEL_NAME, SOO_MODEL_NAME
 from .inference.coordinator import InferenceConfig, InferenceCoordinator
 from .inference.protocol import InferenceRequest, InferenceResponse, ModelKey
@@ -31,10 +31,11 @@ from .orchestration.coordinator import (
 from .orchestration.replay_store import PersistentReplayStore
 from .orchestration.run_state import RunStage, RunStateStore, TrainingRunState
 from .orchestration.selfplay_workers import EpisodeResult, SelfPlayJob, SelfPlayWorkerPool
-from .rating.events import SooRatingEvent
+from .rating.events import MinRatingEvent, SooRatingEvent
 from .rating.participants import CheckpointParticipant
 from .rating.protocol import BenchmarkProtocol, EloConfig, TrueSkillConfig
 from .rating.registry import RatingRegistry
+from .replay import TrainingSample
 from .trainer import AlphaZeroTrainer
 from ..game.board import standard_board
 from ..game.rules import find_legal_move
@@ -132,35 +133,212 @@ class _PreferredBatchEvaluator:
         return tuple(responses)
 
 
-class _FinishingArenaEvaluator:
-    """Tiny arena evaluator configured with authoritative finishing actions."""
+class _ArtifactStore:
+    """Atomic JSON journals plus checkpoint paths for smoke stage artifacts."""
 
-    def __init__(self, value_size: int, actions: Mapping[tuple[int, ...], int]) -> None:
-        self.value_size = value_size
-        self.actions = dict(actions)
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
 
-    def evaluate(self, requests: tuple[EvalRequest, ...]) -> tuple[EvalResult, ...]:
-        value: float | tuple[float, ...]
-        value = 0.0 if self.value_size == 1 else (0.0, 0.0, 0.0)
-        return tuple(
-            EvalResult({
-                action: 1.0
-                if action == self.actions.get(request.canonical_player_ids, request.legal_action_ids[0])
-                else 0.0
-                for action in request.legal_action_ids
-            }, value)
-            for request in requests
+    def path(self, stage: str, operation_id: str, suffix: str = ".json") -> Path:
+        digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
+        return self.root / stage / f"{digest}{suffix}"
+
+    def read(self, stage: str, operation_id: str) -> dict[str, object] | None:
+        path = self.path(stage, operation_id)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid {stage} artifact: {error}") from error
+        if not isinstance(payload, dict) or payload.get("operation_id") != operation_id:
+            raise ValueError(f"invalid {stage} artifact identity")
+        return payload
+
+    def read_all(self, stage: str) -> tuple[dict[str, object], ...]:
+        directory = self.root / stage
+        if not directory.exists():
+            return ()
+        payloads: list[dict[str, object]] = []
+        for path in sorted(directory.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError(f"invalid {stage} artifact: {error}") from error
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("operation_id"), str
+            ):
+                raise ValueError(f"invalid {stage} artifact identity")
+            payloads.append(payload)
+        return tuple(payloads)
+
+    def write(self, stage: str, operation_id: str, payload: Mapping[str, object]) -> Path:
+        destination = self.path(stage, operation_id)
+        body = {"format_version": 1, "operation_id": operation_id, **dict(payload)}
+        encoded = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), allow_nan=False
         )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            if destination.read_text(encoding="utf-8") != encoded:
+                raise ValueError(f"conflicting {stage} artifact")
+            return destination
+        temporary = destination.with_suffix(f"{destination.suffix}.tmp")
+        temporary.write_text(encoded, encoding="utf-8")
+        temporary.replace(destination)
+        return destination
+
+
+def _sample_payload(sample: TrainingSample) -> dict[str, object]:
+    return {
+        "canonical_player_ids": sample.canonical_player_ids,
+        "node_features": sample.node_features,
+        "schema_version": sample.schema_version,
+        "sparse_policy": sample.sparse_policy,
+        "value_target": sample.value_target,
+    }
+
+
+def _sample_from_payload(
+    payload: Mapping[str, object], compatibility: CheckpointCompatibilitySpec
+) -> TrainingSample:
+    return TrainingSample(
+        compatibility=compatibility,
+        node_features=tuple(  # type: ignore[arg-type]
+            tuple(row) for row in payload["node_features"]
+        ),
+        canonical_player_ids=tuple(payload["canonical_player_ids"]),  # type: ignore[arg-type]
+        sparse_policy=tuple(  # type: ignore[arg-type]
+            tuple(row) for row in payload["sparse_policy"]
+        ),
+        value_target=tuple(payload["value_target"]),  # type: ignore[arg-type]
+        schema_version=payload["schema_version"],  # type: ignore[arg-type]
+    )
+
+
+def _episode_payload(episode: EpisodeResult) -> dict[str, object]:
+    return {
+        "aborted_reason": episode.aborted_reason,
+        "completed": episode.completed,
+        "final_order": episode.final_order,
+        "game_id": episode.game_id,
+        "model_key": episode.model_key.to_payload(),
+        "move_count": episode.move_count,
+        "retry_id": episode.retry_id,
+        "samples": [_sample_payload(sample) for sample in episode.samples],
+        "seed": episode.seed,
+        "worker_id": episode.worker_id,
+    }
+
+
+def _episode_from_payload(
+    payload: Mapping[str, object], compatibility: CheckpointCompatibilitySpec
+) -> EpisodeResult:
+    final_order = payload["final_order"]
+    return EpisodeResult(
+        game_id=payload["game_id"],  # type: ignore[arg-type]
+        seed=payload["seed"],  # type: ignore[arg-type]
+        retry_id=payload["retry_id"],  # type: ignore[arg-type]
+        model_key=ModelKey.from_payload(payload["model_key"]),
+        compatibility=compatibility,
+        samples=tuple(
+            _sample_from_payload(sample, compatibility)
+            for sample in payload["samples"]  # type: ignore[union-attr]
+        ),
+        final_order=(
+            tuple(final_order) if final_order is not None else None  # type: ignore[arg-type]
+        ),
+        move_count=payload["move_count"],  # type: ignore[arg-type]
+        completed=payload["completed"],  # type: ignore[arg-type]
+        aborted_reason=payload["aborted_reason"],  # type: ignore[arg-type]
+        worker_id=payload["worker_id"],  # type: ignore[arg-type]
+    )
+
+
+def _promotion_from_payload(payload: Mapping[str, object]) -> PromotionArtifact:
+    result = payload.get("result")
+    if not isinstance(result, Mapping):
+        raise ValueError("invalid promotion artifact result")
+    return PromotionArtifact(
+        operation_id=payload["operation_id"],  # type: ignore[arg-type]
+        promotion_protocol_id=payload["promotion_protocol_id"],  # type: ignore[arg-type]
+        candidate_sha256=payload["candidate_sha256"],  # type: ignore[arg-type]
+        champion_checkpoint=payload["champion_checkpoint"],  # type: ignore[arg-type]
+        promoted=payload["promoted"],  # type: ignore[arg-type]
+        result=dict(result),
+    )
+
+
+def _event_payload(event: SooRatingEvent | MinRatingEvent) -> dict[str, object]:
+    common = {
+        "completed": event.completed,
+        "opening_id": event.opening_id,
+        "participant_ids": event.participant_ids,
+        "protocol_id": event.protocol_id,
+        "seat_assignment": event.seat_assignment,
+        "sequence_index": event.sequence_index,
+        "turn_order": event.turn_order,
+    }
+    if isinstance(event, SooRatingEvent):
+        return {
+            **common,
+            "event_type": "soo",
+            "loser_id": event.loser_id,
+            "winner_id": event.winner_id,
+        }
+    return {**common, "event_type": "min", "final_ranking": event.final_ranking}
+
+
+def _event_from_payload(payload: Mapping[str, object]) -> SooRatingEvent | MinRatingEvent:
+    common = {
+        "completed": payload["completed"],
+        "opening_id": payload["opening_id"],
+        "participant_ids": tuple(payload["participant_ids"]),  # type: ignore[arg-type]
+        "protocol_id": payload["protocol_id"],
+        "seat_assignment": tuple(payload["seat_assignment"]),  # type: ignore[arg-type]
+        "sequence_index": payload["sequence_index"],
+        "turn_order": tuple(payload["turn_order"]),  # type: ignore[arg-type]
+    }
+    if payload.get("event_type") == "soo":
+        return SooRatingEvent(
+            **common,  # type: ignore[arg-type]
+            winner_id=payload["winner_id"],  # type: ignore[arg-type]
+            loser_id=payload["loser_id"],  # type: ignore[arg-type]
+        )
+    if payload.get("event_type") == "min":
+        ranking = payload["final_ranking"]
+        return MinRatingEvent(
+            **common,  # type: ignore[arg-type]
+            final_ranking=tuple(ranking) if ranking is not None else None,  # type: ignore[arg-type]
+        )
+    raise ValueError("invalid rating artifact event type")
 
 
 class _WorkerStage:
-    def __init__(self, actions: Mapping[tuple[str, int], int], worker_count: int) -> None:
+    def __init__(
+        self,
+        actions: Mapping[tuple[str, int], int],
+        worker_count: int,
+        compatibility: CheckpointCompatibilitySpec,
+        artifacts: _ArtifactStore,
+    ) -> None:
         self.actions = dict(actions)
         self.worker_count = worker_count
-        self.artifacts: dict[str, tuple[EpisodeResult, ...]] = {}
+        self.compatibility = compatibility
+        self.artifacts = artifacts
 
     def load(self, operation_id: str) -> tuple[EpisodeResult, ...] | None:
-        return self.artifacts.get(operation_id)
+        payload = self.artifacts.read("self_play", operation_id)
+        if payload is None:
+            return None
+        episodes = payload.get("episodes")
+        if not isinstance(episodes, list):
+            raise ValueError("invalid self_play artifact episodes")
+        return tuple(
+            _episode_from_payload(episode, self.compatibility)
+            for episode in episodes
+            if isinstance(episode, Mapping)
+        )
 
     def execute(
         self, operation_id: str, jobs: tuple[SelfPlayJob, ...]
@@ -184,17 +362,35 @@ class _WorkerStage:
             ).run(jobs)
         finally:
             coordinator.stop()
-        self.artifacts[operation_id] = episodes
+        self.artifacts.write(
+            "self_play",
+            operation_id,
+            {"episodes": [_episode_payload(episode) for episode in episodes]},
+        )
         return episodes
 
 
 class _TorchTrainingStage:
-    def __init__(self, trainer: AlphaZeroTrainer) -> None:
+    def __init__(self, trainer: AlphaZeroTrainer, artifacts: _ArtifactStore) -> None:
         self.trainer = trainer
-        self.artifacts: dict[str, TrainingStepArtifact] = {}
+        self.artifacts = artifacts
 
     def load(self, operation_id: str) -> TrainingStepArtifact | None:
-        return self.artifacts.get(operation_id)
+        payload = self.artifacts.read("training", operation_id)
+        if payload is None:
+            return None
+        checkpoint = self.artifacts.path("training", operation_id, ".pt")
+        load_checkpoint(checkpoint, self.trainer, expected=self.trainer.compatibility)
+        metrics = payload.get("metrics")
+        if not isinstance(metrics, Mapping):
+            raise ValueError("invalid training artifact metrics")
+        return TrainingStepArtifact(
+            operation_id=operation_id,
+            compatibility_namespace=payload["compatibility_namespace"],  # type: ignore[arg-type]
+            input_training_step=payload["input_training_step"],  # type: ignore[arg-type]
+            output_training_step=payload["output_training_step"],  # type: ignore[arg-type]
+            metrics=dict(metrics),
+        )
 
     def execute(
         self,
@@ -216,26 +412,46 @@ class _TorchTrainingStage:
             output_training_step=self.trainer.training_step,
             metrics=asdict(metrics),
         )
-        self.artifacts[operation_id] = artifact
+        save_checkpoint(
+            self.artifacts.path("training", operation_id, ".pt"), self.trainer
+        )
+        self.artifacts.write(
+            "training",
+            operation_id,
+            {
+                "compatibility_namespace": artifact.compatibility_namespace,
+                "input_training_step": artifact.input_training_step,
+                "metrics": dict(artifact.metrics),
+                "output_training_step": artifact.output_training_step,
+            },
+        )
         return artifact
 
 
 class _CheckpointStage:
-    def __init__(self, trainer: AlphaZeroTrainer) -> None:
+    def __init__(self, trainer: AlphaZeroTrainer, artifacts: _ArtifactStore) -> None:
         self.trainer = trainer
-        self.artifacts: dict[str, CandidateArtifact] = {}
-        self.read_only_loads = 0
+        self.artifacts = artifacts
 
     def load(self, operation_id: str) -> CandidateArtifact | None:
-        return self.artifacts.get(operation_id)
+        payload = self.artifacts.read("candidate", operation_id)
+        if payload is None:
+            return None
+        path = Path(payload["path"])  # type: ignore[arg-type]
+        participant = CheckpointParticipant.from_checkpoint(path)
+        return CandidateArtifact(
+            operation_id=operation_id,
+            path=path,
+            checkpoint_sha256=payload["checkpoint_sha256"],  # type: ignore[arg-type]
+            training_step=payload["training_step"],  # type: ignore[arg-type]
+            compatibility_namespace=payload["compatibility_namespace"],  # type: ignore[arg-type]
+            participant=participant,
+        )
 
     def execute(
         self, operation_id: str, path: Path, training: TrainingStepArtifact
     ) -> CandidateArtifact:
         save_checkpoint(path, self.trainer)
-        model = _new_model(self.trainer.compatibility)
-        load_inference_checkpoint(path, model, expected=self.trainer.compatibility, device="cpu")
-        self.read_only_loads += 1
         participant = CheckpointParticipant.from_checkpoint(path)
         artifact = CandidateArtifact(
             operation_id=operation_id,
@@ -245,15 +461,29 @@ class _CheckpointStage:
             compatibility_namespace=training.compatibility_namespace,
             participant=participant,
         )
-        self.artifacts[operation_id] = artifact
+        self.artifacts.write(
+            "candidate",
+            operation_id,
+            {
+                "checkpoint_sha256": artifact.checkpoint_sha256,
+                "compatibility_namespace": artifact.compatibility_namespace,
+                "path": str(artifact.path),
+                "training_step": artifact.training_step,
+            },
+        )
         return artifact
 
 
 class _ArenaStage:
-    def __init__(self, compatibility: CheckpointCompatibilitySpec, protocol_id: str) -> None:
+    def __init__(
+        self,
+        compatibility: CheckpointCompatibilitySpec,
+        protocol_id: str,
+        artifacts: _ArtifactStore,
+    ) -> None:
         self._compatibility = compatibility
         self._protocol_id = protocol_id
-        self.artifacts: dict[str, PromotionArtifact] = {}
+        self.artifacts = artifacts
 
     @property
     def compatibility(self) -> CheckpointCompatibilitySpec:
@@ -264,7 +494,24 @@ class _ArenaStage:
         return self._protocol_id
 
     def load(self, operation_id: str) -> PromotionArtifact | None:
-        return self.artifacts.get(operation_id)
+        payload = self.artifacts.read("promotion", operation_id)
+        return _promotion_from_payload(payload) if payload is not None else None
+
+    def find(
+        self, candidate_sha256: str, champion_checkpoint: str | None
+    ) -> PromotionArtifact | None:
+        matches = tuple(
+            artifact
+            for artifact in (
+                _promotion_from_payload(payload)
+                for payload in self.artifacts.read_all("promotion")
+            )
+            if artifact.candidate_sha256 == candidate_sha256
+            and artifact.champion_checkpoint == champion_checkpoint
+        )
+        if len(matches) > 1:
+            raise ValueError("multiple promotion artifacts match candidate and champion")
+        return matches[0] if matches else None
 
     def execute(
         self,
@@ -272,33 +519,72 @@ class _ArenaStage:
         candidate: CandidateArtifact,
         champion_checkpoint: str | None,
     ) -> PromotionArtifact:
+        if champion_checkpoint is None:
+            raise ValueError("promotion arena requires a champion checkpoint")
         player_count = self.compatibility.identity.player_count
-        evaluator = _FinishingArenaEvaluator(
-            1 if player_count == 2 else 3, _arena_finishing_actions(player_count)
+        value_size = 1 if player_count == 2 else 3
+        candidate_model = _new_model(self.compatibility)
+        candidate_info = load_inference_checkpoint(
+            candidate.path,
+            candidate_model,
+            expected=self.compatibility,
+            device="cpu",
+        )
+        champion_model = _new_model(self.compatibility)
+        champion_info = load_inference_checkpoint(
+            champion_checkpoint,
+            champion_model,
+            expected=self.compatibility,
+            device="cpu",
+        )
+        candidate_evaluator = TorchEvaluator(
+            candidate_model, value_size=value_size, device="cpu"
+        )
+        champion_evaluator = TorchEvaluator(
+            champion_model, value_size=value_size, device="cpu"
         )
         if player_count == 2:
             result = SooArena(
-                candidate=evaluator,
-                baseline=evaluator,
+                candidate=candidate_evaluator,
+                baseline=champion_evaluator,
                 mcts_config=MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
-                arena_config=ArenaConfig(games=4, seed=29, max_moves=2, promotion_threshold=0.0),
+                arena_config=ArenaConfig(
+                    games=4, seed=29, max_moves=2, promotion_threshold=0.5
+                ),
             ).run(_arena_game_factory(2))
         else:
             result = MinArena(
-                candidate=evaluator,
-                baseline=evaluator,
+                candidate=candidate_evaluator,
+                baseline=champion_evaluator,
                 mcts_config=MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
-                arena_config=ArenaConfig(games=18, seed=29, max_moves=2, promotion_threshold=0.0),
+                arena_config=ArenaConfig(
+                    games=18, seed=29, max_moves=2, promotion_threshold=0.0
+                ),
             ).run(_arena_game_factory(3))
+        result_payload = {
+            **asdict(result),
+            "candidate_evaluator_sha256": candidate_info.checkpoint_sha256,
+            "champion_evaluator_sha256": champion_info.checkpoint_sha256,
+        }
         artifact = PromotionArtifact(
             operation_id=operation_id,
             promotion_protocol_id=self.protocol_id,
             candidate_sha256=candidate.checkpoint_sha256,
             champion_checkpoint=champion_checkpoint,
             promoted=result.promoted,
-            result=asdict(result),
+            result=result_payload,
         )
-        self.artifacts[operation_id] = artifact
+        self.artifacts.write(
+            "promotion",
+            operation_id,
+            {
+                "candidate_sha256": artifact.candidate_sha256,
+                "champion_checkpoint": artifact.champion_checkpoint,
+                "promoted": artifact.promoted,
+                "promotion_protocol_id": artifact.promotion_protocol_id,
+                "result": dict(artifact.result),
+            },
+        )
         return artifact
 
 
@@ -307,10 +593,13 @@ class _RatingStage:
         self,
         protocol: BenchmarkProtocol,
         champion: CheckpointParticipant,
+        artifacts: _ArtifactStore,
+        promotion: _ArenaStage,
     ) -> None:
         self.protocol = protocol
         self.champion = champion
-        self.artifacts: dict[str, tuple[SooRatingEvent, ...]] = {}
+        self.artifacts = artifacts
+        self.promotion = promotion
         self.status = "eligible"
 
     @property
@@ -322,7 +611,24 @@ class _RatingStage:
         return self.protocol.protocol_id
 
     def load(self, operation_id: str) -> tuple[SooRatingEvent, ...] | None:
-        return self.artifacts.get(operation_id)
+        payload = self.artifacts.read("rating", operation_id)
+        if payload is None:
+            return None
+        events = payload.get("events")
+        if not isinstance(events, list):
+            raise ValueError("invalid rating artifact events")
+        status = payload.get("status")
+        if not isinstance(status, str):
+            raise ValueError("invalid rating artifact status")
+        self.status = status
+        loaded = tuple(
+            _event_from_payload(event)
+            for event in events
+            if isinstance(event, Mapping)
+        )
+        if not all(isinstance(event, SooRatingEvent) for event in loaded):
+            raise ValueError("Soo rating stage loaded an incompatible event")
+        return loaded  # type: ignore[return-value]
 
     def execute(
         self,
@@ -335,21 +641,59 @@ class _RatingStage:
             # fixture deliberately has only champion and candidate; never pad
             # the triple with a duplicate or invent a historical rating.
             self.status = "insufficient_history"
-            self.artifacts[operation_id] = ()
+            self.artifacts.write(
+                "rating", operation_id, {"events": [], "status": self.status}
+            )
             return ()
-        event = SooRatingEvent(
-            sequence_index=0,
-            protocol_id=self.protocol.protocol_id,
-            participant_ids=(candidate.participant.participant_id, self.champion.participant_id),
-            seat_assignment=(1, 2),
-            turn_order=(1, 2),
-            opening_id="tiny-authoritative-opening-v1",
-            completed=True,
-            winner_id=candidate.participant.participant_id,
-            loser_id=self.champion.participant_id,
+        promotion = self.promotion.find(
+            candidate.checkpoint_sha256, champion_checkpoint
         )
-        self.artifacts[operation_id] = (event,)
-        return (event,)
+        if promotion is None:
+            raise ValueError("rating benchmark requires a persisted promotion result")
+        wins = promotion.result.get("wins")
+        losses = promotion.result.get("losses")
+        if (
+            not isinstance(wins, int)
+            or isinstance(wins, bool)
+            or not isinstance(losses, int)
+            or isinstance(losses, bool)
+            or wins < 0
+            or losses < 0
+        ):
+            raise ValueError("promotion result has invalid completed Soo outcomes")
+        events: list[SooRatingEvent] = []
+        outcomes = (
+            *((candidate.participant.participant_id, self.champion.participant_id),) * wins,
+            *((self.champion.participant_id, candidate.participant.participant_id),) * losses,
+        )
+        for index, (winner_id, loser_id) in enumerate(outcomes):
+            events.append(
+                SooRatingEvent(
+                    sequence_index=index,
+                    protocol_id=self.protocol.protocol_id,
+                    participant_ids=(
+                        candidate.participant.participant_id,
+                        self.champion.participant_id,
+                    ),
+                    seat_assignment=(1, 2) if index % 2 == 0 else (2, 1),
+                    turn_order=(1, 2) if (index // 2) % 2 == 0 else (2, 1),
+                    opening_id=f"tiny-promotion-arena-{index}",
+                    completed=True,
+                    winner_id=winner_id,
+                    loser_id=loser_id,
+                )
+            )
+        self.status = "eligible" if events else "no_completed_outcome"
+        result = tuple(events)
+        self.artifacts.write(
+            "rating",
+            operation_id,
+            {
+                "events": [_event_payload(event) for event in result],
+                "status": self.status,
+            },
+        )
+        return result
 
 
 def _compatibility_namespace(compatibility: CheckpointCompatibilitySpec) -> str:
@@ -372,22 +716,65 @@ def _new_model(compatibility: CheckpointCompatibilitySpec) -> SooModel | MinMode
 def _arena_game_factory(player_count: int):
     def factory(order: tuple[int, ...]) -> DiamondSearchAdapter:
         players = build_players(player_count, order=order)
-        state, _actions = _near_terminal_state(
-            players, finishers=player_count - 1
-        )
-        return DiamondSearchAdapter(AlphaZeroGameAdapter(players, initial=state))
+        return _forced_terminal_game(players)
 
     return factory
 
 
-def _arena_finishing_actions(player_count: int) -> dict[tuple[int, ...], int]:
-    actions: dict[tuple[int, ...], int] = {}
-    for order in itertools.permutations(range(1, player_count + 1)):
-        players = build_players(player_count, order=order)
-        state, finishing = _near_terminal_state(players, finishers=player_count - 1)
-        request = DiamondSearchAdapter(AlphaZeroGameAdapter(players, initial=state)).evaluation_request(state)
-        actions[request.canonical_player_ids] = dict(finishing)[state.current_player_id]
-    return actions
+def _forced_terminal_game(players: tuple[PlayerSpec, ...]) -> DiamondSearchAdapter:
+    """Return a game where every legal action completes the current placement."""
+    board = standard_board()
+    already_finished = players[: len(players) - 2]
+    active = players[len(players) - 2]
+    occupancy = [EMPTY] * len(board)
+    for player in already_finished:
+        for position in board.camp_positions(player.target_camp):
+            occupancy[position] = player.id
+    active_target = board.camp_positions(active.target_camp)
+    reserved_targets = {
+        position
+        for player in (*already_finished, active)
+        for position in board.camp_positions(player.target_camp)
+    }
+    entry: int | None = None
+    destination: int | None = None
+    for candidate in active_target:
+        for neighbour in board.neighbours(candidate):
+            if neighbour is not None and neighbour not in reserved_targets:
+                entry, destination = neighbour, candidate
+                break
+        if entry is not None:
+            break
+    if entry is None or destination is None:
+        raise RuntimeError("unable to create forced terminal arena state")
+    for position in active_target:
+        if position != destination:
+            occupancy[position] = active.id
+    occupancy[entry] = active.id
+    blocker = players[-1].id
+    for position, occupant in enumerate(occupancy):
+        if occupant == EMPTY and position != destination:
+            occupancy[position] = blocker
+    forced = GameState(
+        tuple(occupancy),
+        active.id,
+        40,
+        finish_order=tuple(player.id for player in already_finished),
+    )
+    game = DiamondSearchAdapter(
+        AlphaZeroGameAdapter(players, board=board, initial=forced)
+    )
+    legal = game.legal_action_ids(forced)
+    if not legal or any(
+        not game.is_terminal(game.apply_action(forced, action)) for action in legal
+    ):
+        raise RuntimeError("forced arena actions must all reach terminal state")
+    if any(
+        active.id not in game.apply_action(forced, action).finish_order
+        for action in legal
+    ):
+        raise RuntimeError("forced arena fixture did not reach an authoritative terminal state")
+    return game
 
 
 def _build_jobs(
@@ -446,16 +833,22 @@ class TinyTrainingServices:
                 if model_name == SOO_MODEL_NAME
                 else TrueSkillConfig().rating_system_version
             ),
-            rating_parameters=asdict(EloConfig() if model_name == SOO_MODEL_NAME else TrueSkillConfig()),
+            rating_parameters=asdict(
+                EloConfig() if model_name == SOO_MODEL_NAME else TrueSkillConfig()
+            ),
         )
 
-    def _runtime(self, run_id: str, *, create: bool) -> tuple[TrainingCoordinator, RunStateStore, _RatingStage, _CheckpointStage]:
+    def _runtime(
+        self, run_id: str, *, create: bool
+    ) -> tuple[TrainingCoordinator, RunStateStore, _RatingStage, _CheckpointStage]:
         run_root = self.root / self.model_name.lower() / run_id
         bootstrap = run_root / "bootstrap.pt"
         if create:
             if bootstrap.exists():
                 raise ValueError(f"training run already exists: {run_id}")
-            trainer = AlphaZeroTrainer(_new_model(self.compatibility), self.compatibility, _TRAINING)
+            trainer = AlphaZeroTrainer(
+                _new_model(self.compatibility), self.compatibility, _TRAINING
+            )
             save_checkpoint(bootstrap, trainer)
             champion = CheckpointParticipant.from_checkpoint(bootstrap)
             registry = RatingRegistry(self.protocol)
@@ -465,7 +858,11 @@ class TinyTrainingServices:
                 raise ValueError(f"training run does not exist: {run_id} ({self.model_name})")
             champion = CheckpointParticipant.from_checkpoint(bootstrap)
             registry_path = run_root / "ratings" / "registry.json"
-            registry = RatingRegistry.load(registry_path) if registry_path.exists() else RatingRegistry(self.protocol)
+            registry = (
+                RatingRegistry.load(registry_path)
+                if registry_path.exists()
+                else RatingRegistry(self.protocol)
+            )
             if not registry.participants:
                 registry.add_participant(champion)
 
@@ -483,10 +880,19 @@ class TinyTrainingServices:
         replay = PersistentReplayStore(
             run_root / "replay", self.compatibility, capacity=8, seed=17
         )
+        artifacts = _ArtifactStore(run_root / "artifacts")
         trainer = AlphaZeroTrainer(_new_model(self.compatibility), self.compatibility, _TRAINING)
-        worker = _WorkerStage(actions_by_model, self.worker_config.worker_count)
-        checkpoints = _CheckpointStage(trainer)
-        rating = _RatingStage(self.protocol, champion)
+        worker = _WorkerStage(
+            actions_by_model,
+            self.worker_config.worker_count,
+            self.compatibility,
+            artifacts,
+        )
+        checkpoints = _CheckpointStage(trainer, artifacts)
+        promotion = _ArenaStage(
+            self.compatibility, self.promotion_protocol_id, artifacts
+        )
+        rating = _RatingStage(self.protocol, champion, artifacts, promotion)
         coordinator = TrainingCoordinator(
             state_store=state_store,
             compatibility=self.compatibility,
@@ -502,9 +908,9 @@ class TinyTrainingServices:
             ),
             self_play=worker,
             replay_store=replay,
-            training=_TorchTrainingStage(trainer),
+            training=_TorchTrainingStage(trainer, artifacts),
             checkpoints=checkpoints,
-            promotion=_ArenaStage(self.compatibility, self.promotion_protocol_id),
+            promotion=promotion,
             benchmark=rating,
             rating_registry=registry,
         )
@@ -537,7 +943,12 @@ class TinyTrainingServices:
         registry = self._load_registry(run_id)
         return {
             "events": len(registry.events),
-            "rating_status": "eligible" if registry.has_sufficient_min_history or self.model_name == SOO_MODEL_NAME else "insufficient_history",
+            "rating_status": (
+                "eligible"
+                if registry.has_sufficient_min_history
+                or self.model_name == SOO_MODEL_NAME
+                else "insufficient_history"
+            ),
         }
 
     def leaderboard(self, *, model_name: str, run_id: str) -> Mapping[str, object]:
@@ -570,7 +981,15 @@ class TinyTrainingServices:
             "candidate_checkpoint": state.candidate_checkpoint,
             "rating_events": len(state.rating_records[-1]["event_ids"]),
             "rating_status": rating.status,
-            "read_only_checkpoint_loads": checkpoints.read_only_loads,
+            "read_only_checkpoint_loads": (
+                2
+                if state.promotion_records
+                and "candidate_evaluator_sha256"
+                in state.promotion_records[-1]["result"]
+                and "champion_evaluator_sha256"
+                in state.promotion_records[-1]["result"]
+                else 0
+            ),
             "stage": state.stage.value,
             "training_step": state.training_step,
         }
@@ -593,12 +1012,15 @@ def _run_model(root: Path, model_name: str) -> dict[str, object]:
     )
     registry = services._load_registry(run_id)
     return {
-        "candidate_read_only_loaded": result["read_only_checkpoint_loads"] == 1,
+        "candidate_read_only_loaded": result["read_only_checkpoint_loads"] == 2,
         "participant_count": len(registry.participants),
         "rating_events": result["rating_events"],
         "rating_status": result["rating_status"],
         "replay_reloaded": len(replay.load_buffer()) > 0,
-        "state_reloaded": persisted == state_store.load(run_id, model_name) and resumed["stage"] == RunStage.COMPLETE.value,
+        "state_reloaded": (
+            persisted == state_store.load(run_id, model_name)
+            and resumed["stage"] == RunStage.COMPLETE.value
+        ),
         "training_step": result["training_step"],
         "worker_games": len(persisted.completed_game_ids),
     }
@@ -630,7 +1052,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"error": str(error), "status": "error"}, sort_keys=True))
         return 3
     except Exception as error:
-        print(json.dumps({"error": f"{type(error).__name__}: {error}", "status": "error"}, sort_keys=True))
+        print(
+            json.dumps(
+                {"error": f"{type(error).__name__}: {error}", "status": "error"},
+                sort_keys=True,
+            )
+        )
         return 4
     return 0
 
