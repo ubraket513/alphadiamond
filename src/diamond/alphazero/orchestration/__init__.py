@@ -10,9 +10,13 @@ from .selfplay_workers import (
     derive_game_seed,
     run_selfplay_job,
 )
+from .replay_store import PersistentReplayStore, ReplayManifest, ReplayStoreError
 
 __all__ = [
     "EpisodeResult",
+    "PersistentReplayStore",
+    "ReplayManifest",
+    "ReplayStoreError",
     "SelfPlayJob",
     "SelfPlayWorkerError",
     "SelfPlayWorkerPool",
