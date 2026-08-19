@@ -390,6 +390,23 @@ class RunStateStore:
         )
         return self._commit(current, candidate)
 
+    def start_next_iteration(self, state: TrainingRunState) -> TrainingRunState:
+        """Atomically reset completed iteration work while preserving run lineage."""
+        if not isinstance(state, TrainingRunState):
+            raise RunStateError("state must be a TrainingRunState")
+        if state.stage is not RunStage.COMPLETE:
+            raise RunStateError("only a COMPLETE run can start its next iteration")
+        current = self._load_for_commit(state)
+        candidate = replace(
+            state,
+            stage=RunStage.INITIALIZE,
+            generation=state.generation + 1,
+            candidate_checkpoint=None,
+            completed_game_ids=(),
+            stage_completions={},
+        )
+        return self._commit(current, candidate)
+
     def _load_for_commit(self, state: TrainingRunState) -> TrainingRunState:
         try:
             current = self.load(state.run_id, state.model_name)

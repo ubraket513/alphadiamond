@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 from diamond.alphazero.config import MCTSConfig, NetworkConfig, SelfPlayConfig
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.inference.protocol import ModelKey
@@ -70,11 +72,15 @@ def _participant(
     )
 
 
-def _job(compatibility: CheckpointCompatibilitySpec) -> SelfPlayJob:
+def _job(
+    compatibility: CheckpointCompatibilitySpec,
+    *,
+    iteration: int = 0,
+) -> SelfPlayJob:
     players = build_players(2)
     return SelfPlayJob(
         run_seed=91,
-        iteration=0,
+        iteration=iteration,
         game_index=0,
         retry_id="attempt-0",
         model_key=ModelKey("Soo", "2.0.0", "a" * 64),
@@ -108,9 +114,9 @@ def _episode(job: SelfPlayJob) -> EpisodeResult:
 
 
 class _SelfPlayStage:
-    def __init__(self, order: list[str], episode: EpisodeResult) -> None:
+    def __init__(self, order: list[str], *episodes: EpisodeResult) -> None:
         self.order = order
-        self.episode = episode
+        self.episodes = {episode.game_id: episode for episode in episodes}
         self.artifacts: dict[str, tuple[EpisodeResult, ...]] = {}
 
     def load(self, operation_id: str) -> tuple[EpisodeResult, ...] | None:
@@ -120,7 +126,7 @@ class _SelfPlayStage:
         self, operation_id: str, jobs: tuple[SelfPlayJob, ...]
     ) -> tuple[EpisodeResult, ...]:
         self.order.append("self_play")
-        result = (self.episode,)
+        result = tuple(self.episodes[job.game_id] for job in jobs)
         self.artifacts[operation_id] = result
         return result
 
@@ -142,7 +148,7 @@ class _TrainingStage:
         expected_training_step: int,
     ) -> TrainingStepArtifact:
         self.order.append("train")
-        assert len(replay.load_buffer()) == 1
+        assert len(replay.load_buffer()) >= batch_size
         artifact = TrainingStepArtifact(
             operation_id=operation_id,
             compatibility_namespace=self.compatibility_namespace,
@@ -195,10 +201,24 @@ class _CheckpointStage:
 
 
 class _PromotionStage:
-    def __init__(self, order: list[str], protocol_id: str) -> None:
+    def __init__(
+        self,
+        order: list[str],
+        protocol_id: str,
+        compatibility: CheckpointCompatibilitySpec,
+    ) -> None:
         self.order = order
-        self.protocol_id = protocol_id
+        self._protocol_id = protocol_id
+        self._compatibility = compatibility
         self.artifacts: dict[str, PromotionArtifact] = {}
+
+    @property
+    def protocol_id(self) -> str:
+        return self._protocol_id
+
+    @property
+    def compatibility(self) -> CheckpointCompatibilitySpec:
+        return self._compatibility
 
     def load(self, operation_id: str) -> PromotionArtifact | None:
         return self.artifacts.get(operation_id)
@@ -234,6 +254,14 @@ class _BenchmarkStage:
         self.champion = champion
         self.artifacts: dict[str, tuple[SooRatingEvent, ...]] = {}
 
+    @property
+    def protocol_id(self) -> str:
+        return self.protocol.protocol_id
+
+    @property
+    def compatibility(self) -> CheckpointCompatibilitySpec:
+        return self.protocol.compatibility
+
     def load(self, operation_id: str) -> tuple[SooRatingEvent, ...] | None:
         return self.artifacts.get(operation_id)
 
@@ -268,6 +296,23 @@ class _RecordingReplay(PersistentReplayStore):
     def ingest_episode(self, episode: EpisodeResult) -> bool:
         self.order.append("replay")
         return super().ingest_episode(episode)
+
+
+class _InterruptSecondTrainingTransition(RunStateStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.interrupted = False
+
+    def transition(self, state, next_stage, *, completion_marker, **changes):
+        if state.iteration == 1 and state.stage is RunStage.TRAIN and not self.interrupted:
+            self.interrupted = True
+            raise RuntimeError("interrupt second iteration after training")
+        return super().transition(
+            state,
+            next_stage,
+            completion_marker=completion_marker,
+            **changes,
+        )
 
 
 def test_run_iteration_executes_durable_stages_in_run_stage_order(tmp_path: Path) -> None:
@@ -316,7 +361,7 @@ def test_run_iteration_executes_durable_stages_in_run_stage_order(tmp_path: Path
         replay_store=replay,
         training=_TrainingStage(order, state.compatibility_namespace),
         checkpoints=_CheckpointStage(order, compatibility),
-        promotion=_PromotionStage(order, promotion_protocol_id),
+        promotion=_PromotionStage(order, promotion_protocol_id, compatibility),
         benchmark=_BenchmarkStage(order, protocol, champion),
         rating_registry=registry,
     )
@@ -338,3 +383,89 @@ def test_run_iteration_executes_durable_stages_in_run_stage_order(tmp_path: Path
     )
     assert Path(completed.candidate_checkpoint).exists()
     assert (tmp_path / "runs" / "soo" / "run-order" / "ratings" / "registry.json").exists()
+
+
+def test_two_iterations_reset_working_state_and_resume_each_side_effect_once(
+    tmp_path: Path,
+) -> None:
+    compatibility = _compatibility()
+    protocol = _protocol(compatibility)
+    promotion_protocol_id = "soo-promotion-arena-v1"
+    champion = _participant(
+        compatibility,
+        training_step=0,
+        checkpoint_sha256="1" * 64,
+    )
+    registry = RatingRegistry(protocol)
+    registry.add_participant(champion)
+    state_store = _InterruptSecondTrainingTransition(tmp_path / "runs")
+    state = state_store.initialize(
+        run_id="run-twice",
+        compatibility=compatibility,
+        run_seed=91,
+        protocol_ids={
+            "promotion": promotion_protocol_id,
+            "rating": protocol.protocol_id,
+        },
+        champion_checkpoint=str(tmp_path / "champion.pt"),
+    )
+    jobs = (_job(compatibility, iteration=0), _job(compatibility, iteration=1))
+    order: list[str] = []
+    replay = _RecordingReplay(
+        tmp_path / "replay",
+        compatibility,
+        capacity=8,
+        order=order,
+    )
+    self_play = _SelfPlayStage(order, *(_episode(job) for job in jobs))
+    training = _TrainingStage(order, state.compatibility_namespace)
+    checkpoints = _CheckpointStage(order, compatibility)
+    promotion = _PromotionStage(order, promotion_protocol_id, compatibility)
+    benchmark = _BenchmarkStage(order, protocol, champion)
+    coordinator = TrainingCoordinator(
+        state_store=state_store,
+        compatibility=compatibility,
+        worker_config=WorkerConfig(worker_count=1, games_per_iteration=1),
+        loop_config=TrainingLoopConfig(
+            replay_batch_size=1,
+            promotion_protocol_id=promotion_protocol_id,
+            benchmark_protocol_id=protocol.protocol_id,
+        ),
+        persistence_config=PersistenceConfig(root=tmp_path / "runs"),
+        build_selfplay_jobs=lambda current, _config: (jobs[current.iteration],),
+        self_play=self_play,
+        replay_store=replay,
+        training=training,
+        checkpoints=checkpoints,
+        promotion=promotion,
+        benchmark=benchmark,
+        rating_registry=registry,
+    )
+
+    first = coordinator.run_iteration(state)
+    second_start = coordinator.start_next_iteration(first)
+
+    assert second_start.stage is RunStage.INITIALIZE
+    assert second_start.iteration == 1
+    assert second_start.champion_checkpoint == first.champion_checkpoint
+    assert second_start.training_step == first.training_step
+    assert second_start.replay_manifest == first.replay_manifest
+    assert second_start.candidate_checkpoint is None
+    assert second_start.completed_game_ids == ()
+    assert second_start.stage_completions == {}
+
+    with pytest.raises(RuntimeError, match="interrupt second iteration after training"):
+        coordinator.run_iteration(second_start)
+    second = coordinator.resume(state.run_id, "Soo")
+
+    expected_stages = ["self_play", "replay", "train", "candidate", "arena", "rating"]
+    assert order == [*expected_stages, *expected_stages]
+    assert second.stage is RunStage.COMPLETE
+    assert second.iteration == 2
+    assert second.training_step == 2
+    assert second.completed_game_ids == (jobs[1].game_id,)
+    assert replay.manifest.game_ids == (jobs[0].game_id, jobs[1].game_id)
+    assert len(second.promotion_records) == 2
+    assert len(second.rating_records) == 2
+    assert [record["iteration"] for record in second.promotion_records] == [0, 1]
+    assert [record["iteration"] for record in second.rating_records] == [0, 1]

@@ -166,6 +166,12 @@ class CheckpointStage(Protocol):
 
 
 class PromotionStage(Protocol):
+    @property
+    def compatibility(self) -> CheckpointCompatibilitySpec: ...
+
+    @property
+    def protocol_id(self) -> str: ...
+
     def load(self, operation_id: str) -> PromotionArtifact | None: ...
 
     def execute(
@@ -177,6 +183,12 @@ class PromotionStage(Protocol):
 
 
 class BenchmarkStage(Protocol):
+    @property
+    def compatibility(self) -> CheckpointCompatibilitySpec: ...
+
+    @property
+    def protocol_id(self) -> str: ...
+
     def load(self, operation_id: str) -> tuple[RatingEvent, ...] | None: ...
 
     def execute(
@@ -266,6 +278,11 @@ class TrainingCoordinator:
         """Load an interrupted run and advance only its unfinished stages."""
         return self.run_iteration(self.state_store.load(run_id, model_name))
 
+    def start_next_iteration(self, state: TrainingRunState) -> TrainingRunState:
+        """Atomically open the next iteration from an authoritative completed run."""
+        self._validate_authoritative_state(state)
+        return self.state_store.start_next_iteration(state)
+
     def _validate_authoritative_state(self, state: TrainingRunState) -> None:
         if not isinstance(state, TrainingRunState):
             raise CoordinatorError("state must be a TrainingRunState")
@@ -286,6 +303,30 @@ class TrainingCoordinator:
             raise CoordinatorError("training run protocol namespace changed")
         if self.rating_registry.protocol.protocol_id != self.loop_config.benchmark_protocol_id:
             raise CoordinatorError("rating registry benchmark protocol changed")
+        self._validate_evaluation_identity(
+            "promotion",
+            self.promotion.compatibility,
+            self.promotion.protocol_id,
+            self.loop_config.promotion_protocol_id,
+        )
+        self._validate_evaluation_identity(
+            "benchmark",
+            self.benchmark.compatibility,
+            self.benchmark.protocol_id,
+            self.loop_config.benchmark_protocol_id,
+        )
+
+    def _validate_evaluation_identity(
+        self,
+        stage_name: str,
+        compatibility: CheckpointCompatibilitySpec,
+        protocol_id: str,
+        expected_protocol_id: str,
+    ) -> None:
+        if compatibility != self.compatibility:
+            raise CoordinatorError(f"{stage_name} stage compatibility does not match run")
+        if protocol_id != expected_protocol_id:
+            raise CoordinatorError(f"{stage_name} stage protocol identity does not match run")
 
     def _advance(self, state: TrainingRunState) -> TrainingRunState:
         handlers = {
@@ -458,6 +499,7 @@ class TrainingCoordinator:
             )
         self._validate_promotion(state, operation_id, candidate, artifact)
         record = {
+            "iteration": state.iteration,
             "operation_id": operation_id,
             "promotion_protocol_id": artifact.promotion_protocol_id,
             "candidate_checkpoint": str(candidate.path),
@@ -504,6 +546,7 @@ class TrainingCoordinator:
             self.rating_registry.record_event(event)
         self._persist_rating_registry(state)
         record = {
+            "iteration": state.iteration,
             "operation_id": operation_id,
             "protocol_id": self.loop_config.benchmark_protocol_id,
             "candidate_checkpoint": str(candidate.path),

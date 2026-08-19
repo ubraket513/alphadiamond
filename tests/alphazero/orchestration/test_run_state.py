@@ -101,6 +101,51 @@ def test_transitions_follow_the_exact_order_and_mark_completed_stages(tmp_path) 
         store.transition(state, RunStage.INITIALIZE, completion_marker="restart")
 
 
+def test_complete_run_atomically_starts_the_incremented_iteration(tmp_path) -> None:
+    store = RunStateStore(tmp_path)
+    state = _initialize(tmp_path)
+    state = store.transition(state, RunStage.SELF_PLAY, completion_marker="initialize")
+    state = store.save(
+        replace(
+            state,
+            champion_checkpoint="checkpoints/champion-1.json",
+            candidate_checkpoint="checkpoints/candidate-1.json",
+            training_step=23,
+            replay_manifest="replay/manifest.json",
+            completed_game_ids=("game-1",),
+            promotion_records=({"iteration": 0, "promoted": True},),
+            rating_records=({"iteration": 0, "event_ids": ["event-1"]},),
+        )
+    )
+    remaining = tuple(RunStage)[2:]
+    for next_stage in remaining:
+        changes = {"iteration": 1} if next_stage is RunStage.COMPLETE else {}
+        state = store.transition(
+            state,
+            next_stage,
+            completion_marker=f"complete-{state.stage.value}",
+            **changes,
+        )
+
+    next_iteration = store.start_next_iteration(state)
+
+    assert next_iteration.stage is RunStage.INITIALIZE
+    assert next_iteration.iteration == 1
+    assert next_iteration.generation == state.generation + 1
+    assert next_iteration.model_identity == state.model_identity
+    assert next_iteration.compatibility == state.compatibility
+    assert next_iteration.protocol_ids == state.protocol_ids
+    assert next_iteration.champion_checkpoint == "checkpoints/champion-1.json"
+    assert next_iteration.training_step == 23
+    assert next_iteration.replay_manifest == "replay/manifest.json"
+    assert next_iteration.promotion_records == state.promotion_records
+    assert next_iteration.rating_records == state.rating_records
+    assert next_iteration.candidate_checkpoint is None
+    assert next_iteration.completed_game_ids == ()
+    assert next_iteration.stage_completions == {}
+    assert store.load(state.run_id, "Soo") == next_iteration
+
+
 def test_transition_rejects_skips_and_save_rejects_identity_changes(tmp_path) -> None:
     store = RunStateStore(tmp_path)
     state = _initialize(tmp_path)

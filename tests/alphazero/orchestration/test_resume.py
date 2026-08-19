@@ -55,12 +55,32 @@ class _InterruptingStateStore(RunStateStore):
 
 
 class _DurableStage:
-    def __init__(self, execute: Callable[..., object]) -> None:
+    def __init__(
+        self,
+        execute: Callable[..., object],
+        *,
+        compatibility: CheckpointCompatibilitySpec | None = None,
+        protocol_id: str | None = None,
+    ) -> None:
         self._execute = execute
+        self._compatibility = compatibility
+        self._protocol_id = protocol_id
         self.artifacts: dict[str, object] = {}
+        self.loads = 0
         self.executions = 0
 
+    @property
+    def compatibility(self) -> CheckpointCompatibilitySpec:
+        assert self._compatibility is not None
+        return self._compatibility
+
+    @property
+    def protocol_id(self) -> str:
+        assert self._protocol_id is not None
+        return self._protocol_id
+
     def load(self, operation_id: str) -> object | None:
+        self.loads += 1
         return self.artifacts.get(operation_id)
 
     def execute(self, operation_id: str, *args: object) -> object:
@@ -164,7 +184,15 @@ def _episode(job: SelfPlayJob) -> EpisodeResult:
     )
 
 
-def _harness(tmp_path: Path, *, promoted: bool = True) -> SimpleNamespace:
+def _harness(
+    tmp_path: Path,
+    *,
+    promoted: bool = True,
+    promotion_compatibility: CheckpointCompatibilitySpec | None = None,
+    promotion_identity_protocol: str | None = None,
+    benchmark_compatibility: CheckpointCompatibilitySpec | None = None,
+    benchmark_identity_protocol: str | None = None,
+) -> SimpleNamespace:
     compatibility = _compatibility()
     protocol = _protocol(compatibility)
     promotion_protocol = "soo-promotion-v1"
@@ -240,7 +268,11 @@ def _harness(tmp_path: Path, *, promoted: bool = True) -> SimpleNamespace:
             result={"wins": 4 if promoted else 0, "losses": 0 if promoted else 4},
         )
 
-    promotion = _DurableStage(run_arena)
+    promotion = _DurableStage(
+        run_arena,
+        compatibility=promotion_compatibility or compatibility,
+        protocol_id=promotion_identity_protocol or promotion_protocol,
+    )
 
     def run_benchmark(
         operation_id: str,
@@ -264,7 +296,11 @@ def _harness(tmp_path: Path, *, promoted: bool = True) -> SimpleNamespace:
             ),
         )
 
-    benchmark = _DurableStage(run_benchmark)
+    benchmark = _DurableStage(
+        run_benchmark,
+        compatibility=benchmark_compatibility or compatibility,
+        protocol_id=benchmark_identity_protocol or protocol.protocol_id,
+    )
     coordinator = TrainingCoordinator(
         state_store=state_store,
         compatibility=compatibility,
@@ -376,3 +412,39 @@ def test_resume_rejects_changed_benchmark_protocol_namespace(tmp_path: Path) -> 
         harness.coordinator.run_iteration(harness.state)
 
     assert harness.self_play.executions == 0
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "identity_field"),
+    [
+        ("promotion", "compatibility"),
+        ("promotion", "protocol"),
+        ("benchmark", "compatibility"),
+        ("benchmark", "protocol"),
+    ],
+)
+def test_evaluation_identity_mismatch_fails_before_any_load_or_execute(
+    tmp_path: Path,
+    stage_name: str,
+    identity_field: str,
+) -> None:
+    changes: dict[str, object] = {}
+    if stage_name == "promotion" and identity_field == "compatibility":
+        changes["promotion_compatibility"] = _compatibility("min")
+    elif stage_name == "promotion":
+        changes["promotion_identity_protocol"] = "changed-promotion"
+    elif identity_field == "compatibility":
+        changes["benchmark_compatibility"] = _compatibility("min")
+    else:
+        changes["benchmark_identity_protocol"] = "changed-benchmark"
+    harness = _harness(tmp_path, **changes)
+
+    with pytest.raises(CoordinatorError, match=f"{stage_name}.*{identity_field}"):
+        harness.coordinator.run_iteration(harness.state)
+
+    assert harness.self_play.loads == 0
+    assert harness.self_play.executions == 0
+    assert harness.promotion.loads == 0
+    assert harness.promotion.executions == 0
+    assert harness.benchmark.loads == 0
+    assert harness.benchmark.executions == 0
