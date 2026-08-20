@@ -233,3 +233,188 @@ Compare `samples_per_hour`, not `sec/game`, and check `abort_reasons` — a fast
 `sec/game` bought by discarded games is not a speedup. If the round trip does
 not fall, the remaining cost is in the four IPC hops rather than the parent
 loop, which redirects the next optimisation.
+
+---
+---
+
+# Round 2 — decomposing the residual 20.4 ms
+
+Follow-up investigation into the ~15 ms sitting outside the neural network
+after the `_InferenceBridge` fix. Same checkpoint
+(`sha256:4b2a32ff…0ceb1320`, step 72), same 8-core host, `torch` threads 4.
+
+**Outcome: no production change. Two candidate optimizations were implemented
+and both measured slower than the current code on the real workload, so both
+were reverted.** The measurements below are the deliverable.
+
+## Pure multiprocessing transport floor
+
+Real spawn processes, real `multiprocessing.Queue`, real `InferenceRequest` /
+`InferenceResponse` objects with realistic 73x4 Soo features, real correlation
+and routing. The parent echoes a valid response immediately — no NN, no
+batching wait.
+
+| | |
+|---|---|
+| Round trip p50 | **0.873 ms** |
+| Round trip mean / p90 / p99 | 0.895 / 1.135 / 1.579 ms |
+| Throughput | 3,398 echo-evals/s |
+| Request payload | 3,308 bytes — encode 0.011 ms, decode 0.012 ms |
+| Response payload | 1,784 bytes — encode 0.011 ms, decode 0.011 ms |
+
+**This settles the IPC question. Process transport and pickle cost under 1 ms
+of the round trip, not 15 ms.** The brief's own criterion — "if it measures
+~4–6 ms, then the remaining 20 ms cannot reasonably be described as 15 ms of
+IPC" — is met with room to spare. Serialization is not worth optimizing, and a
+shared-memory redesign would target a cost that is not there.
+
+## Residual latency breakdown
+
+4 workers, 32 sims, `max_moves` 120, `max_wait_ms` 5. Worker round trip is
+measured inside the child around `RemoteEvaluator.evaluate`; the rest come from
+the coordinator's existing metrics.
+
+| Component | mean | p50 | p90 |
+|---|---|---|---|
+| worker → parent → worker (both boundaries) | ~1.6 ms | — | — |
+| coordinator queue → dispatch (batching wait) | — | 4.70 ms | 5.17 ms |
+| CPU NN evaluator | 5.25 ms | 5.14 ms | — |
+| **worker-visible total** | **11.77 ms** | **11.70 ms** | **13.52 ms** |
+
+The two process boundaries are derived as worker round trip (11.77) minus the
+coordinator's own submit→response span (10.15), and agree with the 0.87 ms
+floor measured independently.
+
+Note the worker-visible round trip here is 11.7 ms, better than the 20.4 ms
+recorded in round 1 — that figure was derived as `workers / evals_per_second`,
+which counts queueing under load rather than the latency one request sees.
+
+## Batching wait experiment
+
+Only `max_wait_ms` changed. Everything else identical, including seeds; all
+rows produced the same 22,612 requests, 572 samples, 7/8 completed, and the
+same single `max_game_moves_exceeded` abort.
+
+| `max_wait_ms` | worker RT p50 | queue→dispatch p50 | mean batch | evals/s | samples/h | sec/game |
+|---|---|---|---|---|---|---|
+| 1 | 17.41 ms | 10.91 ms | 1.006 | 195.3 | 17,788 | 14.47 |
+| 2 | 14.86 ms | 9.51 ms | 1.002 | 217.5 | 19,809 | 12.99 |
+| **5** | **11.70 ms** | **4.70 ms** | **3.349** | **258.9** | **23,579** | **10.92** |
+| 10 | 19.66 ms | 9.59 ms | 3.338 | 154.5 | 14,072 | 18.29 |
+| 20 | 28.42 ms | 19.72 ms | 3.356 | 111.2 | 10,129 | 25.41 |
+
+**A longer wait is faster, up to a point.** At 1–2 ms the batch never forms
+(1.00) *and* queue→dispatch is ~10 ms — far more than the 1 ms budget, because
+the coordinator wakes per request and its per-dispatch overhead contends with 4
+workers plus torch threads. At 5 ms the batch reaches 3.35, so roughly 3x fewer
+dispatches. Past 5 ms the batch stops growing — capped by 4 synchronously
+blocked workers, not by `max_batch_size` (64) — and the wait is paid in full.
+
+**5 ms is at or near the CPU optimum and the CPU reference config already uses
+it.** There is no configuration win available here.
+
+This is a CPU result at 4 workers. The RTX 3060 host has ~30 workers, so its
+concurrent request set is ~7x larger and its optimum will differ. Do not port
+this value.
+
+## CPU NN batch scaling
+
+Isolated, no coordinator:
+
+| batch | total | per request | vs batch 1 |
+|---|---|---|---|
+| 1 | 2.37 ms | 2.37 ms | 1.00x |
+| 2 | 3.47 ms | 1.74 ms | 1.36x |
+| 4 | 5.55 ms | 1.39 ms | 1.70x |
+| 8 | 8.17 ms | 1.02 ms | 2.32x |
+| 16 | 16.18 ms | 1.01 ms | 2.34x |
+
+Batching is genuinely worth having on CPU, and it is already working. Note
+batch-1 costs 2.37 ms here versus ~5 ms in the live pipeline: the difference is
+contention, not the model.
+
+## Root cause
+
+**The residual is batching wait plus CPU contention, not IPC**: at the 5 ms
+operating point the round trip is ~4.7 ms batching wait + ~5.1 ms NN + ~1.6 ms
+transport, and process transport alone has a measured floor of 0.87 ms.
+
+## Two attempted optimizations, both reverted
+
+Written TDD, each benchmarked against the identical workload.
+
+**Attempt 1 — flush an underfull batch when the request queue is empty.**
+Motivated by a clean isolated measurement: one in-process client with no
+contention still paid 5.15 ms of queue→dispatch on a batch that could never
+grow. Fixing that case cut its round trip 7.60 → 3.40 ms.
+
+On the real pipeline it was *slower*: 93.4 s vs 87.3 s, samples/h 22,038 vs
+23,579, because mean batch collapsed 3.35 → 1.05. With 4 workers the queue is
+briefly empty *between* arrivals, so this flushed constantly and destroyed the
+batching worth 1.7x per request.
+
+**Attempt 2 — flush only when every outstanding request is already batched.**
+Tracks `_outstanding` so a momentary gap is distinguished from "nothing more can
+arrive." In-process this was the best result measured: single client 7.60 →
+2.89 ms, four clients 10.46 → 8.74 ms with batch preserved and evals/s 386 →
+455.
+
+On the real pipeline it was worse still: 135.8 s, batch 1.00. The
+`_state_lock` acquisition it needs sits on the batching thread's hot path and
+contends with `submit()` and `_complete()`, which run on the bridge threads for
+every request.
+
+Both were reverted. The coordinator is byte-identical to `main`.
+
+**What this rules out:** the dead batching wait is real and measurable in
+isolation, but on this 4-worker CPU host it cannot be reclaimed without losing
+more to batch collapse or lock contention than it saves. The 5 ms wait is
+already the best of the three variants measured.
+
+## Correctness
+
+`tests/alphazero tests/agents tests/tools` — **474 passed, 7 skipped**
+(CUDA-only). Production code unchanged from `main`.
+
+## What not to optimize
+
+- **MCTS** — 0.83 ms per simulation of Python work. Unchanged since round 1,
+  and search semantics remain strictly sequential.
+- **Serialization / shared memory** — now measured at 0.87 ms round trip and
+  ~0.01 ms per pickle. There is nothing to reclaim.
+- **`max_wait_ms` on CPU** — already at its measured optimum.
+- **GPU-specific work** (BF16, CUDA graphs, `TorchEvaluator` per-row syncs) —
+  still out of scope and still unjustified from CPU evidence.
+
+## The real remaining constraint
+
+With one synchronous leaf per worker, concurrent requests are capped at the
+worker count, so batch cannot exceed ~4 on this host regardless of
+configuration. Every remaining lever — larger batches, better GPU duty cycle —
+is bounded by that. Raising it means either more workers (which this 8-core box
+cannot absorb: 8 workers measured slower than 4) or multiple outstanding leaves
+per tree, which is explicitly prohibited as it changes search semantics.
+
+**That makes the GPU host the right next step rather than further CPU work.**
+Its ~30 workers lift the concurrency cap ~7x, which is exactly the constraint
+CPU cannot relieve.
+
+## Next RTX 3060 experiment
+
+Unchanged from the recipe in the round-1 section above, with one addition: the
+`max_wait_ms` curve should be re-measured on the GPU host, because its optimum
+is set by concurrency and 30 workers is a different regime from 4. Run the
+baseline first, then two points either side:
+
+```bash
+# Baseline at the current GPU config (max_wait_ms 2, as in soo-rtx3060.json)
+python tools/az_train.py --config runtime/configs/soo-rtx3060.json \
+  --runtime-dir az-bench --run-id postfix-s32-w30 --migrate-device \
+  --workers 30 --simulations 32 --train-steps-per-iteration 8 --hours 0.3
+```
+
+Then repeat with `max_wait_ms` 5 and 10 patched into a copy of the config,
+holding `max_moves` at 2000 and everything else fixed. Read mean batch size and
+`samples_per_hour`; on CPU the batch stopped growing once it hit the worker
+count, and the same test on GPU says whether 30 workers is enough concurrency to
+make batching pay there.
