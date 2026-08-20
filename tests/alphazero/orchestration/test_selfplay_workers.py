@@ -518,3 +518,95 @@ def test_the_catastrophic_timeout_names_itself_distinctly() -> None:
     message = str(caught.value)
     assert "catastrophic" in message
     assert "max_game_time_exceeded" not in message
+
+
+class _RecordingCoordinator:
+    """Records submissions and answers them on the reply queue immediately."""
+
+    config = InferenceConfig(
+        max_batch_size=4,
+        max_wait_ms=1,
+        request_queue_capacity=64,
+        response_timeout_s=5.0,
+    )
+
+    def __init__(self) -> None:
+        self.submitted: list[object] = []
+        self.replies: list[Queue[object]] = []
+
+    def submit(self, request, reply_queue: Queue[object]) -> None:
+        from diamond.alphazero.evaluator.base import EvalResult
+        from diamond.alphazero.inference.protocol import InferenceResponse
+
+        self.submitted.append(request)
+        self.replies.append(reply_queue)
+        reply_queue.put(
+            InferenceResponse.from_eval_result(
+                request,
+                EvalResult({action: 1.0 for action in request.legal_action_ids[:1]}, 0.0),
+            )
+        )
+
+
+def _inference_request(index: int):
+    from diamond.alphazero.inference.protocol import InferenceRequest
+
+    return InferenceRequest(
+        client_id="game-x",
+        request_id=f"game-x:{index}",
+        model_key=_soo_key(),
+        node_features=((0.0, 0.0, 0.0, 0.0),),
+        legal_action_ids=(3,),
+        canonical_player_ids=(1, 2),
+    )
+
+
+def test_inference_forwarding_does_not_wait_on_the_episode_result_tick() -> None:
+    """Requests must reach the coordinator without being paced by result polling.
+
+    The parent used to alternate ``_forward_inference()`` with a blocking
+    ``results.get(timeout=0.01)``, so every request and every reply waited on
+    that 10 ms tick.  Measured on a trained checkpoint this cost ~33 ms of the
+    ~43 ms worker-visible round trip.  Forwarding must therefore be driven by
+    queue arrival, not by the episode-result poll period.
+    """
+    coordinator = _RecordingCoordinator()
+    pool = SelfPlayWorkerPool(coordinator, worker_count=1)
+
+    requests: Queue[object] = Queue()
+    responses: Queue[object] = Queue()
+    ticks: list[float] = []
+
+    bridge = pool.start_inference_bridge(
+        request_queue=requests,
+        response_queues=(responses,),
+        clock=lambda: ticks.append(0.0) or 0.0,
+    )
+    try:
+        for index in range(3):
+            requests.put((0, _inference_request(index)))
+        delivered = [responses.get(timeout=5.0) for _ in range(3)]
+    finally:
+        bridge.close()
+
+    assert len(coordinator.submitted) == 3
+    assert {response.correlation_id for response in delivered} == {
+        ("game-x", f"game-x:{index}") for index in range(3)
+    }
+
+
+def test_inference_bridge_rejects_an_uncorrelated_response() -> None:
+    """A reply the parent cannot route must surface, never be dropped silently."""
+    coordinator = _RecordingCoordinator()
+    pool = SelfPlayWorkerPool(coordinator, worker_count=1)
+    requests: Queue[object] = Queue()
+    responses: Queue[object] = Queue()
+
+    bridge = pool.start_inference_bridge(
+        request_queue=requests, response_queues=(responses,)
+    )
+    try:
+        bridge.parent_replies.put(object())
+        assert bridge.wait_for_failure(timeout=5.0) is not None
+    finally:
+        bridge.close()

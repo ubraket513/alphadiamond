@@ -7,6 +7,11 @@ in place, migrating its checkpoint from CPU to CUDA.
 > provisioning section still needs to be run on the GPU box; record the measured
 > values as you go.
 
+> **Measured results so far:** see
+> [gpu_benchmark_findings.md](gpu_benchmark_findings.md) for throughput numbers,
+> the latency-bound bottleneck analysis, and the open questions about
+> `max_moves` and worker oversubscription.
+
 ## What continues, and what that costs
 
 The run keeps its identity: `training_step`, `loop_state.json`, `ledger.jsonl`
