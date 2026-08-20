@@ -1,980 +1,873 @@
 You are working in the `alphadiamond` repository.
 
-Your task is to perform a CPU-first performance investigation of Soo's AlphaZero self-play pipeline.
+Your task is to continue the measured CPU-side performance investigation of Soo's AlphaZero self-play pipeline and implement the next optimization only after decomposing the remaining latency.
 
-Do NOT use the external RTX 3060 machine yet.
+Do NOT use the RTX 3060 machine yet.
 
-The GPU machine is accessed remotely over SSH and incurs hourly cost, so all profiling and architectural investigation that can be done locally on CPU should be completed first.
+The GPU machine costs money and is accessed remotely, so all hardware-independent profiling and optimization must be completed locally on CPU first.
 
-The goal is not to make the CPU implementation itself maximally fast.
+Do not touch MCTS search semantics.
 
-The goal is to understand exactly where Soo spends time during one MCTS simulation and one neural-network inference round trip, identify hardware-independent bottlenecks, fix those bottlenecks locally, and only then prepare a very short GPU validation experiment.
+Do not implement tree parallelism, virtual loss, speculative leaves, async MCTS, or batched MCTS.
 
-Do not optimize blindly.
-
-Measure first.
+We already measured that MCTS itself is not the current bottleneck.
 
 ---
 
-# Context
+# Current verified state
 
-Soo currently uses AlphaZero-style self-play with:
+Read these first:
 
-- multiprocessing self-play workers
-- MCTS running inside each worker
-- neural-network evaluation through a centralized inference path
-- `InferenceCoordinator`
-- `InferenceModelPool`
-- `TorchEvaluator`
-- synchronous leaf evaluation from MCTS
-- worker processes communicating with the parent through multiprocessing queues
-
-The current GPU experiments suggested:
-
-- the RTX 3060 was often mostly idle
-- worker-visible inference round-trip latency was much larger than actual GPU compute time
-- a representative observed round trip was around 97 ms
-- actual GPU evaluator time was around 8 ms
-- therefore the GPU itself may not be the primary bottleneck
-
-There is another important observation:
-
-The old CPU training runs were not dramatically slower than some of the GPU runs.
-
-That suggests the bottleneck may exist in the hardware-independent part of the pipeline:
-
-- MCTS traversal
-- game-state manipulation
-- request construction
-- Python object overhead
-- multiprocessing IPC
-- serialization
-- parent forwarding
-- queue scheduling
-- synchronous waiting
-- tree backup
-
-We therefore want to profile the entire MCTS simulation, not only neural-network inference.
-
----
-
-# Repository inspection first
-
-Before changing anything, inspect the actual repository.
-
-At minimum inspect:
-
-tools/az_train.py
-
-runtime/configs/soo-cpu8h.json
-runtime/configs/soo-rtx3060.json
+docs/cpu_profile_findings.md
+docs/gpu_benchmark_findings.md
 
 src/diamond/alphazero/orchestration/selfplay_workers.py
-
 src/diamond/alphazero/inference/coordinator.py
-src/diamond/alphazero/inference/model_pool.py
 src/diamond/alphazero/inference/remote.py
-src/diamond/alphazero/inference/protocol.py
-
 src/diamond/alphazero/evaluator/torch.py
 
-src/diamond/alphazero/mcts/search_2p.py
-src/diamond/alphazero/selfplay/runner_2p.py
-
-src/diamond/alphazero/game_adapter.py
-
-tests/alphazero/orchestration/test_selfplay_workers.py
-tests/alphazero/inference/*
-tests covering MCTS
-tests covering self-play
-tests covering training metrics/reporting
-
-docs/gpu_benchmark_findings.md
-docs/gpu_training.md
+and all relevant tests.
 
 Run:
 
 git status
 git log --oneline -15
 
-The local repository is expected to match remote `main`, but verify that.
+The repository is expected to be clean and current.
 
-Do not modify production code until you understand the actual call path.
+Do not assume this prompt is more authoritative than the code.
 
----
-
-# Primary question
-
-Answer this:
-
-"When one Soo MCTS simulation runs, where does the wall-clock time actually go?"
-
-We want to decompose one simulation conceptually into:
-
-simulation begins
-
-→ tree selection / traversal
-
-→ leaf state reached
-
-→ game / state / feature preparation
-
-→ inference request creation
-
-→ worker-to-parent IPC
-
-→ parent-to-inference coordinator forwarding
-
-→ coordinator queue / batching wait
-
-→ CPU neural-network evaluation
-
-→ inference response forwarding
-
-→ parent-to-worker IPC
-
-→ MCTS backup / tree update
-
-→ simulation ends
-
-The exact boundaries should follow the real implementation.
-
-Do not force this exact decomposition if the code suggests cleaner boundaries.
+Verify the current implementation.
 
 ---
 
-# CPU-first profiling requirement
+# What has already been proven
 
-All initial profiling must run on CPU.
+The trained checkpoint used for profiling is:
 
-Do not require CUDA.
+sha256:
+4b2a32ff15179e890d4266346bca178d9a255eebe16af3a6e3d0482f0ceb1320
 
-Do not require the RTX 3060 machine.
+training step:
+72
 
-The normal CPU-only pytest suite must continue working.
+The first CPU profiling pass found:
 
-Use the existing trained Soo checkpoint if available locally.
+In-process inference round trip:
+~9.6 ms p50
 
-Do not accidentally profile a freshly initialized/random network when a trained checkpoint was intended.
+Old multiprocessing worker-pool round trip:
+~43.0 ms
 
-Record the checkpoint identity / training step used in every performance run.
+Pure CPU NN forward:
+~4.8 ms
+
+The original parent loop was the dominant bottleneck.
+
+`SelfPlayWorkerPool.run()` used to alternate:
+
+_forward_inference()
+
+with:
+
+results.get(timeout=0.01)
+
+The parent effectively ran at a ~10.2 ms period, and every inference request and response crossed that tick.
+
+That was fixed by adding `_InferenceBridge` with dedicated request and response pump threads.
+
+The fix preserved:
+
+- request correlation IDs
+- worker-specific routing
+- failure propagation
+- worker cleanup
+- per-game 900-second timeout
+- catastrophic pool timeout
+- sequential MCTS semantics
+
+The measured before/after result on identical work was:
+
+wall clock:
+236.6 s → 112.3 s
+
+samples/hour:
+8,429 → 17,765
+
+evals/second:
+93.0 → 196.1
+
+worker-visible inference round trip:
+43.0 ms → 20.4 ms
+
+same:
+- checkpoint
+- requests
+- samples
+- seeds/config
+- completed games
+- move distribution
+- abort result
+
+This was a genuine 2.11x speedup.
+
+All tests remained green:
+
+451 passed
+7 skipped
 
 ---
 
-# Phase 1 — MCTS simulation latency instrumentation
+# Important conclusion from the first profile
 
-Instrument one MCTS simulation using a high-resolution monotonic clock.
+MCTS's own Python work is not the problem.
+
+Measured per simulation:
+
+selection/traversal:
+~0.204 ms
+
+state/request preparation:
+~0.320 ms
+
+backup:
+~0.306 ms
+
+total non-NN MCTS Python work:
+~0.83 ms
+
+CPU NN forward:
+~4.8 ms
+
+Therefore do NOT optimize:
+
+- tree selection
+- game-state handling
+- MCTS backup
+- MCTS parallelism
+
+unless new measurements contradict the existing profile.
+
+---
+
+# The next question
+
+The worker-visible round trip after the first fix is still approximately:
+
+20.4 ms
+
+while CPU NN work is only approximately:
+
+5 ms
+
+So roughly 15 ms remains outside the neural network.
+
+However:
+
+DO NOT assume that the entire remaining 15 ms is multiprocessing/pickle overhead.
+
+The current measurements also show:
+
+coordinator queue → dispatch p50:
+~10.34 ms
+
+mean batch size:
+~1.28
+
+Therefore a significant fraction of the remaining latency may be deliberate batching wait rather than process transport.
+
+We need to measure the remaining latency precisely before making another architecture change.
+
+---
+
+# Goal
+
+Decompose the remaining ~20.4 ms round trip into these broad components:
+
+A. worker → parent multiprocessing transport
+
+B. parent arrival → coordinator dispatch
+   including batching wait
+
+C. actual NN evaluation
+
+D. completed NN response → worker receives response
+
+Conceptually:
+
+worker submit
+    ↓
+[A]
+    ↓
+parent bridge receives
+    ↓
+[B]
+    ↓
+coordinator dispatch
+    ↓
+[C]
+    ↓
+NN finishes
+    ↓
+[D]
+    ↓
+worker receives result
+
+The exact timestamp boundaries should follow the actual code.
+
+Use high-resolution monotonic timing.
 
 Prefer:
 
 time.monotonic_ns()
 
-or the existing repository timing abstraction if one already exists.
-
-We need aggregated timings for stages such as:
-
-MCTS selection/traversal
-
-leaf/state construction
-
-inference wait
-
-backup
-
-total simulation time
-
-Conceptually:
-
-S0 simulation begins
-
-S1 selection/traversal complete
-
-S2 inference request begins
-
-S3 inference response arrives
-
-S4 backup complete / simulation ends
-
-From this derive:
-
-selection_ms
-
-pre_inference_state_ms
-
-inference_round_trip_ms
-
-backup_ms
-
-simulation_total_ms
-
-If the current MCTS code has additional meaningful stages, measure them separately.
+or the existing timing abstraction if suitable.
 
 ---
 
-# Phase 2 — Inference transport latency decomposition
+# Phase 1 — inspect existing instrumentation
 
-Inside the inference round trip, measure the hardware-independent transport path.
+Before adding anything, identify what is already measured.
 
-Conceptually:
+`InferenceCoordinator` already tracks metrics such as:
 
-T0 worker submits request
+- admission latency
+- queue-to-dispatch latency
+- inference latency
+- response latency
+- batch size
 
-T1 parent receives request from multiprocessing queue
+Reuse those metrics.
 
-T2 parent submits request to InferenceCoordinator
+Do not duplicate them.
 
-T3 coordinator admits request
+Identify only the missing process-boundary timings.
 
-T4 batch is dispatched to evaluator
+We particularly need enough evidence to distinguish:
 
-T5 CPU evaluator finishes
+worker → parent transport
 
-T6 parent receives coordinator reply
+batch waiting
 
-T7 worker receives final reply
+NN compute
 
-We want to separate at least:
-
-worker → parent IPC
-
-parent forwarding delay
-
-coordinator queue / batching wait
-
-actual CPU NN inference
-
-coordinator/parent response delay
-
-parent → worker IPC
-
-worker-visible total inference round trip
-
-Reuse existing `InferenceMetrics` where they already measure stages.
-
-Do not build duplicate metrics for data already available.
-
-Focus new instrumentation on missing boundaries.
+parent → worker transport
 
 ---
 
-# Important: separate absolute timing from percentages
+# Phase 2 — add minimal missing instrumentation
 
-CPU inference may be slower than GPU inference.
+Add only the instrumentation required to decompose the remaining round trip.
 
-Therefore do NOT conclude:
+The pipeline may issue tens of thousands of requests.
 
-"IPC is only 10% of CPU runtime, so it does not matter."
+Do NOT retain one unbounded timestamp record per request.
 
-We need absolute milliseconds for every stage.
+Use the repository's bounded streaming/reservoir metric style.
 
-For example:
+Metrics should expose summaries such as:
 
-CPU:
-NN = 70 ms
-IPC = 15 ms
+worker_to_parent_ms:
+  mean
+  p50
+  p90
 
-GPU later:
-NN = 8 ms
-IPC = 15 ms
+parent_to_dispatch_ms:
+  mean
+  p50
+  p90
 
-The same 15 ms IPC becomes much more important after moving NN compute to GPU.
+evaluator_ms:
+  mean
+  p50
+  p90
 
-Therefore every timing report must include absolute latency, not only percentages.
+response_to_worker_ms:
+  mean
+  p50
+  p90
 
----
+worker_round_trip_ms:
+  mean
+  p50
+  p90
 
-# Phase 3 — worker state accounting
+Use better field names if they match repository conventions.
 
-If practical without invasive changes, measure how much time self-play workers spend in broad states:
-
-CPU/MCTS computation
-
-waiting for inference
-
-waiting on IPC/queue
-
-other
-
-The goal is to answer whether workers are mostly:
-
-1. computing MCTS/game logic
-2. blocked waiting for NN results
-3. blocked because of orchestration/IPC
-
-Do not implement OS-level profiling infrastructure unless necessary.
-
-Application-level instrumentation is preferred first.
+Keep the durable ledger bounded and JSON-friendly.
 
 ---
 
-# Metrics design constraints
+# Phase 3 — measure the pure multiprocessing transport floor
 
-This pipeline may generate hundreds of thousands of NN requests.
+Create a controlled benchmark using a fake or immediate evaluator/coordinator path.
 
-Do NOT keep an unbounded record for every request or simulation.
+The goal is to measure the minimum cost of:
 
-Use bounded-memory aggregation.
+worker process
+    ↓
+multiprocessing queue
+    ↓
+parent
+    ↓
+immediate response
+    ↓
+multiprocessing queue
+    ↓
+worker
 
-Prefer the style already used by the repository's current inference metrics.
+No neural network.
 
-Acceptable approaches:
+No artificial batching wait.
 
-counters
+No real game required if the same transport boundary can be exercised safely in isolation.
 
-sum / count
+This benchmark should answer:
 
-min / max
+"What is the process/serialization round-trip floor?"
 
-bounded reservoir samples
+For example, if it measures ~4–6 ms, then the remaining 20 ms cannot reasonably be described as 15 ms of IPC.
 
-p50 / p90 / p99 summaries
+If it measures ~12–15 ms, then multiprocessing transport really is the dominant remaining bottleneck.
 
-sampling 1/N events if needed
+Do not guess.
 
-Durable run ledgers should contain summary metrics only.
-
-Do not dump hundreds of thousands of timestamps to JSON.
+Measure it.
 
 ---
 
-# Desired CPU profiling output
+# Fake transport benchmark requirements
 
-At the end of one controlled CPU benchmark, produce a table like:
+Use the real transport objects and routing machinery where practical.
 
-MCTS stage                         mean      p50      p90
---------------------------------------------------------
-selection/traversal                X ms      X        X
-state/request preparation          X ms      X        X
-inference round trip               X ms      X        X
-backup                             X ms      X        X
-total simulation                   X ms      X        X
+Do not replace multiprocessing.Queue with queue.Queue, because that would remove exactly the boundary we are trying to measure.
 
-And:
+Preserve:
 
-Inference stage                    mean      p50      p90
---------------------------------------------------------
-worker → parent IPC                X ms      X        X
-parent forwarding                  X ms      X        X
-coordinator batching wait          X ms      X        X
-CPU NN evaluator                   X ms      X        X
-response forwarding                X ms      X        X
-parent → worker IPC                X ms      X        X
-worker-visible total               X ms      X        X
+- InferenceRequest shape
+- correlation IDs
+- response routing
+- multiprocessing spawn semantics
 
-Also include:
+The fake evaluator may immediately echo a valid InferenceResponse.
 
-requests/sec
+The benchmark should run enough requests to stabilize p50/p90 without taking long.
 
-batches/sec
+Do not make it part of normal slow CI if inappropriate.
+
+It can be a profiling tool or optional benchmark.
+
+---
+
+# Phase 4 — CPU batching-wait experiment
+
+Run a very small controlled sweep on CPU.
+
+Use the same:
+
+- trained checkpoint
+- worker count
+- simulations
+- max_moves
+- bootstrap prior
+- seeds where possible
+- games
+- torch thread count
+
+Change ONLY:
+
+max_wait_ms
+
+Test:
+
+1 ms
+2 ms
+5 ms
+
+The purpose is not to tune the final GPU value.
+
+The purpose is to discover how much of the current ~20.4 ms round trip is caused by waiting for a batch that rarely fills on the 4-worker CPU machine.
+
+For each value report:
+
+worker-visible round trip
+
+queue→dispatch p50/p90
+
+CPU evaluator p50/mean
 
 mean batch size
 
-p50 batch size
+p50/p90 batch size if available
 
-p90 batch size
+evals/sec
 
-max batch size
+games/hour if meaningful
 
-completed games/hour
+samples/hour if meaningful
 
-usable samples/hour if benchmark length is sufficient
+Do not interpret lower CPU max_wait as automatically correct for the GPU.
 
-median game moves
-
-p90 game moves
-
-abort counts and reasons
+The RTX 3060 machine will have approximately 30 workers, so its batching tradeoff is different.
 
 ---
 
-# Controlled benchmark
+# Important CPU concurrency result already known
 
-Use one fixed benchmark configuration.
+On the local 8-core machine:
 
-Do not change several knobs while profiling.
+4 workers:
+~14.0 sec/game
 
-Suggested starting point:
+8 workers:
+~16.2 sec/game
 
-trained Soo checkpoint
+8 workers were slower.
 
-CPU inference
+Mean batch size also fell:
 
-32 MCTS simulations
+1.28 → 1.04
 
-4 self-play workers initially, because this matches the historical CPU baseline
+This was attributed to CPU contention / oversubscription:
 
-same max_moves as the baseline
+8 self-play workers
++
+Torch CPU threads
 
-same bootstrap-prior semantics
+Do not run a large worker-count sweep.
 
-same self-play seeds where possible
+4 workers is the baseline for the remaining local investigation.
 
-same games-per-iteration semantics
-
-Run a short benchmark sufficient to gather thousands of inference events.
-
-We are profiling pipeline behavior, not training strength.
-
-Do not spend hours training.
+Do not interpret the 8-core CPU ceiling as evidence about the 30-vCPU GPU host.
 
 ---
 
-# Then run one CPU concurrency comparison
+# Phase 5 — classify the remaining bottleneck
 
-After establishing the baseline, run one additional CPU profiling point with more workers if the machine permits.
+After the new measurements, classify the residual ~15 ms.
 
-For example:
+Possible outcomes:
 
-4 workers
+Case A — batching wait dominates
 
-vs
+Example:
 
-8 workers
+worker→parent transport: 2 ms
+queue/batch wait: 9 ms
+NN: 5 ms
+response transport: 3 ms
 
-The purpose is not tuning.
+Then do NOT redesign multiprocessing IPC first.
 
-The purpose is to see whether:
+The next question becomes batching policy.
 
-latency increases with worker count
+Case B — multiprocessing transport dominates
 
-batch size improves
+Example:
 
-parent forwarding saturates
+worker→parent: 6 ms
+batch wait: 2 ms
+NN: 5 ms
+response→worker: 7 ms
 
-IPC becomes dominant
+Then IPC/serialization is the correct next architecture target.
 
-CPU NN contention increases
+Case C — both are significant
 
-This can help distinguish:
+Then choose the single largest avoidable component.
 
-single-request overhead
-
-from
-
-central coordination saturation
-
-Do not perform a huge worker-count sweep.
-
----
-
-# Important current hypothesis to test
-
-There is a specific current implementation detail that may matter.
-
-Inspect `SelfPlayWorkerPool.run()`.
-
-It may still have a loop conceptually similar to:
-
-forward inference
-
-then
-
-results.get(timeout=0.01)
-
-then
-
-forward inference again
-
-If so, one hypothesis is:
-
-"Episode-result polling delays inference request/response forwarding."
-
-But this is only a hypothesis.
-
-Do not change it before measuring.
-
-Also inspect worker-side response pumping.
-
-A timeout value such as 50 ms on `queue.get(timeout=...)` does NOT automatically mean every response incurs 50 ms latency, because a blocking queue wakes when data arrives.
-
-Measure actual delay.
-
----
-
-# Profiling methodology
-
-Do application-level timing first.
-
-Do NOT start by running a generic profiler and staring at a giant call graph.
-
-The system crosses multiple processes and threads, so function CPU-time alone may hide blocking/queue latency.
-
-First add explicit boundary timing.
-
-After the application-level latency breakdown exists, use tools such as:
-
-cProfile
-
-py-spy
-
-scalene
-
-or similar
-
-only if they are already available or clearly useful for a specific CPU hot path.
-
-Do not add a dependency solely for convenience without justification.
-
-If a generic profiler is used, profile:
-
-MCTS selection hot loops
-
-game-state operations
-
-feature encoding
-
-Torch CPU forward
-
-serialization/pickling
-
-but treat it as complementary evidence.
-
----
-
-# Root-cause decision tree
-
-After profiling, classify the primary bottleneck.
-
-Case A:
-
-Inference round-trip dominates simulation time.
-
-Then inspect its internal breakdown.
-
-If parent forwarding / IPC dominates:
-
-optimize transport before touching MCTS semantics.
-
-Case B:
-
-CPU neural-network evaluation dominates.
-
-Then GPU acceleration is likely worthwhile, but still record the fixed transport overhead that will remain after migration.
-
-Case C:
-
-MCTS selection / game-state logic dominates.
-
-Then profile and optimize those CPU hot paths before doing further GPU work.
-
-Case D:
-
-No single compute stage dominates, but workers spend most of their time blocked/scheduled.
-
-Then multiprocessing/orchestration architecture is the likely problem.
-
-Do not assume which case will win.
-
----
-
-# Stage 2 — choose one fix only after measurement
-
-After the first CPU profile, identify the largest avoidable hardware-independent component.
-
-Form one explicit hypothesis:
-
-"I believe X is the primary avoidable bottleneck because Y ms out of Z ms is spent there."
-
-Then implement only one performance change.
-
-Examples depending on evidence:
-
-- decouple inference forwarding from episode-result polling
-- remove unnecessary queue hops
-- eliminate avoidable serialization
-- reduce an identified MCTS Python hot loop
-- reduce game-state copying
-- reduce repeated feature construction
-- reduce unnecessary CPU tensor creation
-
-Do NOT combine multiple optimizations in one benchmark.
+Do not optimize both at once.
 
 We need attribution.
 
 ---
 
-# If parent forwarding is the culprit
+# Phase 6 — one root-cause hypothesis
 
-If measurements show inference requests/replies wait substantially in the parent bridge, then consider separating inference forwarding from episode result collection.
+State one hypothesis using measured numbers.
 
-Potential architecture:
+Example:
 
-main/result collector
+"The dominant remaining avoidable latency is parent↔worker multiprocessing transport, which accounts for X ms of the 20.4 ms worker-visible round trip, while batching contributes only Y ms."
 
-independent inference request pump thread
+Or:
 
-independent inference response pump thread
+"The dominant remaining latency is max_wait batching behavior, not IPC: queue→dispatch accounts for X ms while pure multiprocessing transport is only Y ms."
 
-using blocking queue operations rather than application-level polling
+Do not proceed to a production fix until this statement is supported by measurement.
 
-Conceptually:
+---
 
-workers
-   ↓
-multiprocessing request queue
-   ↓
-dedicated request pump
-   ↓
+# Phase 7 — implement exactly one next optimization
+
+Use TDD.
+
+Choose the change based on the measurements.
+
+Do NOT combine unrelated optimizations.
+
+---
+
+# If batching wait is the dominant issue
+
+Do not remove batching globally.
+
+Remember:
+
+CPU:
+4 workers
+batch ~1
+
+GPU:
+~30 workers
+potentially much larger concurrent request set
+
+The CPU and GPU optimal `max_wait_ms` may differ.
+
+Possible implementation directions, only if supported by evidence:
+
+- allow separate CPU/GPU config values
+- reduce CPU reference wait
+- make batching wait configurable more explicitly
+- improve batching behavior without changing search semantics
+
+Do not create clever adaptive batching unless there is a strong measured reason.
+
+Prefer simple configuration first.
+
+---
+
+# If multiprocessing IPC is the dominant issue
+
+Then inspect the current path carefully.
+
+Current rough architecture:
+
+worker process
+    ↓ multiprocessing.Queue
+_InferenceBridge
+    ↓ queue.Queue / thread boundary
 InferenceCoordinator
-   ↓
-CPU evaluator
-   ↓
-dedicated response pump
-   ↓
-worker response queues
+    ↓
+evaluator
+    ↓
+InferenceCoordinator
+    ↓ queue.Queue / thread boundary
+_InferenceBridge
+    ↓ multiprocessing.Queue
+worker
 
-Requirements:
+Important distinction:
 
-preserve correlation IDs
+The expensive process boundaries are primarily:
 
-preserve worker response routing
+worker → parent
 
-preserve shutdown semantics
+parent → worker
 
-preserve error propagation
+The coordinator runs inside the parent process on a thread and uses `queue.Queue`.
 
-preserve per-game timeout
+Do not call every queue hop "pickle/IPC".
 
-preserve catastrophic pool timeout
+If transport dominates, investigate the smallest way to reduce process-boundary overhead.
 
-no busy spinning
+Potential avenues to evaluate, not blindly implement:
 
-no unbounded queues
+- reduce serialized payload size
+- avoid reconstructing/copying immutable request objects unnecessarily
+- use shared memory for large fixed-size tensors/features if justified
+- use a more direct worker↔inference process architecture
+- reduce intermediate transport envelopes
+- batch multiple requests per IPC message if possible without changing MCTS semantics
 
-no response loss during shutdown
+But choose only the smallest measured high-value change first.
 
-Do not implement this unless measurements support it.
-
----
-
-# Do not parallelize MCTS yet
-
-Do NOT implement:
-
-tree parallelism
-
-virtual loss
-
-async MCTS
-
-speculative leaves
-
-batched leaf selection
-
-multiple outstanding leaf evaluations per one MCTS tree
-
-These change search semantics.
-
-Our first goal is to remove implementation overhead while keeping current sequential MCTS behavior unchanged.
-
-Only reconsider MCTS parallelism after CPU/system overhead has been measured and optimized.
+Do not start with a full shared-memory redesign unless profiling proves serialization payload size is the cause.
 
 ---
 
-# Do not optimize GPU code
+# Serialization investigation if IPC dominates
 
-No CUDA optimization in this task.
+Measure before redesigning.
+
+Determine:
+
+- serialized request size
+- serialized response size
+- pickle encode/decode cost
+- multiprocessing queue enqueue/dequeue latency
+- whether payload size or process scheduling dominates
+
+Use focused microbenchmarks.
+
+For example:
+
+pickle.dumps(request)
+
+pickle.loads(...)
+
+Queue.put/get round trip
+
+But remember:
+
+pickle microbenchmark time != multiprocessing transport latency
+
+Both should be measured separately.
+
+---
+
+# Do not touch MCTS semantics
+
+Still prohibited:
+
+- virtual loss
+- shared-tree parallelism
+- async MCTS
+- speculative leaf selection
+- multiple outstanding leaf requests from one tree
+
+Current MCTS remains sequential.
+
+The profiling evidence says its own work is only ~0.83 ms per simulation.
+
+Changing search semantics to optimize a sub-millisecond component would be unjustified.
+
+---
+
+# Do not optimize CUDA yet
+
+Do not rent/start the RTX 3060 during this task.
 
 Do not implement:
 
-mixed precision
+- BF16
+- mixed precision
+- CUDA graphs
+- pinned memory
+- CUDA streams
+- torch.compile
+- GPU-specific evaluator refactoring
 
-BF16
+There is a known possible later issue in TorchEvaluator:
 
-CUDA graphs
+per-row GPU→CPU synchronization.
 
-torch.compile
+Leave it alone for now.
 
-custom kernels
-
-pinned memory
-
-CUDA streams
-
-GPU evaluator restructuring
-
-The GPU machine is not needed for the current investigation.
+First eliminate hardware-independent latency.
 
 ---
 
 # TDD requirements
 
-All production behavior changes must use TDD.
+Before any production behavior change:
 
-Instrumentation should also have tests where practical.
+1. write failing test
+2. prove it fails
+3. implement minimal change
+4. run focused tests
+5. run broader regression tests
+6. benchmark identical workload
+7. compare before/after
 
-Tests should cover:
+Use deterministic concurrency tests.
 
-metric aggregation is bounded
-
-metric summaries are correct
-
-timing instrumentation does not alter MCTS outputs
-
-sequential MCTS semantics remain unchanged
-
-worker request/response correlation remains correct
-
-existing worker timeout behavior remains correct
-
-individual 900-second game abort behavior remains correct
-
-catastrophic pool timeout remains correct
-
-CPU-only tests pass
-
-For concurrency changes, use:
+Prefer:
 
 threading.Event
+Barrier
+fake coordinator
+controlled multiprocessing queues
+injected clock
 
-fake coordinators
+Avoid flaky sleep-based tests.
 
-barriers
+Preserve tests for:
 
-controlled queues
-
-fake/injected clocks
-
-instead of flaky wall-clock sleeps.
-
-Do not write tests that rely on waiting real milliseconds unless unavoidable.
+- correlation IDs
+- correct worker response routing
+- bridge failure propagation
+- worker cleanup
+- per-game 900 s timeout
+- catastrophic pool timeout
+- CPU-only operation
+- deterministic identities/seeds
 
 ---
 
-# Before/after benchmark discipline
+# Benchmark fairness
 
-Any optimization benchmark must use exactly the same:
+Every before/after production optimization comparison must use identical:
 
 checkpoint
-
-worker count
-
+workers
 simulations
-
 max_moves
-
+max_wait_ms
+torch thread count
 bootstrap prior
-
-inference batching configuration
-
+games
 seeds where practical
 
-before and after.
-
-Report both runs side by side.
-
-Success metrics:
-
-MCTS simulation latency
-
-inference round-trip latency
-
-requests/sec
-
-games/hour
-
-usable samples/hour
-
-Do not call an optimization successful solely because one internal microbenchmark improved.
-
----
-
-# GPU validation comes last
-
-After CPU profiling and at least one justified local optimization, prepare a minimal GPU validation plan.
-
-Do not execute it unless explicitly asked.
-
-The later RTX 3060 validation should be short.
-
-The purpose will be to answer:
-
-"Did the hardware-independent latency we removed on CPU also reduce worker-visible GPU inference latency?"
-
-A 10–20 minute benchmark should be enough.
-
-The GPU validation should reuse the exact same instrumentation added during the CPU phase.
-
-That avoids paying GPU rental time for diagnosis.
-
----
-
-# Deliverables
-
-Work in this order.
-
-## Deliverable 1 — repository verification
+If max_wait_ms itself is the experiment, clearly mark it as the only changed variable.
 
 Report:
 
-actual current inference call path
+completed games
+aborted games
+abort reasons
 
-actual current MCTS call path
+Do not interpret sec/game alone.
 
-current relevant metrics already present
+Prefer:
 
-current polling/queue architecture
+samples/hour
+completed games/hour
+evals/sec
+round-trip latency
 
-## Deliverable 2 — CPU profiling plan
+An optimization that becomes faster by aborting/discarding games is not a speedup.
 
-Specify:
+---
 
-exact files to modify
+# Required deliverables
 
-exact timing boundaries
+Work in this order.
 
-metric structure
+## 1. Repository verification
 
-bounded-memory approach
+Report current relevant architecture and confirm the first `_InferenceBridge` fix is present.
 
-tests
+## 2. Residual-latency instrumentation plan
 
-exact benchmark commands
+Identify exact existing metrics and exact missing boundaries.
 
-## Deliverable 3 — instrumentation implementation
+## 3. Tests for instrumentation
 
-Implement only profiling/metrics needed for the diagnosis.
+Add focused tests before implementation where applicable.
 
-Run focused tests.
+## 4. Instrumentation implementation
 
-Run full relevant CPU regression tests.
+Keep bounded memory.
 
-## Deliverable 4 — CPU benchmark result
+## 5. Pure transport benchmark
 
-Run the controlled CPU benchmark.
+Measure worker↔parent multiprocessing round-trip floor with fake/immediate inference.
 
-Produce the latency decomposition tables.
+## 6. CPU max_wait experiment
 
-State where time actually goes.
+Run:
 
-## Deliverable 5 — one root-cause hypothesis
+1 ms
+2 ms
+5 ms
 
-Choose one measured bottleneck.
+at the same 4-worker trained-checkpoint configuration.
 
-State:
+## 7. Residual latency report
 
-"I believe X is the first thing to optimize because..."
+Produce a table:
 
-with evidence.
+Component                   mean   p50   p90
+worker → parent             X      X     X
+batch/coordinator wait      X      X     X
+CPU NN                      X      X     X
+response → worker           X      X     X
+total                       X      X     X
 
-## Deliverable 6 — one minimal fix
+Also show the pure transport floor.
+
+## 8. Root-cause decision
+
+State the largest avoidable component.
+
+## 9. One optimization
 
 Use TDD.
 
-Implement only that fix.
+Implement exactly one fix.
 
-Run identical benchmark again.
+## 10. Identical before/after benchmark
 
-## Deliverable 7 — before/after report
+Report:
 
-Include:
+worker round trip
+evals/sec
+samples/hour
+batch size
+queue→dispatch
+completed/aborted games
 
-simulation latency
+## 11. Regression verification
 
-inference transport breakdown
+Run the relevant full CPU test suite.
 
-CPU NN latency
+Do not claim success without the test output.
 
-requests/sec
+## 12. GPU validation recommendation
 
-batch behavior
+Do NOT run GPU.
 
-games/hour where meaningful
-
-samples/hour where meaningful
-
-tests passed
-
-remaining bottlenecks
-
-## Deliverable 8 — GPU validation recipe
-
-Give exact commands for a later short RTX 3060 validation run.
-
-Do not start the GPU machine.
+Based on the new measurements, write the exact short RTX 3060 validation recipe we should use later.
 
 ---
 
 # Final report format
 
-Use:
+## What remained after the first 2.11x fix
 
-## CPU root cause
+Plain-language explanation.
 
-Explain the dominant bottleneck in plain language.
+## Residual latency breakdown
 
-## Simulation breakdown
+Table.
 
-table
+## Pure multiprocessing transport floor
 
-## Inference breakdown
+Measured value.
 
-table
+## Batching wait experiment
 
-## First optimization
+1 / 2 / 5 ms comparison table.
 
-what changed and why
+## Root cause
+
+One sentence, backed by measurements.
+
+## Second optimization
+
+What changed and why.
 
 ## Before vs after
 
-table
+Identical-work comparison.
 
 ## Correctness
 
-tests run
+Tests run and result.
 
-## Remaining bottlenecks
+## What not to optimize yet
 
-ranked
+Explicitly mention MCTS and GPU-specific work if still unjustified.
 
-## Is GPU still expected to help?
+## Next RTX 3060 experiment
 
-Explain based on measured CPU NN time versus hardware-independent overhead.
-
-## Short RTX 3060 validation plan
-
-exact configuration and commands
+Give exact short validation procedure but do not execute it.
 
 ---
 
-# Engineering constraints
+# Success criterion
 
-Python 3.11+
+The goal is NOT:
 
-CPU-only environment
+"reduce GPU idle time"
 
-no required CUDA
+because there is no GPU in this task.
 
-no new heavy dependency unless justified
+The goal is:
 
-bounded profiling memory
+"identify and reduce the largest remaining hardware-independent component of the worker-visible inference round trip while preserving identical AlphaZero search semantics."
 
-monotonic clocks
+Do not optimize based on intuition.
 
-preserve existing self-play semantics
-
-preserve deterministic identities/seeds
-
-preserve replay/checkpoint behavior
-
-preserve 15-minute per-game abort
-
-preserve catastrophic pool timeout
-
-preserve CPU reference configurations
-
-small commits
-
-one hypothesis / one optimization at a time
-
-Most importantly:
-
-Do not treat "GPU utilization" as the problem yet.
-
-The immediate question is:
-
-"Where does one Soo MCTS simulation spend its wall-clock time on CPU?"
-
-Measure that first.
-
-Everything else follows from the answer.
+Measure → isolate → hypothesize → test → fix one thing → benchmark again.
