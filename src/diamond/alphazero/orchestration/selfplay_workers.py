@@ -393,11 +393,116 @@ def selfplay_worker_entry(
         coordinator.close()
 
 
+class _InferenceBridge:
+    """Forward inference between workers and the coordinator on its own threads.
+
+    The parent used to drain inference inline with ``results.get(timeout=0.01)``,
+    so every request and every reply waited on that 10 ms episode-result tick.
+    Measured on the trained Soo checkpoint the parent loop ran at 93.9 ticks/s
+    while the forwarding work itself took 0.33 ms, and the worker-visible round
+    trip was ~43 ms against ~5 ms of actual CPU inference.
+
+    Both directions therefore block on queue arrival instead: no polling, no
+    busy spin, and episode collection no longer paces inference.
+    """
+
+    def __init__(
+        self,
+        coordinator: RequestCoordinator,
+        request_queue: object,
+        response_queues: tuple[object, ...],
+        *,
+        poll_timeout_s: float = 0.05,
+    ) -> None:
+        self.coordinator = coordinator
+        self.parent_replies: Queue[object] = Queue()
+        self._requests = request_queue
+        self._response_queues = response_queues
+        self._routes: dict[tuple[str, str], int] = {}
+        self._routes_lock = Lock()
+        self._closed = Event()
+        self._poll_timeout_s = poll_timeout_s
+        self._failure: BaseException | None = None
+        self._failed = Event()
+        self._threads = (
+            Thread(target=self._pump_requests, name="selfplay-bridge-requests", daemon=True),
+            Thread(target=self._pump_responses, name="selfplay-bridge-responses", daemon=True),
+        )
+
+    def start(self) -> "_InferenceBridge":
+        for thread in self._threads:
+            thread.start()
+        return self
+
+    @property
+    def failure(self) -> BaseException | None:
+        return self._failure
+
+    def raise_if_failed(self) -> None:
+        if self._failure is not None:
+            raise self._failure
+
+    def wait_for_failure(self, timeout: float) -> BaseException | None:
+        self._failed.wait(timeout)
+        return self._failure
+
+    def close(self) -> None:
+        self._closed.set()
+        for thread in self._threads:
+            thread.join(timeout=max(self._poll_timeout_s * 4, 0.5))
+
+    def _fail(self, error: BaseException) -> None:
+        if self._failure is None:
+            self._failure = error
+        self._failed.set()
+
+    def _pump_requests(self) -> None:
+        while not self._closed.is_set():
+            try:
+                item = self._requests.get(timeout=self._poll_timeout_s)
+            except Empty:
+                continue
+            except (EOFError, OSError):
+                return
+            try:
+                worker_id, request = item
+                with self._routes_lock:
+                    self._routes[request.correlation_id] = worker_id
+                self.coordinator.submit(request, self.parent_replies)
+            except BaseException as error:  # noqa: BLE001 - surfaced to the parent
+                self._fail(error)
+                return
+
+    def _pump_responses(self) -> None:
+        while not self._closed.is_set():
+            try:
+                response = self.parent_replies.get(timeout=self._poll_timeout_s)
+            except Empty:
+                continue
+            try:
+                correlation_id = getattr(response, "correlation_id", None)
+                with self._routes_lock:
+                    worker_id = self._routes.pop(correlation_id, None)
+                if worker_id is None:
+                    raise RuntimeError("central inference returned an uncorrelated response")
+                self._response_queues[worker_id].put(
+                    response,
+                    timeout=self.coordinator.config.response_timeout_s,
+                )
+            except BaseException as error:  # noqa: BLE001 - surfaced to the parent
+                self._fail(error)
+                return
+
+
 class SelfPlayWorkerPool:
     """One-shot spawn worker group bridged to one parent inference coordinator."""
 
     #: Headroom over the per-lane game budget for spawn, checkpoint load and drain.
     DEFAULT_GRACE_S = 300.0
+
+    #: Episode-result wait.  Inference has its own pump threads, so this only
+    #: bounds how often the loop re-checks liveness and the pool deadline.
+    RESULT_POLL_S = 0.05
 
     def __init__(
         self,
@@ -493,9 +598,10 @@ class SelfPlayWorkerPool:
             for worker_id in range(lane_count)
         )
         all_queues = (inference_requests, results, *job_queues, *response_queues)
-        parent_replies: Queue[object] = Queue()
-        response_routes: dict[tuple[str, str], int] = {}
         received: dict[str, EpisodeResult] = {}
+        bridge = self.start_inference_bridge(
+            request_queue=inference_requests, response_queues=response_queues
+        )
 
         try:
             for process in processes:
@@ -509,14 +615,12 @@ class SelfPlayWorkerPool:
                 job_count=len(jobs), lane_count=lane_count
             )
             while len(received) < len(jobs):
-                self._forward_inference(
-                    inference_requests,
-                    response_queues,
-                    parent_replies,
-                    response_routes,
-                )
+                # Inference is pumped by its own threads, so this wait no longer
+                # paces the inference path and can block properly rather than
+                # spinning at a 10 ms tick.
+                bridge.raise_if_failed()
                 try:
-                    result = results.get(timeout=0.01)
+                    result = results.get(timeout=self.RESULT_POLL_S)
                 except Empty:
                     result = None
                 if isinstance(result, EpisodeResult):
@@ -548,36 +652,20 @@ class SelfPlayWorkerPool:
                     )
             return tuple(received[game_id] for game_id in game_ids)
         finally:
+            bridge.close()
             self._cleanup(processes, all_queues)
 
-    def _forward_inference(
+    def start_inference_bridge(
         self,
-        inference_requests: object,
+        *,
+        request_queue: object,
         response_queues: tuple[object, ...],
-        parent_replies: Queue[object],
-        response_routes: dict[tuple[str, str], int],
-    ) -> None:
-        while True:
-            try:
-                worker_id, request = inference_requests.get_nowait()
-            except Empty:
-                break
-            response_routes[request.correlation_id] = worker_id
-            self.coordinator.submit(request, parent_replies)
-
-        while True:
-            try:
-                response = parent_replies.get_nowait()
-            except Empty:
-                break
-            correlation_id = getattr(response, "correlation_id", None)
-            worker_id = response_routes.pop(correlation_id, None)
-            if worker_id is None:
-                raise RuntimeError("central inference returned an uncorrelated response")
-            response_queues[worker_id].put(
-                response,
-                timeout=self.coordinator.config.response_timeout_s,
-            )
+        clock: object = None,
+    ) -> _InferenceBridge:
+        """Start the dedicated request/response pumps for this pool's coordinator."""
+        return _InferenceBridge(
+            self.coordinator, request_queue, response_queues
+        ).start()
 
     def _cleanup(self, processes: tuple[object, ...], queues: tuple[object, ...]) -> None:
         for process in processes:
