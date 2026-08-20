@@ -1,0 +1,41 @@
+{
+  "abort_reasons": {
+    "max_game_time_exceeded": 6
+  },
+  "aborted": 6,
+  "attempted": 32,
+  "completed": 26,
+  "elapsed_s": 1388.013639004901,
+  "iteration": 1,
+  "move_counts": [
+    86,
+    282,
+    111,
+    67,
+    133,
+    84,
+    96,
+    451,
+    124,
+    106,
+    103,
+    84,
+    106,
+    351,
+    87,
+    80,
+    73,
+    111,
+    81,
+    120,
+    115,
+    134,
+    193,
+    118,
+    98,
+    146
+  ],
+  "phase": "B0",
+  "samples_generated": 3540,
+  "training_step": 88
+}

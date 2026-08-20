@@ -1,0 +1,20 @@
+loaded weights from checkpoint['model_state_dict']
+
+device=NVIDIA GeForce RTX 3060  legal_actions=50  nodes=73x4
+
+ batch   evaluate    forward   postproc  post/row  per_req  speedup
+-------------------------------------------------------------------
+     1     2.521m     2.278m     0.243m    0.243m   2.521m    1.00x
+     2     2.803m     2.585m     0.218m    0.109m   1.402m    1.80x
+     4     3.295m     2.438m     0.856m    0.214m   0.824m    3.06x
+     8     4.091m     2.737m     1.354m    0.169m   0.511m    4.93x
+    16     5.534m     2.416m     3.118m    0.195m   0.346m    7.29x
+    30     7.971m     2.495m     5.476m    0.183m   0.266m    9.49x
+    32     8.184m     2.564m     5.621m    0.176m   0.256m    9.86x
+    64    15.870m     4.281m    11.589m    0.181m   0.248m   10.17x
+
+(all times milliseconds; 'postproc' = evaluate - forward = the per-row sync loop)
+
+batch  1: forward 2.28 ms, per-row sync loop 0.24 ms (10% of evaluate)
+batch  8: forward 2.74 ms, per-row sync loop 1.35 ms (33% of evaluate)
+batch 30: forward 2.49 ms, per-row sync loop 5.48 ms (69% of evaluate)

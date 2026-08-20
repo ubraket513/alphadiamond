@@ -11,3 +11,9 @@ dist/
 
 # CPU training session runtime: checkpoints, replay and ledgers stay out of Git.
 # /runtime/
+
+# GPU benchmark runs: keep the ledgers/configs as evidence, leave the
+# checkpoints and replay chunks out of Git (regenerate from latest.pt.cpu-backup).
+az-bench/**/*.pt
+az-bench/**/replay/
+az-bench/**/checkpoints/
