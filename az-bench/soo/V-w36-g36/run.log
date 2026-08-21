@@ -1,0 +1,2 @@
+[resume] loaded /workspace/alphadiamond/az-bench/soo/V-w36-g36/latest.pt at training_step=80
+[start] Soo run=V-w36-g36 phase=B0 prior=canonical-target-vacancy-distance-v2 sims=64 budget=0.01h
