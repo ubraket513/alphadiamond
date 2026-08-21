@@ -621,3 +621,84 @@ def test_each_model_key_keeps_an_independent_batch_window() -> None:
         assert by_key[second] == [2]
     finally:
         coordinator.stop()
+
+
+def test_a_batch_holding_every_outstanding_request_flushes_without_waiting() -> None:
+    """Waiting is only useful while a request could still join the batch.
+
+    Once the pending batches hold every outstanding request, no lane is left to
+    contribute one: every caller is already blocked on this batch. The remaining
+    window is then pure latency, which is what made the measured single-lane tail
+    -- 36% of an RTX 3060 run at exactly one active lane -- timer-bound.
+    """
+    evaluator = RecordingEvaluator()
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(max_batch_size=8, max_wait_ms=400, request_queue_capacity=8),
+    )
+    replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        started = monotonic()
+        coordinator.submit(_request(1), replies)
+        coordinator.submit(_request(2), replies)
+
+        _responses(replies, 2)
+        elapsed = monotonic() - started
+
+        assert len(evaluator.batches) == 1
+        assert len(evaluator.batches[0]) == 2
+        assert elapsed < 0.2, f"waited {elapsed:.3f}s of a 0.4s window with nothing to wait for"
+    finally:
+        coordinator.stop()
+
+
+def test_the_batch_window_is_kept_while_a_request_could_still_arrive() -> None:
+    """The complement: an outstanding request not yet in the batch must be waited for.
+
+    This is the regime where flushing eagerly destroyed real batching on the CPU
+    box, so the rule must key on requests that cannot arrive, never on an empty
+    queue at one instant.
+    """
+
+    class GatedRequestQueue(Queue):
+        """Lets the test hold requests in the coordinator queue, unread."""
+
+        def __init__(self) -> None:
+            super().__init__(maxsize=8)
+            self.admitted = Event()
+            self.reads = 0
+
+        def get(self, block: bool = True, timeout: float | None = None) -> object:
+            # Serve the first request immediately, then stall so the remaining
+            # two stay outstanding-but-unbatched for the whole window.
+            if self.reads >= 1:
+                self.admitted.set()
+                raise Empty
+            self.reads += 1
+            return super().get(block=block, timeout=timeout)
+
+    evaluator = RecordingEvaluator()
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(max_batch_size=8, max_wait_ms=150, request_queue_capacity=8),
+    )
+    coordinator._requests = GatedRequestQueue()
+    replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        started = monotonic()
+        for number in (1, 2, 3):
+            coordinator.submit(_request(number), replies)
+
+        assert coordinator._requests.admitted.wait(timeout=1.0)
+        assert isinstance(replies.get(timeout=1.0), InferenceResponse)
+        elapsed = monotonic() - started
+
+        # Two requests are still outstanding and unbatched, so the lone batched
+        # request must have been held for its full window rather than flushed.
+        assert len(evaluator.batches) == 1
+        assert len(evaluator.batches[0]) == 1
+        assert elapsed >= 0.12, f"flushed after {elapsed:.3f}s despite requests still to come"
+    finally:
+        coordinator.stop()
