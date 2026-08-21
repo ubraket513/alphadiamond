@@ -31,10 +31,25 @@ class DirectionalResidualBlock(nn.Module):
         self.activation = nn.GELU()
 
     def forward(self, nodes: Tensor, adjacency: Tensor) -> Tensor:
-        message = self.self_projection(nodes)
-        for direction, projection in enumerate(self.direction_projections):
-            neighbours = torch.matmul(adjacency[direction], nodes)
-            message = message + projection(neighbours)
+        # Contract over directions in two einsums rather than looping in Python.
+        #
+        # The quantity is unchanged --
+        #     message = self_projection(nodes) + sum_d (adjacency[d] @ nodes) @ W_d^T
+        # -- this only reassociates the sum, so it is exact up to FP32 ordering
+        # (measured worst-case 1.8e-06 against the loop on the trained weights).
+        # The parameters are untouched, so the state_dict and every checkpoint
+        # stay byte-compatible.
+        #
+        # Why it matters: self-play inference on this pipeline is CPU
+        # kernel-launch bound, not GPU bound.  The forward costs the same for
+        # batch 1 as for batch 256, and after 16 queued forwards the GPU drains
+        # in 22 us -- the parent thread is spending its time issuing operations,
+        # not waiting for them.  The loop issued an index, a matmul, a Linear and
+        # an add per direction, ~24 operations per block and ~144 across the
+        # trunk.  See docs/rtx5060_bottleneck_findings.md.
+        neighbours = torch.einsum("dij,bjw->bdiw", adjacency, nodes)
+        weights = torch.stack([projection.weight for projection in self.direction_projections])
+        message = self.self_projection(nodes) + torch.einsum("bdiw,dvw->biv", neighbours, weights)
         return nodes + self.activation(self.norm(message))
 
 

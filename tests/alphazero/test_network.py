@@ -6,6 +6,12 @@ import torch
 from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.identity import ModelIdentity
 from diamond.alphazero.network import MinModel, SooModel
+from diamond.alphazero.network.trunk import (
+    DirectionalResidualBlock,
+    directional_adjacency,
+)
+from diamond.game.board import standard_board
+from diamond.game.coordinates import NUM_DIRECTIONS
 
 
 @pytest.mark.parametrize("batch_size", [1, 4])
@@ -53,3 +59,68 @@ def test_models_expose_distinct_checkpoint_identities() -> None:
 
     assert soo.identity == ModelIdentity.soo("0.3.0")
     assert min_model.identity == ModelIdentity.min("2.1.0")
+
+
+def _loop_reference(block, nodes: torch.Tensor, adjacency: torch.Tensor) -> torch.Tensor:
+    """The per-direction Python loop the block's forward replaced.
+
+    Kept here rather than in the module so the shipped forward carries no dead
+    code, while the equivalence it claims stays pinned by a test.
+    """
+    message = block.self_projection(nodes)
+    for direction, projection in enumerate(block.direction_projections):
+        neighbours = torch.matmul(adjacency[direction], nodes)
+        message = message + projection(neighbours)
+    return nodes + block.activation(block.norm(message))
+
+
+@pytest.mark.parametrize("batch_size", [1, 5, 17])
+def test_directional_block_matches_the_per_direction_loop(batch_size: int) -> None:
+    """The einsum contraction is a reassociation, not a different computation.
+
+    The forward was vectorized because self-play inference is CPU
+    kernel-launch bound; that optimization is only legitimate if it computes
+    exactly what the loop did, so the loop is retained here as the oracle.
+    """
+    torch.manual_seed(7)
+    board = standard_board()
+    adjacency = directional_adjacency(board)
+    block = DirectionalResidualBlock(width=16).eval()
+    nodes = torch.randn(batch_size, len(board), 16)
+
+    with torch.no_grad():
+        expected = _loop_reference(block, nodes, adjacency)
+        actual = block(nodes, adjacency)
+
+    # FP32 summation order differs, so this is a tolerance, not equality.
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+def test_directional_block_keeps_its_per_direction_parameters() -> None:
+    """Vectorizing must not change the state_dict; checkpoints must stay loadable."""
+    block = DirectionalResidualBlock(width=8)
+
+    keys = set(block.state_dict())
+
+    assert keys == {
+        "self_projection.weight",
+        "self_projection.bias",
+        "norm.weight",
+        "norm.bias",
+        *{f"direction_projections.{index}.weight" for index in range(NUM_DIRECTIONS)},
+    }
+
+
+def test_directional_block_still_propagates_gradients_to_every_direction() -> None:
+    """The stacked contraction must not detach any direction's weight."""
+    board = standard_board()
+    adjacency = directional_adjacency(board)
+    block = DirectionalResidualBlock(width=8)
+    nodes = torch.randn(2, len(board), 8)
+
+    block(nodes, adjacency).mean().backward()
+
+    assert all(
+        projection.weight.grad is not None and torch.isfinite(projection.weight.grad).all()
+        for projection in block.direction_projections
+    )
