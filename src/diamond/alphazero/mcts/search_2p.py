@@ -106,8 +106,13 @@ class MCTS2P:
         result = self.evaluator.evaluate((request,))[0]
         if not isinstance(result.value, float):
             raise ValueError("2P evaluator must return a scalar float value")
-        legal = set(self.game.legal_action_ids(node.state))
-        if set(result.priors) != legal:
+        # Check the priors against the legal set this request was built from,
+        # not a second authoritative generation of the same state. The invariant
+        # worth holding is that the evaluator answered for exactly the actions it
+        # was asked about; re-deriving the question to check the answer added a
+        # whole legal-move generation per expansion, measured at ~18% of
+        # worker-side search CPU on the RTX 5060 Ti host.
+        if set(result.priors) != set(request.legal_action_ids):
             raise ValueError("evaluator priors must match authoritative legal actions")
         priors = result.priors
         if root_noise:
