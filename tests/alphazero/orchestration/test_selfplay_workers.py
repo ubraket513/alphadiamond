@@ -610,3 +610,70 @@ def test_inference_bridge_rejects_an_uncorrelated_response() -> None:
         assert bridge.wait_for_failure(timeout=5.0) is not None
     finally:
         bridge.close()
+
+
+def _slow_job(game_index: int, simulations: int) -> tuple[SelfPlayJob, tuple[tuple[int, int], ...]]:
+    """The same episode, but with enough search to dominate the other lanes."""
+    base, actions = _job(2, game_index=game_index)
+    return (
+        SelfPlayJob(
+            run_seed=base.run_seed,
+            iteration=base.iteration,
+            game_index=base.game_index,
+            retry_id=base.retry_id,
+            model_key=base.model_key,
+            compatibility=base.compatibility,
+            players=base.players,
+            initial_state=base.initial_state,
+            mcts_config=MCTSConfig(simulations=simulations, dirichlet_epsilon=0.0),
+            selfplay_config=base.selfplay_config,
+        ),
+        actions,
+    )
+
+
+def test_a_lane_that_finishes_early_takes_pending_work() -> None:
+    """Round-robin pre-assignment double-books lanes; a shared queue must not.
+
+    Four jobs over two lanes, one of them far slower than the rest. Pre-assigning
+    `index % lane_count` gives each lane exactly two jobs no matter how long they
+    take, so the slow lane's second job waits behind it while the other lane sits
+    idle after finishing both of its own. Pulling from one shared queue instead
+    lets the idle lane take that work, so the slow lane runs strictly fewer jobs.
+
+    Measured on the RTX 3060 as 32 games over 30 lanes: lanes 0 and 1 were
+    double-booked, and giving every job its own lane bought 35% samples/hour.
+    """
+    from collections import Counter
+
+    slow, slow_actions = _slow_job(40, simulations=600)
+    fast_jobs = tuple(_job(2, game_index=41 + offset) for offset in range(3))
+    preferred = tuple(
+        (job.model_key.model_name, player_id, action)
+        for job, actions in ((slow, slow_actions), *fast_jobs)
+        for player_id, action in actions
+    )
+    jobs = (slow, *(job for job, _actions in fast_jobs))
+    children_before = {process.pid for process in active_children()}
+
+    results = SelfPlayWorkerPool(
+        ImmediateCoordinator(preferred),
+        worker_count=2,
+        per_game_timeout_s=60.0,
+        join_timeout_s=1.0,
+    ).run(jobs)
+
+    by_id = {result.game_id: result for result in results}
+    assert set(by_id) == {job.game_id for job in jobs}
+    assert all(result.completed for result in results)
+
+    lane_loads = Counter(result.worker_id for result in results)
+    slow_lane = by_id[slow.game_id].worker_id
+    other_lanes = {lane: count for lane, count in lane_loads.items() if lane != slow_lane}
+
+    assert other_lanes, "the fast jobs never reached the second lane"
+    assert lane_loads[slow_lane] < max(other_lanes.values()), (
+        f"lane loads {dict(lane_loads)} are pre-assigned, not stolen: the slow "
+        f"lane {slow_lane} carried as much work as an idle one"
+    )
+    assert not ({process.pid for process in active_children()} - children_before)
