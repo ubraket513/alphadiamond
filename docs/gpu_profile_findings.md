@@ -635,3 +635,152 @@ value by this measurement:
 4. **Adaptive batching wait** (Finding 5) — now unblocked, since item 1 of the
    old list is done and the tail can be re-measured against a stable batching
    regime.
+
+---
+
+## Follow-up stack: evaluator, lane scheduling, and the corrected `max_wait_ms`
+
+Added 2026-08-21, after the coordinator fix above. Covers the remaining three
+items from *Recommended next work*, plus a correction to Finding 6 that the
+coordinator fix made visible.
+
+### Read this first: a measurement error, and what it invalidated
+
+`diamond` is installed into `/venv/main` as an **editable** package, so
+`site-packages/*.pth` contains `/workspace/alphadiamond/src`. Every benchmark
+run therefore imports the *main working tree*, no matter which directory it runs
+from. A `git worktree` does **not** isolate a run.
+
+An initial `max_wait_ms` sweep and an initial adaptive-wait A/B were taken while
+that was misunderstood, with commits landing between runs. Both were discarded:
+the sweep had a different code version at each of its four points, and the A/B
+ran the same code in both arms. Every number in this section comes from re-runs
+that pin the source with `PYTHONPATH=<snapshot>/src` and assert on
+`diamond.__file__` before starting, so a wrong import fails the run instead of
+silently producing a plausible row.
+
+The tell, for next time: `wait20` measured 218 s in the contaminated sweep
+against 778 s for the same setting an hour earlier. A timer knob does not move
+wall-clock 3.6x. Identical config with a large unexplained delta means the code
+changed, not the configuration.
+
+### Finding 6 is wrong, and the coordinator bug is why
+
+Finding 6 concluded that batches only form at `max_wait_ms` 20 and that "the CPU
+optimum of 5 ms does not transfer". That was an artefact. With the window
+anchored to arrival, a short `max_wait_ms` guaranteed instant expiry, so the
+short-wait rows could not batch *by construction*.
+
+Re-measured with the window fixed, at 64 simulations and 30 workers, one code
+version, changing only the timer:
+
+| `max_wait_ms` | self-play wall | samples/h | mean batch | q→disp p50 | evals/s |
+|---|---|---|---|---|---|
+| **2** | **216.8 s** | **50,259** | 8.97 | 8.75 ms | 903 |
+| 5 | 261.2 s | 41,803 | 9.89 | 10.71 ms | 749 |
+| 10 | 333.6 s | 32,800 | 12.85 | 7.26 ms | 587 |
+| 20 | 518.5 s | 21,162 | 12.87 | 16.43 ms | 377 |
+
+Monotonic, and it inverts the old table. Note especially that **larger batches
+are worse here**: mean batch rises from 8.97 to 12.87 while throughput falls by
+58%. Batch size was never the objective; it is a proxy that stops tracking
+throughput once the wait dominates. The shipped `max_wait_ms = 2` in
+`runtime/configs/soo-rtx3060.json` is correct and was left alone.
+
+### The stack, one change at a time
+
+Each row changes one thing from the row above. All from the same immutable
+step-80 checkpoint, 64 simulations, 30 workers, 32 games, FP32.
+
+| stage | wait | wall | samples/h | mean batch | evals/s | runs |
+|---|---|---|---|---|---|---|
+| pre-fix coordinator (collapsed) | 20 | 1232.7 s | 8,352 | 1.04 | 156 | 3 |
+| + batch-window fix | 20 | 779.2 s | 14,106 | 8.35 | 251 | 3 |
+| + vectorized evaluator + shared job queue | 20 | 518.5 s | 21,162 | 12.87 | 377 | 1 |
+| same, at the shipped timer | **2** | **219.2 s** | **49,722** | 8.9 | 900 | 3 |
+| + adaptive wait (branch only) | 2 | 218.3 s | 49,909 | 7.05 | 897 | 2 |
+
+Isolating the middle pair at the shipped timer, which is the comparison that
+matters for production:
+
+| | wall | samples/h |
+|---|---|---|
+| batch-window fix alone, `wait2` | 319.2 s | 34,261 |
+| + vectorized evaluator + shared job queue | 219.2 s | 49,722 |
+| | **−31 %** | **+45 %** |
+
+There is deliberately **no** measured "pre-fix at `wait2`" row. It would have
+cost ~40 minutes of paid GPU to restate a result already established three runs
+per arm at `wait20`, so the total is reported as its two measured legs rather
+than as a single headline multiple.
+
+### `TorchEvaluator` vectorization
+
+The per-row loop issued ~6 device synchronisations per request, so a batch of 30
+serialised ~180 of them — 5.48 ms of a 7.97 ms call. Replaced by: host-side
+bounds checks (the ids are already Python tuples), one padded `gather` masked to
+`-inf` so padding contributes exactly zero to each row's softmax, one scalar
+validity read for the whole batch, and two host transfers total.
+
+Guarded structurally rather than by timing: a test counts `Tensor.cpu()` calls
+across two batch sizes and requires the count to be constant. It measured 4 at
+batch 2 against 48 at batch 24 before the change.
+
+Semantics are asserted against one-at-a-time evaluation on both CPU and CUDA, so
+narrow rows in a wide batch keep the values they have alone. One deliberate
+ordering change: policy validity is now checked for the whole batch before any
+row's value finiteness, so a model corrupt in both ways raises the policy error.
+
+### Shared job queue
+
+Jobs were pre-assigned round-robin to per-lane queues, so 32 games over 30 lanes
+double-booked lanes 0 and 1, and a lane's second game could not start until its
+first finished. All lanes now pull from one shared queue with one stop sentinel
+each; work stealing falls out of that.
+
+Game outcomes are unaffected — seeds derive from `run_seed`, `iteration`,
+`game_index`, `model_key` and `retry_id`, never from the lane. What changes is
+which lane runs which game, so `EpisodeResult.worker_id` is no longer
+predictable from the job index. One existing test pinned that mapping and was
+measured flaky 2-in-8 once lanes could steal; it now asserts only that the lane
+ids are valid.
+
+### Adaptive wait: measured, and deliberately not merged
+
+Rule: flush once the pending batches already hold every outstanding request,
+since no lane is left to contribute another. Keyed on requests that *cannot*
+arrive, not on the queue being momentarily empty.
+
+| | `wait2` (shipped) | `wait5` |
+|---|---|---|
+| without | 49,722 samples/h | 41,600 samples/h |
+| with | 49,909 samples/h | 50,317 samples/h |
+| | +0.4 % (noise) | **+21 %** |
+
+It buys nothing at the setting actually shipped. What it does is make throughput
+stop depending on the setting: the "with" arm lands on 216–219 s whether the
+timer is 2 or 5, removing a knob that costs up to 2.4x when mis-set.
+
+It is **not on `main`** — it lives on branch `adaptive-wait`. Two reasons. It
+revokes the documented guarantee that a lone request waits its full window, for
+no measured gain at the shipped setting; and the 4-worker CPU regime is
+unverified, which is precisely where the analogous heuristic regressed and was
+reverted in CPU round 2. Merging needs that CPU measurement first.
+
+### Ledgers
+
+Under `az-bench/soo/stack-*`, one directory per run, with the config each used.
+Regenerate the tables with `az-bench/profiles/summarize_stack.py`.
+
+### Where the bottleneck is now
+
+At `wait2` with the stack applied: 219 s of self-play, ~900 evals/s, inference
+p50 6.5 ms, response p50 17 ms, mean batch 8.9 against a ceiling of 32. The
+coordinator's single parent process still saturates one core (coordinator plus
+30 bridge threads under one GIL) while the GPU sits near 14 %, so the next real
+constraint is parent-side concurrency, not the device.
+
+Still untested from the original open questions: whether oversubscription helps
+(`lane_count` was capped at `games_per_iteration`; the shared queue changes what
+that experiment would mean), and whether `max_moves` 2000 is right at 64
+simulations.
