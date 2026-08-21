@@ -461,3 +461,177 @@ until Finding 1 is fixed, any run may land in either regime, so read
 `queue_to_dispatch_p50_ms` before trusting a throughput number. Roughly 17–19 ms
 means the batch window is healthy; ~87 ms means it collapsed and the run's
 throughput is not comparable.
+
+---
+
+## Coordinator batch-window fix validation
+
+Added 2026-08-21, after the fix predicted by Finding 1 was implemented. The
+findings above are retained unchanged: they are the evidence that motivated this
+change, and the "before" half of the comparison below.
+
+**Result: the bistability is eliminated.** Six controlled runs — three with the
+old coordinator and three with the new one, interleaved — separate completely,
+with no overlap and no run landing in the other arm's regime.
+
+### The failing mechanism
+
+`InferenceCoordinator._run` computed a pending batch's deadline from
+`batch[0].submitted_at`, which `submit()` stamps on the caller's thread the
+moment a request arrives at the parent — before it is queued on `self._requests`
+and long before the batching thread pops it. Once the request queue carried a
+backlog deeper than `max_wait_ms`, every request the batching thread popped was
+*already past its deadline*: the batch it opened flushed immediately holding one
+item, one-at-a-time dispatch fell behind arrivals, and the backlog deepened. The
+collapsed state sustained itself, and so did the healthy one.
+
+### The code-level fix
+
+`src/diamond/alphazero/inference/coordinator.py`, 29 insertions / 14 deletions.
+Pending batches changed from bare `list[_QueuedRequest]` to a `_PendingBatch`
+carrying `opened_at`, stamped when the first *validated* request joins an empty
+batch:
+
+```python
+batch = pending.get(request.model_key)
+if batch is None:
+    # The window opens now, with this request -- not when it was sent.
+    batch = _PendingBatch(opened_at=monotonic())
+    pending[request.model_key] = batch
+```
+
+Both the due-key test and the `get()` timeout now derive from `batch.opened_at`
+rather than `batch[0].submitted_at`. Under backlog the batch therefore fills to
+`max_batch_size` and flushes on size, which is what the configuration intends.
+
+The change is scheduling semantics only. `_record_batch` is untouched, so
+queue-to-dispatch, admission, inference and response latencies all keep measuring
+real request time — a request that genuinely waited 80 ms in the queue still
+reports 80 ms. Batching by model key, bounded admission, queue capacity,
+malformed-request handling, correlated `InferenceFailure`, response routing,
+shutdown, outstanding-request cleanup and thread safety are all unchanged.
+
+Note the deliberate non-changes: no adaptive wait, no `TorchEvaluator`
+vectorization, no work stealing, no change to the canonical config. Bundling any
+of them would have made the attribution below impossible.
+
+### Focused test
+
+`tests/alphazero/inference/test_coordinator.py::test_backlogged_requests_open_a_fresh_batch_window_instead_of_flushing_alone`
+parks the batching thread inside a gated evaluator, queues a burst of three
+behind it, ages the burst past `max_wait_ms`, then releases. It asserts the
+backlog is dispatched as one batch of three.
+
+On the pre-fix coordinator it fails with `assert 1 == 3` — the measured defect,
+reproduced deterministically without relying on scheduler luck. It passes after
+the fix, and passed 15 consecutive runs with no flake.
+
+Two companion guards ship with it: `queue_to_dispatch` must still report the
+request's real wait (so the new timer cannot falsify the metric), and each
+`ModelKey` must keep an independent window.
+
+### CPU test suite
+
+`pytest tests/alphazero tests/agents tests/tools` → **477 passed**, against the
+474-passing baseline plus the three new tests. CUDA-gated tests ran rather than
+skipped on this host.
+
+### Repeated GPU results
+
+One 32-game iteration each, all six seeded from a fresh copy of the same
+immutable step-80 checkpoint (`sha256:1634b901…`), all logging
+`[resume] loaded … at training_step=80`. Identical config
+(`az-bench/configs/soo-rtx3060-wait20.json`), 64 simulations, 30 workers,
+`max_wait_ms` 20, FP32, seed 7. Arms were interleaved pre/post/pre/post/pre/post
+so time-ordered drift could not favour either. Ledgers are preserved under
+`az-bench/soo/batchfix-*`; regenerate the table with
+`az-bench/profiles/summarize_batchfix.py`.
+
+| run | wall | samp/h | games | mean b | max b | q→disp p50 | inf p50 | resp p50 | evals/s | batches | requests |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| *hist* s64-w30 | 720.5 | 15,250 | 32/32 | 8.35 | 30 | 16.75 | 5.74 | 32.8 | 272 | 23,446 | 195,659 |
+| *hist* s64-prof | 1001.2 | 10,987 | 32/32 | 1.05 | 9 | 87.54 | 3.01 | 90.5 | 195 | 186,322 | 195,659 |
+| *hist* s64-prof2 | 1000.8 | 10,993 | 32/32 | 1.05 | 8 | 87.00 | 2.99 | 90.1 | 196 | 186,642 | 195,659 |
+| pre-1 | 1231.4 | 8,361 | 31/32 | 1.04 | 6 | 133.41 | 4.52 | 137.9 | 156 | 185,190 | 192,512 |
+| pre-2 | 1232.9 | 8,351 | 31/32 | 1.04 | 6 | 134.22 | 4.55 | 138.6 | 156 | 185,014 | 192,351 |
+| pre-3 | 1233.7 | 8,345 | 31/32 | 1.04 | 6 | 132.63 | 4.50 | 137.3 | 156 | 185,276 | 192,613 |
+| **post-1** | **778.2** | **14,125** | 32/32 | **8.35** | **30** | **17.31** | 8.43 | 30.5 | 251 | **23,439** | 195,659 |
+| **post-2** | **781.2** | **14,071** | 32/32 | **8.35** | **30** | **17.36** | 8.41 | 30.4 | 250 | **23,439** | 195,659 |
+| **post-3** | **778.3** | **14,123** | 32/32 | **8.35** | **30** | **17.36** | 8.29 | 30.2 | 251 | **23,440** | 195,659 |
+
+### Bistability status: **eliminated**
+
+Each arm is internally reproducible to three significant figures, and the arms do
+not come close to touching:
+
+| | pre-fix (n=3) | post-fix (n=3) |
+|---|---|---|
+| self-play wall | 1231.4 – 1233.7 s (0.19 % spread) | 778.2 – 781.2 s (0.39 % spread) |
+| mean batch | 1.04 every run | 8.35 every run |
+| max batch | 6 | 30 (the configured ceiling) |
+| queue→dispatch p50 | 132.6 – 134.2 ms | 17.31 – 17.36 ms |
+| batches / requests | 0.96 | 0.12 |
+
+No post-fix run shows the pathological combination the fix targets — mean batch
+≈ 1 **and** queue→dispatch ≫ `max_wait_ms` **and** batches ≈ requests. Every
+pre-fix run shows all three. Post-fix queue→dispatch p50 sits *inside* the 20 ms
+window for the first time; pre-fix it was 6.7× past it.
+
+The pre-fix arm collapsed 3/3 here where the original host collapsed 2/3, and
+did so harder (133 ms vs 87 ms queue→dispatch). See the caveat below.
+
+### Throughput impact
+
+**+69 % samples/hour**, 8,352 → 14,106 (arm means), and **+61 % evals/s**,
+156 → 251. Self-play wall falls 36.9 %, 1232.7 s → 779.2 s.
+
+The pre-fix runs were also slow enough that one game per run hit the 900 s
+per-game deadline and contributed zero samples — 31/32 completed, every time.
+All three post-fix runs completed 32/32, matching the historical healthy row.
+That abort is a *consequence* of the collapse, not different work: median and p90
+move counts are identical across arms once the aborted game is excluded, and both
+arms issue ~195 k requests from the same seed-deterministic games.
+
+Inference p50 rose 4.5 ms → 8.4 ms post-fix. That is expected and desirable: a
+batch of 30 costs more per call than a batch of 1, and far less per request. It
+does mean the fix has moved cost onto the per-row sync loop of Finding 4, which
+raises that item's value — see below.
+
+### Caveat: this host is not the host of the runs above
+
+The validation ran on a **128-vCPU** box, not the 32-vCPU host that produced
+every earlier row in this document. `--workers 30` was passed explicitly, since
+`resolve_worker_count()` returns 126 here.
+
+Absolute wall-clock is therefore not comparable across the horizontal rule: the
+healthy post-fix runs take 778 s where the historical healthy run took 720 s.
+What *is* comparable is the pre-vs-post contrast, which was measured on this box
+under identical conditions and is the claim being made.
+
+Worker-side CPU contention is essentially absent here, so the concern that the
+larger box might mask the defect was real — it did not. The parent process is
+pegged at ~100 % of a single core (coordinator plus 30 bridge threads under one
+GIL) regardless of core count, and that is where the backlog forms. Total system
+utilisation during a run is ~180 % of 12,800 % available, with the GPU at ~14 %:
+this workload is latency-bound at the coordinator, exactly as Findings 1 and 4
+describe.
+
+### Effect on the recommended-work ranking
+
+The order at the end of the previous section still holds, with item 3 promoted in
+value by this measurement:
+
+1. **Adopt 64 simulations for GPU training** (Finding 2) — unchanged, +47 %, a
+   config change with the evidence already in hand.
+2. **Vectorise `TorchEvaluator` postprocessing** (Finding 4) — *worth more than
+   before*. Pre-fix, the per-row loop was nearly free because every batch held
+   one row; post-fix, batches average 8.35 and reach 30, and inference p50 has
+   risen accordingly. Applying the document's own model,
+   `evals/s ≈ batch / (max_wait + inference)`: today
+   `8.35 / (0.020 + 0.0084) = 294/s` against 251 observed, and cutting inference
+   to ~2.5 ms gives `8.35 / 0.0225 = 371/s` (~+25 %). With full lanes at batch 30
+   it is `30 / 0.0225 ≈ 1330/s`.
+3. **Give every job its own lane, or add work stealing** (Findings 3 and 5).
+4. **Adaptive batching wait** (Finding 5) — now unblocked, since item 1 of the
+   old list is done and the tail can be re-measured against a stable batching
+   regime.
