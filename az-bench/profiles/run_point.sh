@@ -60,9 +60,23 @@ fi
 mkdir -p "$RUN_DIR"
 cp "$CHECKPOINT" "$RUN_DIR/latest.pt"
 
-echo "[point] run=$RUN_ID workers=$WORKERS config=$(basename "$CONFIG")"
-echo "[point] source=$ACTUAL_SRC"
-echo "[point] checkpoint=$ACTUAL_SHA"
+# Provenance goes into the run directory as well as stdout.  Keeping it only on
+# the driver's stdout scattered the evidence across sweep logs, and a commit
+# landing mid-sweep made "which source did this row actually run?" a question
+# that had to be reconstructed after the fact rather than read off the run.
+PROVENANCE="$RUN_DIR/provenance.txt"
+{
+  echo "run=$RUN_ID"
+  echo "workers=$WORKERS"
+  echo "train_steps=$TRAIN_STEPS"
+  echo "config=$CONFIG"
+  echo "source=$ACTUAL_SRC"
+  echo "checkpoint=$CHECKPOINT"
+  echo "checkpoint_sha256=$ACTUAL_SHA"
+  echo "git_head=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "git_dirty=$(git -C "$REPO" status --porcelain -- src tests 2>/dev/null | wc -l)"
+  echo "started_at=$(date -Is)"
+} | tee "$PROVENANCE" | sed 's/^/[point] /'
 
 # ---- 3. run, sampled -----------------------------------------------------
 python "$REPO/tools/az_train.py" \

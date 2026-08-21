@@ -1,0 +1,4 @@
+[resume] loaded /workspace/alphadiamond/az-bench/soo/V-w64-g64/latest.pt at training_step=80
+[start] Soo run=V-w64-g64 phase=B0 prior=canonical-target-vacancy-distance-v2 sims=64 budget=0.01h
+[i0000] 64/64 done median_moves=87 samples+5689 replay=5689 step=96 loss=4.9403 sp=499s tr=2s elapsed=0.14h
+[done] Soo iterations=1 step=96 replay=5689 elapsed=0.14h
