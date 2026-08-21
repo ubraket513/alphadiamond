@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from diamond.alphazero.config import MCTSConfig
-from diamond.alphazero.evaluator.base import EvalRequest
+from diamond.alphazero.evaluator.base import EvalRequest, EvalResult
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.mcts.search_2p import MCTS2P
 
@@ -143,3 +143,60 @@ def test_a_deadline_that_expires_midway_stops_between_simulations() -> None:
 
     total = sum(result.visit_counts.values())
     assert 0 < total < 64
+
+
+class CountingGame(Toy2PGame):
+    """Counts authoritative generations so a duplicate one is visible."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.legal_calls = 0
+        self.request_calls = 0
+
+    def legal_action_ids(self, state):
+        self.legal_calls += 1
+        return super().legal_action_ids(state)
+
+    def evaluation_request(self, state):
+        self.request_calls += 1
+        return super().evaluation_request(state)
+
+
+class MismatchedPriorEvaluator:
+    """Answers with an action the request never offered."""
+
+    def evaluate(self, requests):
+        return tuple(
+            EvalResult(priors={action: 1.0 for action in (-1,)}, value=0.0)
+            for _ in requests
+        )
+
+
+def test_expansion_does_not_regenerate_the_authoritative_legal_set() -> None:
+    """Legal moves are generated to build the request, and not a second time.
+
+    ``_expand`` used to validate the evaluator's priors against a fresh
+    ``legal_action_ids`` call on the same state, so every expansion ran the
+    authoritative generator twice. On the real Diamond board that second run is
+    a full chained-jump BFS, measured at ~18% of worker-side search CPU.
+    """
+    game = CountingGame()
+
+    MCTS2P(
+        game,
+        DummyEvaluator(0.0),
+        MCTSConfig(simulations=16, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+    ).run(State("root", 1), temperature=0.0)
+
+    assert game.request_calls > 0
+    assert game.legal_calls == game.request_calls
+
+
+def test_expansion_still_rejects_priors_that_do_not_match_the_request() -> None:
+    """The invariant is preserved: priors must cover exactly the actions asked."""
+    with pytest.raises(ValueError, match="evaluator priors must match"):
+        MCTS2P(
+            Toy2PGame(),
+            MismatchedPriorEvaluator(),
+            MCTSConfig(simulations=4, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+        ).run(State("root", 1), temperature=0.0)

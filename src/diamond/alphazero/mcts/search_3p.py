@@ -6,11 +6,11 @@ import random
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
-from .tree import VectorEdge, VectorNode
 from ..config import MCTSConfig
 from ..deadline import Deadline
 from ..evaluator.base import EvalRequest, Evaluator
+from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
+from .tree import VectorEdge, VectorNode
 
 
 class ThreePlayerSearchGame(Protocol):
@@ -123,8 +123,10 @@ class MCTS3P:
         value = dict(zip(request.canonical_player_ids, result.value))
         if set(value) != set(node.player_ids):
             raise ValueError("canonical evaluator value cannot map to global players")
-        legal = set(self.game.legal_action_ids(node.state))
-        if set(result.priors) != legal:
+        # Same invariant as MCTS2P._expand, checked the same way: the evaluator
+        # must answer for exactly the actions this request carried, and the
+        # request is the authoritative legal set for this state already.
+        if set(result.priors) != set(request.legal_action_ids):
             raise ValueError("evaluator priors must match authoritative legal actions")
         priors = result.priors
         if root_noise:

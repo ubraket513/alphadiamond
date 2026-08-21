@@ -328,6 +328,33 @@ have been actively misleading.
 
 ---
 
+## 7b. Is 48 workers still the right operating point?
+
+The optimization changed the cycle, so the worker knee was re-measured rather
+than assumed. Same checkpoint, seed, prior, `max_wait_ms` 2, with
+`train_steps_per_iteration` moved with the games to hold the 4:1 ratio.
+
+| workers | before samp/h | after samp/h | delta | eval/s | meanB | ms/eval | qd50 | rsp50 | GPU% |
+|---|---|---|---|---|---|---|---|---|---|
+| 36 | 33,844 | 37,048 | +9.5 % | 658 | 9.80 | 1.521 | 11.20 | 26.55 | 3.3 |
+| **48** | 36,501 | **40,072** | **+9.8 %** | 711 | 10.71 | 1.406 | 26.61 | 41.47 | 3.3 |
+| 64 | 37,510 | 41,068 | +9.5 % | 729 | 11.44 | 1.372 | 45.19 | 60.61 | 3.3 |
+
+All rows completed 100 % of games with zero aborts.
+
+**Yes — 48 remains the operating point.** The gain is uniform (~9.5 %) across
+worker counts, which is what a proportional cycle-time reduction predicts, so the
+shape of the curve is preserved and the knee did not move. 64 workers buys
++2.5 % over 48 for 33 % more processes, at +70 % queue→dispatch (26.6 → 45.2 ms)
+and +46 % response latency (41.5 → 60.6 ms).
+
+```
+workers  games  train_steps  simulations  max_wait_ms  precision
+     48     48           12           64            2       fp32
+```
+
+---
+
 ## 8. The system-level picture, and the new bottleneck
 
 Per-evaluation CPU across the whole process tree:
@@ -358,6 +385,11 @@ samples/hour**, roughly **4x** the current 711 evals/s. At that rate the GPU
 would be at ~12 %. **The GPU never becomes the constraint on this host**; the
 endpoint is CPU-bound (a healthy Case D), at which point worker-side MCTS — 79 %
 of system CPU per evaluation and never yet profiled — becomes the target.
+
+This ceiling is a model, not a measurement. It assumes the per-request IPC cost
+parallelizes across shards, which is likely (it is per-request, not per-thread,
+and §4 shows it does not grow with lane count) but untested. The sharding
+prototype should be judged against measured throughput, not against this number.
 
 Explicitly *not* levers on this evidence: a larger GPU, BF16, `max_batch_size`
 (the cap is not binding at wait 2), or more workers. CUDA graphs would now

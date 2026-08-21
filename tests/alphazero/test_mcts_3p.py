@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from diamond.alphazero.config import MCTSConfig
-from diamond.alphazero.evaluator.base import EvalRequest
+from diamond.alphazero.evaluator.base import EvalRequest, EvalResult
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.mcts.search_3p import MCTS3P
 
@@ -77,3 +77,52 @@ def test_three_player_backup_preserves_global_identity_without_negation() -> Non
     assert first[1] == pytest.approx(1.0)
     assert first[2] == pytest.approx(0.0)
     assert first[3] == pytest.approx(-1.0)
+
+
+class CountingGame3P(Toy3PGame):
+    """Counts authoritative generations so a duplicate one is visible."""
+
+    def __init__(self, acting_player: int = 1) -> None:
+        super().__init__(acting_player)
+        self.legal_calls = 0
+        self.request_calls = 0
+
+    def legal_action_ids(self, state):
+        self.legal_calls += 1
+        return super().legal_action_ids(state)
+
+    def evaluation_request(self, state):
+        self.request_calls += 1
+        return super().evaluation_request(state)
+
+
+class MismatchedPriorEvaluator3P:
+    """Answers with an action the request never offered."""
+
+    def evaluate(self, requests):
+        return tuple(
+            EvalResult(priors={-1: 1.0}, value=(0.0, 0.0, 0.0)) for _ in requests
+        )
+
+
+def test_expansion_does_not_regenerate_the_authoritative_legal_set() -> None:
+    """Same invariant as MCTS2P: the request's legal set is checked, not re-derived."""
+    game = CountingGame3P()
+
+    MCTS3P(
+        game,
+        DummyEvaluator((0.0, 0.0, 0.0)),
+        MCTSConfig(simulations=12, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+    ).run(State("root", 1), temperature=0.0)
+
+    assert game.request_calls > 0
+    assert game.legal_calls == game.request_calls
+
+
+def test_expansion_still_rejects_priors_that_do_not_match_the_request() -> None:
+    with pytest.raises(ValueError, match="evaluator priors must match"):
+        MCTS3P(
+            Toy3PGame(),
+            MismatchedPriorEvaluator3P(),
+            MCTSConfig(simulations=4, c_puct=1.0, dirichlet_epsilon=0.0, seed=4),
+        ).run(State("root", 1), temperature=0.0)

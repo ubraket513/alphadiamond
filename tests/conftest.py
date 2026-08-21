@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import time
 
@@ -63,6 +64,19 @@ _GUI_MODULES = frozenset(
         "test_sounds",
         "test_window_chrome",
     }
+)
+
+
+# Marking happens after collection, and collection imports the module -- so on a
+# machine without PySide6 these files raise ModuleNotFoundError during collection
+# and ``-m "not gui"`` never gets the chance to deselect them.  Skipping them at
+# collection time keeps the single source of truth above and makes the GUI-free
+# run work by construction.  ``find_spec`` does not import PySide6, so the
+# GUI-free job's "no Qt leaked into sys.modules" check stays honest.
+collect_ignore = (
+    []
+    if importlib.util.find_spec("PySide6") is not None
+    else [f"{name}.py" for name in sorted(_GUI_MODULES)]
 )
 
 
