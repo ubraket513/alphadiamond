@@ -22,7 +22,7 @@
     "dirichlet_alpha": 0.3,
     "dirichlet_epsilon": 0.25,
     "seed": 7,
-    "simulations": 32
+    "simulations": 64
   },
   "model_name": "Soo",
   "model_version": "2.0.0",

@@ -152,7 +152,10 @@ def test_the_rtx3060_config_targets_the_gpu(gpu_runner) -> None:
     assert config["inference"]["max_wait_ms"] in (1, 2)
     # Inference safety is a separate limit from the per-game budget.
     assert config["inference"]["response_timeout_s"] == 600.0
-    assert config["mcts"]["simulations"] == 32
+    # 64, not the CPU configs' 32: measured on the RTX 3060 at +47% samples/hour
+    # with 32/32 games completed instead of 26/32 and the p90 move tail gone
+    # (282 -> 114). See docs/gpu_profile_findings.md, Finding 2.
+    assert config["mcts"]["simulations"] == 64
 
     compatibility = gpu_runner.build_compatibility(config)
     assert compatibility.identity.model_name == SOO_MODEL_NAME
