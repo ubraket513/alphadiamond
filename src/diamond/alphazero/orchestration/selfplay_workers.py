@@ -580,14 +580,19 @@ class SelfPlayWorkerPool:
         lane_count = min(self.worker_count, len(jobs))
         inference_requests = context.Queue(maxsize=max(2, lane_count * 2))
         results = context.Queue(maxsize=len(jobs))
-        job_queues = tuple(context.Queue(maxsize=len(jobs) + 1) for _ in range(lane_count))
+        # One shared queue, not one per lane: a lane takes the next pending job
+        # when it finishes, so a slow game costs its own lane and no other. Round
+        # -robin pre-assignment double-booked lanes 0 and 1 with 32 games over 30
+        # lanes, and a lane's second game could not start until its first
+        # finished -- worth 35% samples/hour on the RTX 3060 (Finding 3).
+        job_queue = context.Queue(maxsize=len(jobs) + lane_count)
         response_queues = tuple(context.Queue(maxsize=max(2, lane_count * 2)) for _ in range(lane_count))
         processes = tuple(
             context.Process(
                 target=selfplay_worker_entry,
                 args=(
                     worker_id,
-                    job_queues[worker_id],
+                    job_queue,
                     results,
                     inference_requests,
                     response_queues[worker_id],
@@ -597,7 +602,7 @@ class SelfPlayWorkerPool:
             )
             for worker_id in range(lane_count)
         )
-        all_queues = (inference_requests, results, *job_queues, *response_queues)
+        all_queues = (inference_requests, results, job_queue, *response_queues)
         received: dict[str, EpisodeResult] = {}
         bridge = self.start_inference_bridge(
             request_queue=inference_requests, response_queues=response_queues
@@ -606,10 +611,11 @@ class SelfPlayWorkerPool:
         try:
             for process in processes:
                 process.start()
-            for index, job in enumerate(jobs):
-                job_queues[index % lane_count].put(job)
-            for lane in job_queues:
-                lane.put(None)
+            for job in jobs:
+                job_queue.put(job)
+            # One sentinel per lane: whichever lane reaches it last stops last.
+            for _ in range(lane_count):
+                job_queue.put(None)
 
             deadline = monotonic() + self._pool_timeout(
                 job_count=len(jobs), lane_count=lane_count

@@ -297,7 +297,10 @@ def test_two_spawn_workers_run_authoritative_soo_and_min_episodes() -> None:
         soo_job.game_id,
         min_job.game_id,
     )
-    assert {result.worker_id for result in results} == {0, 1}
+    # Which lane ran which game is no longer fixed: lanes pull from one shared
+    # queue, so a lane that finishes first may take the next job rather than
+    # waiting for its pre-assigned turn. Only the lane ids themselves are pinned.
+    assert {result.worker_id for result in results} <= {0, 1}
     assert all(result.completed for result in results)
     assert results[0].final_order == (1, 2)
     assert tuple(sample.value_target for sample in results[0].samples) == ((1.0,),)
@@ -635,19 +638,23 @@ def _slow_job(game_index: int, simulations: int) -> tuple[SelfPlayJob, tuple[tup
 def test_a_lane_that_finishes_early_takes_pending_work() -> None:
     """Round-robin pre-assignment double-books lanes; a shared queue must not.
 
-    Four jobs over two lanes, one of them far slower than the rest. Pre-assigning
-    `index % lane_count` gives each lane exactly two jobs no matter how long they
-    take, so the slow lane's second job waits behind it while the other lane sits
-    idle after finishing both of its own. Pulling from one shared queue instead
+    Ten jobs over two lanes, one of them far slower than the rest. Pre-assigning
+    `index % lane_count` gives each lane exactly five jobs no matter how long
+    they take, so the slow lane's remaining four wait behind it while the other
+    lane sits idle after finishing its own. Pulling from one shared queue instead
     lets the idle lane take that work, so the slow lane runs strictly fewer jobs.
+
+    The margin is structural rather than timed: whatever the slow lane manages to
+    pick up, the round-robin split is always exactly 5/5, so the assertion cannot
+    be satisfied by pre-assignment however the spawn timing falls.
 
     Measured on the RTX 3060 as 32 games over 30 lanes: lanes 0 and 1 were
     double-booked, and giving every job its own lane bought 35% samples/hour.
     """
     from collections import Counter
 
-    slow, slow_actions = _slow_job(40, simulations=600)
-    fast_jobs = tuple(_job(2, game_index=41 + offset) for offset in range(3))
+    slow, slow_actions = _slow_job(40, simulations=1500)
+    fast_jobs = tuple(_job(2, game_index=41 + offset) for offset in range(9))
     preferred = tuple(
         (job.model_key.model_name, player_id, action)
         for job, actions in ((slow, slow_actions), *fast_jobs)
