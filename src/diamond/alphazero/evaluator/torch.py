@@ -69,19 +69,59 @@ class TorchEvaluator:
         if policy_logits.ndim != 2:
             raise ValueError("evaluator model policy output must have shape [batch, actions]")
 
+        # Everything below is batched deliberately. The per-row form this
+        # replaced issued ~6 device synchronisations per request -- two bounds
+        # reads, two validity reads and two host transfers -- so a batch of 30
+        # serialised ~180 of them and spent 69% of the call outside the network
+        # forward, which is flat from batch 1 to batch 32. See Finding 4 in
+        # docs/gpu_profile_findings.md.
+        action_space = policy_logits.shape[1]
+        # The ids are already Python tuples, so bounds are checked on the host
+        # rather than by reading two scalars back off the device per row.
+        if (
+            min(min(request.legal_action_ids) for request in requests) < 0
+            or max(max(request.legal_action_ids) for request in requests) >= action_space
+        ):
+            raise ValueError("legal action is outside the model policy space")
+
+        # One padded gather over the widest legal set, masked back to -inf so the
+        # padding contributes exactly zero to each row's softmax.
+        counts = [len(request.legal_action_ids) for request in requests]
+        widest = max(counts)
+        index = torch.tensor(
+            [
+                list(request.legal_action_ids) + [0] * (widest - count)
+                for request, count in zip(requests, counts, strict=True)
+            ],
+            dtype=torch.long,
+            device=self.device,
+        )
+        legal_logits = policy_logits.gather(1, index)
+        if widest > min(counts):
+            lengths = torch.tensor(counts, dtype=torch.long, device=self.device).unsqueeze(1)
+            positions = torch.arange(widest, device=self.device).unsqueeze(0)
+            legal_logits = legal_logits.masked_fill(positions >= lengths, float("-inf"))
+        probabilities = torch.softmax(legal_logits, dim=1)
+
+        # One scalar read for the whole batch instead of two per row.
+        valid = torch.isfinite(probabilities).all() & (probabilities.sum(dim=1) > 0).all()
+        if not bool(valid):
+            raise ValueError("model produced invalid legal policy probabilities")
+
+        # One host transfer each; the remaining work is pure Python.
+        probability_rows = probabilities.cpu().tolist()
+        value_rows = values.cpu().tolist()
+
         results: list[EvalResult] = []
-        for row, request in enumerate(requests):
-            legal = torch.tensor(request.legal_action_ids, dtype=torch.long, device=self.device)
-            if int(legal.min()) < 0 or int(legal.max()) >= policy_logits.shape[1]:
-                raise ValueError("legal action is outside the model policy space")
-            probabilities = torch.softmax(policy_logits[row].index_select(0, legal), dim=0)
-            if not torch.isfinite(probabilities).all() or float(probabilities.sum()) <= 0:
-                raise ValueError("model produced invalid legal policy probabilities")
+        for request, count, row_probabilities, raw_value in zip(
+            requests, counts, probability_rows, value_rows, strict=True
+        ):
             priors = {
                 action: float(probability)
-                for action, probability in zip(request.legal_action_ids, probabilities.cpu().tolist())
+                for action, probability in zip(
+                    request.legal_action_ids, row_probabilities[:count], strict=True
+                )
             }
-            raw_value = values[row].cpu().tolist()
             value: float | tuple[float, ...]
             value = float(raw_value[0]) if self.value_size == 1 else tuple(map(float, raw_value))
             if not all(math.isfinite(component) for component in raw_value):
