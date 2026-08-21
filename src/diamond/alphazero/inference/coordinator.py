@@ -133,6 +133,21 @@ class _QueuedRequest:
     completed: bool = False
 
 
+@dataclass(slots=True)
+class _PendingBatch:
+    """Requests accumulating for one ``ModelKey``, with the moment they started to.
+
+    ``opened_at`` is stamped when the first validated request joins an empty
+    batch -- *not* when that request was submitted. A request that spent 80 ms
+    waiting in the coordinator queue must not spend its new batch's window on
+    the way in; anchoring the deadline to arrival made every backlogged request
+    dispatch alone, which sustained the backlog that caused it.
+    """
+
+    opened_at: float
+    items: list[_QueuedRequest] = field(default_factory=list)
+
+
 _STOP = object()
 
 
@@ -233,26 +248,22 @@ class InferenceCoordinator:
             self._reply_failure(item, rejection)
 
     def _run(self) -> None:
-        pending: dict[ModelKey, list[_QueuedRequest]] = {}
+        max_wait_s = self.config.max_wait_ms / 1000
+        pending: dict[ModelKey, _PendingBatch] = {}
         stopping = False
         while not stopping:
             now = monotonic()
             due_keys = [
-                key
-                for key, batch in pending.items()
-                if batch[0].submitted_at + self.config.max_wait_ms / 1000 <= now
+                key for key, batch in pending.items() if batch.opened_at + max_wait_s <= now
             ]
             if due_keys:
                 for key in due_keys:
-                    self._flush(pending.pop(key))
+                    self._flush(pending.pop(key).items)
                 continue
 
             timeout: float | None = None
             if pending:
-                deadline = min(
-                    batch[0].submitted_at + self.config.max_wait_ms / 1000
-                    for batch in pending.values()
-                )
+                deadline = min(batch.opened_at + max_wait_s for batch in pending.values())
                 timeout = max(0.0, deadline - now)
             try:
                 item = self._requests.get(timeout=timeout)
@@ -270,13 +281,17 @@ class InferenceCoordinator:
             if request is None:
                 continue
             item.request = request
-            batch = pending.setdefault(request.model_key, [])
-            batch.append(item)
-            if len(batch) == self.config.max_batch_size:
-                self._flush(pending.pop(request.model_key))
+            batch = pending.get(request.model_key)
+            if batch is None:
+                # The window opens now, with this request -- not when it was sent.
+                batch = _PendingBatch(opened_at=monotonic())
+                pending[request.model_key] = batch
+            batch.items.append(item)
+            if len(batch.items) == self.config.max_batch_size:
+                self._flush(pending.pop(request.model_key).items)
 
         for batch in pending.values():
-            for item in batch:
+            for item in batch.items:
                 self._reply_failure(item, RuntimeError("inference coordinator is closed"))
 
     def _validated_request(self, item: _QueuedRequest) -> InferenceRequest | None:
