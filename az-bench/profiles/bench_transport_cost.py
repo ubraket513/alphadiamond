@@ -29,6 +29,7 @@ import os
 import threading
 import time
 from dataclasses import replace
+from typing import Self
 
 import psutil
 
@@ -140,7 +141,7 @@ class ChildCpuAccountant:
         while not self._stop.wait(self._interval):
             self._sample()
 
-    def __enter__(self) -> "ChildCpuAccountant":
+    def __enter__(self) -> Self:
         self._thread.start()
         return self
 

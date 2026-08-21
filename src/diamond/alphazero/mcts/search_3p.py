@@ -6,11 +6,11 @@ import random
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
-from .tree import VectorEdge, VectorNode
 from ..config import MCTSConfig
 from ..deadline import Deadline
 from ..evaluator.base import EvalRequest, Evaluator
+from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
+from .tree import VectorEdge, VectorNode
 
 
 class ThreePlayerSearchGame(Protocol):

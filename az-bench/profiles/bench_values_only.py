@@ -127,19 +127,19 @@ def main() -> int:
             [r.node_features for r in rows], dtype=torch.float32, device=device
         )
 
-        def path_a():
+        def path_a(features=features):
             with torch.inference_mode():
                 model(features)
 
-        def path_b():
+        def path_b(features=features):
             with torch.inference_mode():
                 nodes = model.trunk(features)
                 model.value_head(nodes.mean(dim=1))
 
-        def path_c():
+        def path_c(rows=rows):
             evaluator.evaluate(tuple(rows))
 
-        def path_d():
+        def path_d(rows=rows):
             # Exactly what a value-only native callback would run: build the
             # batch tensor from the wire buffer, trunk + value head, one D2H.
             with torch.inference_mode():

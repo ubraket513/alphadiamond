@@ -13,43 +13,62 @@ Follows [rtx5060_bottleneck_findings.md](rtx5060_bottleneck_findings.md).
 
 ## 0. Measurements this design rests on
 
-Everything below was measured on the RTX 5060 Ti / Xeon E5-2686 v4 host at
-commit `9557a98`, with the immutable step-80 checkpoint
-(`sha256:1634b901…`).
+Everything below was measured on the RTX 5060 Ti / Xeon E5-2686 v4 host with the
+immutable step-80 checkpoint (`sha256:1634b901…`). The stage profile is from
+commit `d907970`; the transport and value-only numbers from `9557a98`, which
+does not affect them.
 
 ### 0.1 Where the system's CPU goes
 
 Production-scale run: 48 workers, 48 games, real trained network, 64 simulations,
-`max_wait_ms` 2. Reproduces the ledgered production point (669 evals/s here vs
-640 for `C-w48-g48`; 281,779 evaluations both).
+`max_wait_ms` 2. Reproduces the ledgered production point (694 evals/s here vs
+640 for `C-w48-g48`; 281,779 evaluations and 4,410 moves in both).
 
 ```
-cpu ms/eval:  parent 1.645   workers 4.405   total 6.050
-throughput    669 evals/s    evals/move 63.9
-batches/s     62.8           mean batch 10.67
-resp p50      44.39 ms       q->dispatch p50 28.72 ms
+cpu ms/eval:  parent 1.589   workers 3.697   total 5.286
+throughput    694 evals/s    evals/move 63.9
+batches/s     63.2           mean batch 10.99
+resp p50      44.75 ms       q->dispatch p50 29.08 ms
 ```
 
 Worker-side stage CPU, `time.thread_time_ns`, exclusive (nested calls
-subtracted), aggregated over all 48 workers:
+subtracted), aggregated over all 48 workers. **This is the Python oracle
+baseline the native backend will be compared against**, taken *after* the
+duplicate legal-generation fix (risk 6 below):
 
 | stage | ms/eval | share | calls/eval | µs/call |
 |---|---|---|---|---|
-| **legal_action_ids** | **1.3452** | **35.4 %** | 2.02 | 667.4 |
-| **bootstrap_prior** | **1.2361** | **32.6 %** | 1.00 | 1236.1 |
-| remote_cpu | 0.4315 | 11.4 % | 1.00 | 431.6 |
-| apply_action | 0.2234 | 5.9 % | 1.01 | 222.2 |
-| select | 0.1957 | 5.2 % | 1.67 | 117.1 |
-| expand own | 0.1506 | 4.0 % | 1.00 | 150.6 |
-| encode | 0.1294 | 3.4 % | 1.02 | 127.5 |
-| MCTS residual (tree/backup) | 0.0677 | 1.8 % | — | — |
-| is_terminal | 0.0102 | 0.3 % | 2.70 | 3.8 |
-| current_player_id | 0.0048 | 0.1 % | 1.01 | 4.8 |
-| **search_total (main thread)** | **3.7946** | 100 % | | |
+| **bootstrap_prior** | **1.2241** | **39.6 %** | 1.00 | 1224.1 |
+| **legal_action_ids** | **0.6704** | **21.7 %** | 1.02 | 660.0 |
+| remote_cpu | 0.4281 | 13.8 % | 1.00 | 428.2 |
+| apply_action | 0.2359 | 7.6 % | 1.01 | 234.6 |
+| select | 0.1928 | 6.2 % | 1.67 | 115.4 |
+| expand own | 0.1307 | 4.2 % | 1.00 | 130.7 |
+| encode | 0.1294 | 4.2 % | 1.02 | 127.4 |
+| MCTS residual (tree/backup) | 0.0680 | 2.2 % | — | — |
+| is_terminal | 0.0105 | 0.3 % | 2.70 | 3.9 |
+| current_player_id | 0.0048 | 0.2 % | 1.01 | 4.8 |
+| **search_total (main thread)** | **3.0948** | 100 % | | |
 
-Cross-validated: main-thread CPU 3.860 + other worker threads (response pump,
-queue feeder) 0.548 = **4.408 ms/eval**, against 4.405 measured independently
+Cross-validated: main-thread CPU 3.161 + other worker threads (response pump,
+queue feeder) 0.540 = **3.701 ms/eval**, against 3.697 measured independently
 from `/proc` by the parent's poller.
+
+Before/after the duplicate-generation fix, same run configuration:
+
+| | before | after | delta |
+|---|---|---|---|
+| legal_action_ids calls/eval | 2.02 | **1.02** | — |
+| legal_action_ids ms/eval | 1.3452 | 0.6704 | −50 % |
+| search_total ms/eval | 3.7946 | 3.0948 | −18.4 % |
+| worker cpu ms/eval | 4.405 | 3.697 | −16.1 % |
+| total cpu ms/eval | 6.050 | 5.286 | −12.6 % |
+| throughput | 669 evals/s | 694 evals/s | +3.7 % |
+
+Throughput moved only +3.7 % because the worker side was never the binding
+constraint — the parent is (§0.2). The CPU reduction is what matters here: it
+is the baseline a native implementation has to beat, and it removes work that
+would otherwise have been ported.
 
 ### 0.2 What the multiprocessing architecture costs
 
@@ -91,7 +110,7 @@ re-descended, hence calls per evaluation. Measured, it does not:
 The trees are shallow by construction: with 64 simulations against ~54 legal
 root actions, most simulations expand a fresh root child. What *does* vary is
 per-call cost — `legal_action_ids` costs 171 µs/call in opening positions and
-667 µs/call across full games, because jump chains lengthen as pieces disperse.
+660 µs/call across full games, because jump chains lengthen as pieces disperse.
 Any Phase 1 microbenchmark must therefore use full-game position corpora.
 
 ### 0.4 Value-only inference (B0 ABI question)
@@ -126,10 +145,13 @@ through the batch sizes this design targets.
 
 ### 0.5 What is *not* yet known
 
-- Native cost per evaluation. The 1.15 ms/eval of useful Python work is
-  measured; what C++ costs is a Phase 1/2 microbenchmark, not an assumption.
-  No speedup multiple is claimed anywhere in this document.
+- **Native cost per evaluation is not assumed anywhere in this document, and
+  must not be.** The 1.15 ms/eval of useful Python work is measured; what the
+  same work costs in C++ is a Gate C microbenchmark. Any figure for native
+  throughput, native ms/eval or a speedup multiple is **speculative upside**
+  until Gate C measures it, and no design decision here depends on one.
 - Whether native lanes can fill batches to 32–64. That is Gate C.
+- Whether the per-request IPC cost parallelizes across shards or processes.
 
 ---
 
@@ -504,27 +526,38 @@ evaluations per callback.
 ## 8. Phase 1 implementation plan
 
 Ordered by the measured stage profile (§0.1), which differs from the intuition
-that MCTS selection dominates — it is 5.2 %.
+that MCTS selection dominates — it is 6.2 %. Note the order changed once the
+duplicate legal generation was removed: the bootstrap prior, not legal move
+generation, is now the largest single cost.
 
-1. **Topology export + native tables.** `topology.py` emits neighbours, camps,
-   pairwise distances and canonical mappings; the extension consumes them. A
-   test asserts the native tables equal the Python ones element-wise.
-2. **`State` + `apply_action`** (5.9 % of worker CPU). Straightforward, and
-   every later gate depends on it.
-3. **Legal move generation** (**35.4 %**, the single largest cost). Step
-   generation, then chained-jump BFS with fixed-size queue/visited/best arrays,
-   preserving direction order, shortest-path-wins and step-beats-jump. Must
-   reproduce Python's ordering.
-4. **Vacancy bootstrap prior** (**32.6 %**). Integer potential over a fixed
-   73×73 distance table with at most 10 pieces and ~54 actions — no `frozenset`
-   churn. Softmax in double, compared within 1e-12.
-5. **Canonical encoder** (3.4 %). Cheap, but needed for the ABI's feature
+**Standing instruction for Phase 1: exact parity and a simple native
+representation come before low-level micro-optimization.** The lane side has
+large headroom against the batch-callback ceiling (§0.4), so a straightforward
+native implementation is expected to suffice; optimizing it before Gate C would
+be tuning against an unmeasured constraint.
+
+0. **Topology export + native tables** (prerequisite, not a cost item).
+   `topology.py` emits neighbours, camps, pairwise distances and canonical
+   mappings; the extension consumes them. A test asserts the native tables equal
+   the Python ones element-wise.
+1. **Vacancy bootstrap prior** (**39.6 %**, the single largest cost once the
+   duplicate legal generation is gone). Integer potential over a fixed 73×73
+   distance table with at most 10 pieces and ~54 actions — no `frozenset` churn.
+   Softmax in double, compared within 1e-12.
+2. **Legal move generation** (**21.7 %**). Step generation, then chained-jump
+   BFS with fixed-size queue/visited/best arrays, preserving direction order,
+   shortest-path-wins and step-beats-jump. Must reproduce Python's **ordering**,
+   not merely its set.
+3. **`State` + `apply_action`** (7.6 %). Cheaper than the two above, but Gate A
+   cannot close without it: the corpus test applies every legal action and
+   compares the resulting occupancy, player and status.
+4. **Canonical encoder** (4.2 %). Cheap, but needed for the ABI's feature
    buffer.
-6. **Gate A corpus test.** Stop and report.
+5. **Gate A corpus test.** Stop and report.
 
 MCTS (Phase 2) deliberately comes after all of the above.
 
-Commits stay reviewable: tables, then state/apply, then rules, then prior, then
+Commits stay reviewable: tables, then prior, then rules, then state/apply, then
 encoder, then the parity gate — each with its own test.
 
 ---
@@ -548,12 +581,23 @@ One simplification helps: `SooSelfPlayRunner` builds a **fresh `MCTS2P` per move
 with `seed = selfplay.seed + move_count`, so each move's stream is short and
 independently seeded rather than one long coupled sequence.
 
-Recommendation, for explicit decision rather than silent choice: **do not target
-bit-exact RNG parity.** Define the policy as (a) deterministic given seed and
-backend, (b) statistically equivalent, and (c) parity tests run with noise and
-temperature disabled. Self-play exploration noise does not require a specific
-draw sequence for learning validity. If bit-exactness is wanted, it is
-achievable but should be scoped as its own task.
+**Decided (2026-08-21): cross-backend bit-exact RNG parity is NOT required.**
+The policy is:
+
+| mode | requirement |
+|---|---|
+| `dirichlet_epsilon = 0`, `temperature = 0` | **exact** Python/native MCTS parity — selected action, per-action visit counts, q values, evaluator request sequence |
+| stochastic (`epsilon > 0` or `temperature > 0`) | each backend deterministic for a given seed; Dirichlet and temperature **distribution and semantics** must match; the *draw sequence* need not match Python |
+| legal action ordering | **exact** parity, at Gate A, in every mode |
+
+Legal action ordering stays exact because it is not an RNG question: it decides
+which action each noise component lands on, and it is observable in the
+deterministic mode as well.
+
+Self-play exploration noise does not require a specific draw sequence for
+learning validity, so reimplementing CPython's `gammavariate` rejection
+algorithm on MT19937 buys reproducibility no experiment needs. If bit-exactness
+is ever wanted, it stays achievable and should be scoped as its own task.
 
 **3. Trajectory-dependent cost.** Per-call costs vary ~3x between opening and
 full-game positions. Native microbenchmarks must use the full-game corpus or
@@ -571,14 +615,21 @@ ValueOnly. A second evaluator thread does not help while the callback holds the
 GIL; reducing kernel launches (CUDA graphs) would, and remains explicitly out of
 scope for this project.
 
-**6. Python-side waste that is not the native project's business** — recorded so
-it is not lost, and so it is not silently bundled into a native comparison:
-`legal_action_ids` is called **2.02 times per evaluation**, because
-`MCTS2P._expand` regenerates the full legal set purely to assert the evaluator's
-prior keys match. At 667 µs/call that is ~18 % of worker search CPU spent on a
-validation whose input was derived from the same source moments earlier.
-Removing it weakens a real invariant check, so it is a separate, explicit
-decision — not part of Phase 1.
+**6. ~~Duplicate legal generation~~ — fixed before Phase 1.** `_expand`
+regenerated the authoritative legal set to validate the evaluator's prior keys,
+so `legal_action_ids` ran **2.02 times per evaluation** at 667 µs/call — ~18 %
+of worker search CPU. Both 2P and 3P now compare against
+`request.legal_action_ids`, which is the same authoritative set the request was
+built from. The invariant is preserved and arguably tighter: it asserts the
+evaluator answered for exactly the actions it was asked about.
+
+This landed as its own Python commit **before** any native work, so the Python
+oracle baseline the native backend will be compared against does not carry the
+duplicate. Re-measured: calls/eval 2.02 -> 1.02, worker CPU 4.405 -> 3.697
+ms/eval (-16.1 %), throughput 669 -> 694 evals/s. Full table in §0.1.
+
+It also reordered Phase 1: with the duplicate gone, the vacancy prior (39.6 %)
+overtakes legal move generation (21.7 %) as the largest native target.
 
 ---
 
