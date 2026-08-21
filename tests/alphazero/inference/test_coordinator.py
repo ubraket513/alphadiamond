@@ -476,3 +476,148 @@ def test_metrics_stay_bounded_under_gpu_scale_request_volume() -> None:
         metrics.admission_latency_series,
     ):
         assert len(series.reservoir) <= RESERVOIR_CAPACITY
+
+
+class GatedEvaluator(RecordingEvaluator):
+    """Blocks inside the first ``evaluate`` call until the test releases it.
+
+    Holding the batching thread inside the evaluator is what lets a test build a
+    real coordinator backlog: submissions pile up on the request queue while the
+    worker cannot pop them, so by the time it resumes they are all older than
+    ``max_wait_ms``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+        self._gated = True
+
+    def evaluate(self, requests: tuple[InferenceRequest, ...]) -> tuple[InferenceResponse, ...]:
+        if self._gated:
+            self._gated = False
+            self.started.set()
+            self.release.wait(timeout=5.0)
+        return super().evaluate(requests)
+
+
+def _sleep_past(deadline: float) -> None:
+    """Sleep until ``deadline``; only ever makes queued requests *older*."""
+    from time import sleep
+
+    remaining = deadline - monotonic()
+    while remaining > 0:
+        sleep(remaining)
+        remaining = deadline - monotonic()
+
+
+def test_backlogged_requests_open_a_fresh_batch_window_instead_of_flushing_alone() -> None:
+    """A request's age before it joins a batch must not consume that batch's window.
+
+    The coordinator is driven into the measured backlog regime: the batching
+    thread is parked inside the evaluator while a burst queues up behind it, and
+    the burst is then aged well past ``max_wait_ms``. When the worker resumes,
+    the first request it pops opens a *new* pending batch, which is entitled to
+    its full window and must therefore collect the rest of the backlog.
+    """
+    evaluator = GatedEvaluator()
+    wait_s = 0.05
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(max_batch_size=4, max_wait_ms=50, request_queue_capacity=16),
+    )
+    replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        # Park the batching thread inside the evaluator on a throwaway batch.
+        coordinator.submit(_request(0), replies)
+        assert evaluator.started.wait(timeout=2.0)
+
+        # Backlog: these cannot be dequeued until the evaluator is released.
+        burst_submitted_at = monotonic()
+        for number in (1, 2, 3):
+            coordinator.submit(_request(number), replies)
+
+        # Every queued request is now strictly older than max_wait_ms, so an
+        # arrival-anchored deadline is already expired before its batch opens.
+        _sleep_past(burst_submitted_at + wait_s * 2)
+        assert monotonic() - burst_submitted_at > wait_s
+        evaluator.release.set()
+
+        _responses(replies, 4)
+
+        assert len(evaluator.batches[0]) == 1
+        backlog_batches = evaluator.batches[1:]
+        assert [request.request_id for batch in backlog_batches for request in batch] == [
+            "request-1",
+            "request-2",
+            "request-3",
+        ]
+        assert max(len(batch) for batch in backlog_batches) == 3
+        assert len(backlog_batches) == 1
+    finally:
+        evaluator.release.set()
+        coordinator.stop()
+
+
+def test_backlog_batch_window_does_not_falsify_queue_to_dispatch_latency() -> None:
+    """The new batch-open timer is scheduling-only; latency metrics stay honest."""
+    evaluator = GatedEvaluator()
+    wait_s = 0.05
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(max_batch_size=4, max_wait_ms=50, request_queue_capacity=16),
+    )
+    replies: Queue[object] = Queue()
+    coordinator.start()
+    try:
+        coordinator.submit(_request(0), replies)
+        assert evaluator.started.wait(timeout=2.0)
+
+        burst_submitted_at = monotonic()
+        for number in (1, 2, 3):
+            coordinator.submit(_request(number), replies)
+        _sleep_past(burst_submitted_at + wait_s * 2)
+        evaluator.release.set()
+
+        _responses(replies, 4)
+
+        samples = coordinator.metrics.queue_to_dispatch_latency_samples
+        # A request that really waited ~2x max_wait in the queue must still
+        # report that wait, even though its batch got a fresh window.
+        assert max(samples) >= wait_s * 2
+    finally:
+        evaluator.release.set()
+        coordinator.stop()
+
+
+def test_each_model_key_keeps_an_independent_batch_window() -> None:
+    """One key's expiring window must not flush another key's younger batch."""
+    evaluator = RecordingEvaluator()
+    wait_s = 0.06
+    coordinator = InferenceCoordinator(
+        evaluator,
+        InferenceConfig(max_batch_size=4, max_wait_ms=60, request_queue_capacity=8),
+    )
+    replies: Queue[object] = Queue()
+    first, second = _key("a" * 64), _key("b" * 64)
+    coordinator.start()
+    try:
+        started = monotonic()
+        coordinator.submit(_request(1, key=first), replies)
+        # Opens the second key's batch well after the first key's, but early
+        # enough that the second key's own window is still open at t + 0.8 * wait.
+        _sleep_past(started + wait_s * 0.5)
+        coordinator.submit(_request(2, key=second), replies)
+        _sleep_past(started + wait_s * 0.8)
+        coordinator.submit(_request(3, key=second), replies)
+
+        _responses(replies, 3)
+
+        by_key: dict[ModelKey, list[int]] = {}
+        for batch in evaluator.batches:
+            by_key.setdefault(batch[0].model_key, []).append(len(batch))
+        assert by_key[first] == [1]
+        assert by_key[second] == [2]
+    finally:
+        coordinator.stop()
