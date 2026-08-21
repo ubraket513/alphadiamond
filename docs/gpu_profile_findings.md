@@ -342,6 +342,12 @@ phase.
 
 ## Finding 6 — `max_wait_ms` has a threshold between 10 and 20 ms
 
+> **Superseded — this finding is wrong.** Its conclusion is an artefact of the
+> coordinator bug in Finding 1: with the batch window anchored to arrival, a
+> short `max_wait_ms` could not batch by construction. Re-measured after the
+> fix the curve runs the other way — 2 ms beats 20 ms by 2.4x. Kept as
+> evidence; see *Follow-up stack* below for the corrected table.
+
 | wait | mean batch | max batch | samples/h |
 |---|---|---|---|
 | 2 | 1.00 | 1 | 9,778 |
@@ -363,6 +369,10 @@ i.e. at 64 simulations.
 ---
 
 ## Recommended next work, in order
+
+> **Status:** all five items below have since been actioned. See
+> *Coordinator batch-window fix validation* and *Follow-up stack* for what
+> shipped, what was measured, and what was deliberately not merged.
 
 1. **Fix the bistable batch window** (Finding 1). Highest value: it is worth
    ~39 % of throughput, it fires at random, and it silently disables batching
@@ -713,6 +723,23 @@ There is deliberately **no** measured "pre-fix at `wait2`" row. It would have
 cost ~40 minutes of paid GPU to restate a result already established three runs
 per arm at `wait20`, so the total is reported as its two measured legs rather
 than as a single headline multiple.
+
+### 64 simulations adopted in the canonical config
+
+`runtime/configs/soo-rtx3060.json` now carries `mcts.simulations = 64`, on the
+Finding 2 evidence: 32/32 games completed instead of 26/32, p90 moves 282 -> 114,
+and +47 % samples/hour, from twice the search per move that still finishes faster
+in wall-clock. The CPU configs keep 32 — this is a GPU tuning knob and the
+measurement behind it was taken on the GPU.
+
+Learning semantics are untouched: `simulations` is a search knob, not a
+self-play training-target field, and the 4:1 games-per-optimizer-update ratio is
+unchanged. The guard in `tests/tools/test_cpu_b0_train.py` was updated to assert
+64 and to carry the reason.
+
+Every run in this section passes `--simulations 64` explicitly, so this config
+change does not affect any number reported here; it affects production runs that
+take the config's default.
 
 ### `TorchEvaluator` vectorization
 
