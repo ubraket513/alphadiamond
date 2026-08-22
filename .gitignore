@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
+/build-*/
 dist/
 
 # Native self-play extension: built in place, never committed.
@@ -12,6 +13,7 @@ dist/
 *.pyd
 .pytest_cache/
 /runs/
+/artifacts/
 
 # CPU training session runtime: checkpoints, replay and ledgers stay out of Git.
 # /runtime/

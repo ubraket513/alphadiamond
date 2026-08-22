@@ -1,6 +1,6 @@
 # Native Windows runtime migration
 
-Status: Gate Q1 native-library slice in progress, 2026-08-23
+Status: Gate Q2 model-deployment spike in progress, 2026-08-23
 
 This document is the first implementation artifact for `blueprint/GUI_renewal.md`.
 It records the current boundaries before any C++ GUI translation or model hand-copying.
@@ -258,7 +258,46 @@ warning before falling back to the installed Visual Studio 2026 toolset
 be cleaned up in environment/developer documentation, but it does not block
 the Q1 build.
 
-Q1 remains open until the CMake invocation is documented and the pybind import
-is checked from a stable activated shell. Q2 starts only after that small
-developer-experience cleanup and adds the Python-checkpoint to portable-model
-artifact parity spike.
+Q1 is functionally validated; the remaining pybind import-shell cleanup is a
+developer-experience follow-up and does not block the Q2 spike. Q2 adds the
+Python-checkpoint to portable-model artifact parity path.
+
+## Q2 model-deployment spike status
+
+Implemented:
+
+- `tools/export_soo_deployment.py`, which constructs the authoritative
+  `SooModel`, optionally loads a compatibility-checked checkpoint, emits a
+  traced `model.ts`, strict `metadata.json`, and deterministic float32 parity
+  corpus files;
+- optional `soo_libtorch_probe` CMake target, linked against the LibTorch
+  package shipped in the active environment;
+- metadata checks for artifact format, model identity, dtype, width, and trunk
+  depth before loading the graph;
+- native forward comparison against Python-generated policy and value outputs.
+
+Verified on Windows:
+
+```text
+Python torch: 2.13.0+cpu
+LibTorch CMake package: found
+Soo LibTorch parity passed
+max_policy_error=0
+max_value_error=0
+```
+
+Reproduce the spike from an activated `alphadiamond` environment:
+
+```text
+python tools/export_soo_deployment.py artifacts/soo-spike
+cmake -S . -B build-libtorch -G Ninja ^
+  -DDIAMOND_BUILD_LIBTORCH_PROBE=ON ^
+  -DCMAKE_PREFIX_PATH=%CONDA_PREFIX%/Lib/site-packages/torch/share/cmake
+cmake --build build-libtorch
+build-libtorch/native/soo_libtorch_probe.exe artifacts/soo-spike
+```
+
+This proves the Windows LibTorch execution path for a platform-neutral
+TorchScript artifact and a deterministic forward pass. It does not yet prove
+the final hand-authored C++ Soo model or legal-action policy extraction. Those
+remain required before Q5 native human-vs-Soo integration.

@@ -4,6 +4,7 @@ project(alphadiamond LANGUAGES CXX)
 
 option(DIAMOND_BUILD_PYBIND "Build the optional pybind11 extension" OFF)
 option(DIAMOND_BUILD_NATIVE_TESTS "Build portable native smoke tests" ON)
+option(DIAMOND_BUILD_LIBTORCH_PROBE "Build the Q2 LibTorch parity probe" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

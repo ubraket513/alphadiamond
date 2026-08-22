@@ -64,6 +64,18 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     add_test(NAME soo_native_smoke COMMAND soo_native_smoke)
 endif()
 
+if(DIAMOND_BUILD_LIBTORCH_PROBE)
+    find_package(Torch REQUIRED)
+    add_executable(soo_libtorch_probe src/soo_libtorch_probe.cpp)
+    target_link_libraries(soo_libtorch_probe PRIVATE alphadiamond::soo_search ${TORCH_LIBRARIES})
+    target_compile_features(soo_libtorch_probe PRIVATE cxx_std_20)
+    target_include_directories(soo_libtorch_probe PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_compile_definitions(soo_libtorch_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(soo_libtorch_probe PRIVATE /bigobj)
+    endif()
+endif()
+
 install(TARGETS soo_core soo_search
     EXPORT alphadiamondTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
