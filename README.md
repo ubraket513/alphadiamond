@@ -483,16 +483,6 @@ steps (previewing as they go), **Space** toggles mute, and **Enter** closes it.
 Those are `Shortcut`s rather than `Keys` handlers because a `Popup` is not in
 the focus chain and never sees the key itself.
 
-To diagnose audio end to end:
-
-```bash
-python check_sound.py
-```
-
-It prints the detected output devices, whether the file loaded, whether
-playback actually reached `PlayingState`, and what the controller reports —
-then plays the sound once.
-
 ### Window chrome
 
 The window is **frameless** (`Qt.Window | Qt.FramelessWindowHint`) and draws
@@ -523,13 +513,8 @@ controls. **No Basic-style internals are left unstyled anywhere in the UI.**
 
 ### Diagnosing runtime QML problems
 
-```bash
-python debug_qml.py
-```
-
-Runs the app with every Qt/QML message printed with its source location, plus a
-tally on exit so a binding that re-fires every frame is summarised instead of
-burying the log.
+Set `QT_LOGGING_RULES="qt.qml.*=true"` and run the app; every Qt/QML message is
+printed with its source location.
 
 #### Icons
 

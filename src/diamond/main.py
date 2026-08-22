@@ -72,9 +72,9 @@ def create_native_chrome() -> NativeChrome | None:
 def build_engine(controller, font_family: str) -> QQmlApplicationEngine:
     """Create the QML engine with everything Main.qml expects.
 
-    Shared with `debug_qml.py` on purpose: the two drifted once already, and a
-    harness missing the image provider renders every icon as a broken image
-    while the real app looks fine.
+    Kept as a single helper on purpose: this setup and a separate debug harness
+    drifted apart once already, and a harness missing the image provider renders
+    every icon as a broken image while the real app looks fine.
     """
     engine = QQmlApplicationEngine()
     engine.addImportPath(str(QML_DIR))  # makes `import Style` resolvable
