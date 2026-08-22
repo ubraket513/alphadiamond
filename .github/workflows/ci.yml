@@ -53,6 +53,35 @@ jobs:
           print("no Qt in the AlphaZero import path")
           PY
 
+  # The native self-play backend is optional, so it gets its own job rather
+  # than being folded into `core`: `core` must keep proving the tree builds and
+  # tests green with no compiler and no pybind11. This job is the standing Gate
+  # A regression -- risk 1 in docs/native_selfplay_phase0.md is two
+  # authoritative rule implementations drifting apart, and the committed corpus
+  # is the only thing that catches it.
+  native:
+    name: native (Gate A parity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest "pybind11>=2.12" setuptools wheel
+          python -m pip install --no-deps -e .
+
+      - name: Build the extension
+        run: python tools/build_native.py
+
+      - name: Gate A parity
+        run: pytest tests/native -v --durations=10
+
   # Qt lives in its own job: it needs the system libraries and an offscreen
   # platform plugin, and it is the part most likely to break for reasons that
   # have nothing to do with the engine.
