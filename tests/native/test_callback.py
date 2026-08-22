@@ -409,3 +409,79 @@ def test_a_scheduled_run_is_reproducible_from_its_seed() -> None:
         return sorted(tuple(lane) for lane in result["lane_moves"])
 
     assert once() == once()
+
+
+def test_segmented_softmax_equals_the_per_row_loop_it_replaced() -> None:
+    """The replaced code is the specification, so compare against it directly.
+
+    The loop it replaces issued one ``torch.softmax`` per row -- at batch 128,
+    128 slice-and-launch round trips per evaluation on the single evaluator
+    thread, worth 1.23x of the whole callback at that batch size. Replacing it
+    is only safe if the numbers are the same, and "it is the same algorithm" is
+    a claim, not a test.
+
+    Ragged rows on purpose, including a row of one: a single-element softmax is
+    exactly 1.0 and is where an off-by-one in the segment bookkeeping shows up.
+    """
+    torch = pytest.importorskip("torch")
+
+    from diamond.alphazero.native.backend import _segmented_softmax
+
+    generator = torch.Generator().manual_seed(11)
+    counts = [1, 5, 2, 17, 1, 40, 3]
+    values = torch.randn(sum(counts), generator=generator, dtype=torch.float32)
+    rows = torch.repeat_interleave(
+        torch.arange(len(counts)), torch.tensor(counts, dtype=torch.long)
+    )
+
+    expected = torch.empty_like(values)
+    begin = 0
+    for count in counts:
+        expected[begin : begin + count] = torch.softmax(
+            values[begin : begin + count], dim=0
+        )
+        begin += count
+
+    actual = _segmented_softmax(values, rows, len(counts))
+    assert torch.allclose(actual, expected, rtol=0, atol=1e-6)
+
+    # Each row is still a distribution, which is the property MCTS relies on.
+    begin = 0
+    for count in counts:
+        assert float(actual[begin : begin + count].sum()) == pytest.approx(1.0, abs=1e-6)
+        begin += count
+
+
+def test_segmented_softmax_survives_a_large_logit_spread() -> None:
+    """Subtracting the row maximum is what makes this stable; drop it and the
+    exponential overflows to inf and the row becomes NaN."""
+    torch = pytest.importorskip("torch")
+
+    from diamond.alphazero.native.backend import _segmented_softmax
+
+    values = torch.tensor([100.0, -100.0, 0.0, 95.0], dtype=torch.float32)
+    rows = torch.tensor([0, 0, 1, 1], dtype=torch.long)
+    actual = _segmented_softmax(values, rows, 2)
+    assert torch.isfinite(actual).all()
+    assert float(actual[0]) == pytest.approx(1.0, abs=1e-6)
+    assert float(actual[2] + actual[3]) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_policy_value_refuses_a_row_with_no_legal_actions() -> None:
+    """An empty row divides by zero and yields NaN priors, which MCTS would
+    search on quite happily. The native side never sends one; refusing is how
+    that stays true."""
+    torch = pytest.importorskip("torch")
+    from diamond.alphazero.native.backend import policy_value_callback
+
+    class _Stub(torch.nn.Module):
+        def forward(self, batch):
+            rows = batch.shape[0]
+            return torch.zeros(rows, 5329), torch.zeros(rows, 1)
+
+    callback = policy_value_callback(_Stub(), device="cpu")
+    features = np.zeros((2, 73, 4), dtype=np.float32)
+    actions = np.array([3, 4], dtype=np.int32)
+    offsets = np.array([0, 2, 2], dtype=np.int64)  # second row is empty
+    with pytest.raises(ValueError, match="no legal actions"):
+        callback(features, actions, offsets)
