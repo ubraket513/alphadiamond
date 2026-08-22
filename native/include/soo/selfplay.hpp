@@ -13,10 +13,55 @@
 #include <string>
 #include <vector>
 
+#include "soo/encoder.hpp"
+#include "soo/evaluator.hpp"
 #include "soo/mcts.hpp"
 #include "soo/state.hpp"
 
 namespace soo {
+
+// One lane's pending request, as the evaluator sees it.
+//
+// Pointers into lane storage, not copies: the lane owns the encoded features
+// and the legal set, and both stay alive for the whole dispatch.
+struct BatchItem {
+    const State* state = nullptr;
+    const Encoded* encoded = nullptr;
+    const std::vector<int32_t>* actions = nullptr;
+    uint64_t salt = 0;
+    EvalOutcome* outcome = nullptr;   // to be filled
+};
+
+// Whatever answers a batch. The dummy is native and sleeps; the Gate D one
+// crosses into Python. Called only on the evaluator thread, one batch at a
+// time, so implementations need no locking of their own.
+class BatchEvaluator {
+  public:
+    virtual ~BatchEvaluator() = default;
+
+    // Called on a SEARCH WORKER, before the lane is handed to the batcher.
+    //
+    // Anything an evaluator can compute from the request alone belongs here,
+    // not in evaluate(). The workers sit at a few percent utilisation while the
+    // single evaluator thread is the serial resource that must never be
+    // starved, so work left in evaluate() is charged to the scarce thread. The
+    // native vacancy prior is 7.5 us/eval -- 240 us per batch of 32 on the
+    // critical path if computed there.
+    virtual void prepare(BatchItem& item) { (void)item; }
+
+    // Called on the evaluator thread, one batch at a time.
+    virtual void evaluate(std::vector<BatchItem>& batch) = 0;
+};
+
+// Gate C's evaluator: request-dependent, per-lane salted, artificial latency.
+class DummyBatchEvaluator : public BatchEvaluator {
+  public:
+    explicit DummyBatchEvaluator(double latency_ms) : latency_ms_(latency_ms) {}
+    void evaluate(std::vector<BatchItem>& batch) override;
+
+  private:
+    double latency_ms_;
+};
 
 struct SchedulerConfig {
     int games = 64;             // logical games in flight
@@ -57,8 +102,7 @@ struct SchedulerMetrics {
 };
 
 // Runs the scheduler for config.seconds and returns what it measured.
-// Native only: no Python, no GIL, no PyTorch.
 SchedulerMetrics run_scheduler(const Match& match, const State& opening,
-                               const SchedulerConfig& config);
+                               const SchedulerConfig& config, BatchEvaluator& evaluator);
 
 }  // namespace soo

@@ -3,6 +3,7 @@
 // Phase 1 exposes only what Gate A needs: topology injection, state, rules,
 // the canonical encoder and the vacancy bootstrap prior.  MCTS, the batcher
 // and the lane runner arrive in Phase 2.
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -104,6 +105,134 @@ py::dict export_tables() {
     out["canonical_to_physical"] = inverse;
     return out;
 }
+
+// Section 4's batch callback, Python side.
+//
+// GIL discipline (section 5): the outer entry point releases the GIL for the
+// whole run, and this is the ONLY place that takes it back -- around the
+// callback and nothing else. Lane threads never touch Python at all.
+//
+// ValueOnly is the B0 production path. The vacancy prior is native (Gate A
+// proved it equals the Python oracle), so priors never cross the boundary and
+// the entire policy tail disappears: no gather, no mask, no softmax, no
+// [B, 5329] device-to-host copy, no priors dict, no response envelope.
+class PythonBatchEvaluator : public BatchEvaluator {
+  public:
+    PythonBatchEvaluator(py::object callback, bool policy_value, const Match& match)
+        : callback_(std::move(callback)), policy_value_(policy_value), match_(match) {}
+
+    // ValueOnly's priors are a pure function of the request, so they are
+    // computed on the search worker. Only values cross the boundary, and the
+    // evaluator thread does nothing but marshal and call.
+    void prepare(BatchItem& item) override {
+        if (policy_value_) return;
+        vacancy_prior(*item.actions, canonical_self_occupancy(*item.state, match_),
+                      item.outcome->priors);
+    }
+
+    void evaluate(std::vector<BatchItem>& batch) override {
+        const size_t rows = batch.size();
+        if (rows == 0) return;
+        const size_t features = static_cast<size_t>(batch[0].encoded->feature_count);
+
+        // Staging buffer, reused across batches and owned by this object.
+        staging_.resize(rows * kBoardSize * features);
+        for (size_t i = 0; i < rows; ++i) {
+            const std::vector<float>& source = batch[i].encoded->node_features;
+            std::copy(source.begin(), source.end(),
+                      staging_.begin() + static_cast<long>(i * kBoardSize * features));
+        }
+
+        // Ragged legal sets travel flat plus offsets rather than padded, so the
+        // Python side can gather without materialising [B, max_legal].
+        if (policy_value_) {
+            offsets_.assign(1, 0);
+            flat_actions_.clear();
+            for (const BatchItem& item : batch) {
+                flat_actions_.insert(flat_actions_.end(), item.actions->begin(),
+                                     item.actions->end());
+                offsets_.push_back(static_cast<int32_t>(flat_actions_.size()));
+            }
+        }
+
+        {
+            py::gil_scoped_acquire acquire;
+
+            // A view onto the staging buffer, not a copy. The contract is that
+            // the callback must not retain it past the call; it is reused on
+            // the next batch.
+            py::capsule borrowed(staging_.data(), [](void*) {});
+            py::array_t<float> feature_view(
+                {static_cast<py::ssize_t>(rows), static_cast<py::ssize_t>(kBoardSize),
+                 static_cast<py::ssize_t>(features)},
+                {static_cast<py::ssize_t>(kBoardSize * features * sizeof(float)),
+                 static_cast<py::ssize_t>(features * sizeof(float)),
+                 static_cast<py::ssize_t>(sizeof(float))},
+                staging_.data(), borrowed);
+
+            py::object answer;
+            if (policy_value_) {
+                py::capsule actions_borrowed(flat_actions_.data(), [](void*) {});
+                py::capsule offsets_borrowed(offsets_.data(), [](void*) {});
+                py::array_t<int32_t> action_view(
+                    {static_cast<py::ssize_t>(flat_actions_.size())},
+                    {static_cast<py::ssize_t>(sizeof(int32_t))}, flat_actions_.data(),
+                    actions_borrowed);
+                py::array_t<int32_t> offset_view(
+                    {static_cast<py::ssize_t>(offsets_.size())},
+                    {static_cast<py::ssize_t>(sizeof(int32_t))}, offsets_.data(),
+                    offsets_borrowed);
+                answer = callback_(feature_view, action_view, offset_view);
+            } else {
+                answer = callback_(feature_view);
+            }
+            unpack(answer, batch);
+        }
+
+    }
+
+  private:
+    void unpack(const py::object& answer, std::vector<BatchItem>& batch) {
+        if (policy_value_) {
+            auto pair = py::cast<py::tuple>(answer);
+            if (pair.size() != 2) {
+                throw std::runtime_error("PolicyValue callback must return (priors, values)");
+            }
+            const auto priors = py::cast<py::array_t<float>>(pair[0]);
+            const auto values = py::cast<py::array_t<float>>(pair[1]);
+            if (static_cast<size_t>(values.size()) != batch.size()) {
+                throw std::runtime_error("callback returned the wrong number of values");
+            }
+            if (static_cast<size_t>(priors.size()) != flat_actions_.size()) {
+                throw std::runtime_error("callback returned the wrong number of priors");
+            }
+            const float* prior_data = priors.data();
+            const float* value_data = values.data();
+            for (size_t i = 0; i < batch.size(); ++i) {
+                const size_t begin = static_cast<size_t>(offsets_[i]);
+                const size_t end = static_cast<size_t>(offsets_[i + 1]);
+                batch[i].outcome->priors.assign(prior_data + begin, prior_data + end);
+                batch[i].outcome->value = static_cast<double>(value_data[i]);
+            }
+            return;
+        }
+        const auto values = py::cast<py::array_t<float>>(answer);
+        if (static_cast<size_t>(values.size()) != batch.size()) {
+            throw std::runtime_error("callback returned the wrong number of values");
+        }
+        const float* value_data = values.data();
+        for (size_t i = 0; i < batch.size(); ++i) {
+            batch[i].outcome->value = static_cast<double>(value_data[i]);
+        }
+    }
+
+    py::object callback_;
+    bool policy_value_;
+    const Match& match_;
+    std::vector<float> staging_;
+    std::vector<int32_t> flat_actions_;
+    std::vector<int32_t> offsets_;
+};
 
 State make_state(const std::vector<int>& occupancy, int current_player, int turn_number,
                  int status, const std::vector<int>& finish_order) {
@@ -229,6 +358,28 @@ class Game {
         return out;
     }
 
+    // Gate D: the same scheduler, answered by a Python callback.
+    //
+    // The GIL is released for the entire run. The only thread that ever takes
+    // it back is the single evaluator thread, around the callback alone. If
+    // this entry point kept the GIL, the evaluator thread would block on it
+    // forever and the run would hang immediately -- the one deadlock the
+    // design must not have.
+    py::dict schedule_with_callback(const State& opening, const SchedulerConfig& config,
+                                    const py::object& callback,
+                                    const std::string& mode) const {
+        if (mode != "value_only" && mode != "policy_value") {
+            throw std::invalid_argument("mode must be 'value_only' or 'policy_value'");
+        }
+        SchedulerMetrics metrics;
+        PythonBatchEvaluator evaluator(callback, mode == "policy_value", match_);
+        {
+            py::gil_scoped_release release;
+            metrics = run_scheduler(match_, opening, config, evaluator);
+        }
+        return pack(metrics);
+    }
+
     // Gate C.1: per-stage and whole-search native cost, no threads, no Python.
     py::dict profile(const std::vector<State>& states, const MCTSConfig& config, int repeats,
                      bool searches) const {
@@ -256,9 +407,14 @@ class Game {
     py::dict schedule(const State& opening, const SchedulerConfig& config) const {
         SchedulerMetrics metrics;
         {
+            DummyBatchEvaluator evaluator(config.eval_latency_ms);
             py::gil_scoped_release release;
-            metrics = run_scheduler(match_, opening, config);
+            metrics = run_scheduler(match_, opening, config, evaluator);
         }
+        return pack(metrics);
+    }
+
+    static py::dict pack(const SchedulerMetrics& metrics) {
         py::dict out;
         out["evaluations"] = metrics.evaluations;
         out["batches"] = metrics.batches;
@@ -386,6 +542,8 @@ PYBIND11_MODULE(_diamond_native, m) {
              py::arg("temperature") = 0.0, py::arg("trace") = false,
              py::arg("evaluator") = "hash")
         .def("schedule", &Game::schedule, py::arg("opening"), py::arg("config"))
+        .def("schedule_with_callback", &Game::schedule_with_callback, py::arg("opening"),
+             py::arg("config"), py::arg("callback"), py::arg("mode") = "value_only")
         .def("profile", &Game::profile, py::arg("states"), py::arg("config"),
              py::arg("repeats") = 1, py::arg("searches") = false)
         .def("reference_evaluate", &Game::evaluate, py::arg("state"),
