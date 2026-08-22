@@ -14,11 +14,18 @@ class GeometryModel final : public QObject {
     Q_OBJECT
   public:
     explicit GeometryModel(QObject* parent = nullptr);
+    void setPlayerCount(int count);
 
     Q_INVOKABLE QVariantMap bounds() const;
     Q_INVOKABLE QVariantList edges() const;
     Q_INVOKABLE QVariantList camps() const;
     Q_INVOKABLE QVariantList holes() const;
+
+  Q_SIGNALS:
+    void changed();
+
+  private:
+    int player_count_ = 3;
 };
 
 class ContractListModel final : public QAbstractListModel {

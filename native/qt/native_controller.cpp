@@ -7,12 +7,15 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointF>
 
 #include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <mutex>
+#include <map>
+#include <tuple>
 #include <vector>
 
 #include "soo/board.hpp"
@@ -36,45 +39,111 @@ void configure_torch_cpu() {
 }
 #endif
 
+namespace {
+struct BoardPoint { int x; int y; int z; };
+
+void controller_startup_trace(const char* marker) {
+    QFile file(QCoreApplication::applicationDirPath() + QStringLiteral("/diamond_qt_startup.log"));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) return;
+    file.write("controller-");
+    file.write(marker);
+    file.write("\n");
+    file.close();
+}
+
+std::vector<BoardPoint> board_points() {
+    std::vector<BoardPoint> points;
+    for (int x = -13; x <= 13; ++x) for (int z = -13; z <= 13; ++z) {
+        const int y = -x - z;
+        const bool up = x >= -3 && y >= -3 && z >= -3;
+        const bool down = x <= 3 && y <= 3 && z <= 3;
+        if (up || down) points.push_back({x, y, z});
+    }
+    std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
+        return a.z == b.z ? a.x < b.x : a.z < b.z;
+    });
+    return points;
+}
+
+QPointF unit_xy(const BoardPoint& point) {
+    return {point.x + point.z / 2.0, point.z * std::sqrt(3.0) / 2.0};
+}
+}
+
 GeometryModel::GeometryModel(QObject* parent) : QObject(parent) {}
 
+void GeometryModel::setPlayerCount(int count) {
+    player_count_ = count;
+    Q_EMIT changed();
+}
+
 QVariantMap GeometryModel::bounds() const {
-    return {{"minX", -6.0}, {"minY", -6.0}, {"maxX", 6.0}, {"maxY", 6.0}};
+    const auto points = board_points();
+    double min_x = 1e9, min_y = 1e9, max_x = -1e9, max_y = -1e9;
+    for (const auto& point : points) {
+        const auto xy = unit_xy(point);
+        min_x = std::min(min_x, xy.x()); min_y = std::min(min_y, xy.y());
+        max_x = std::max(max_x, xy.x()); max_y = std::max(max_y, xy.y());
+    }
+    return {{"minX", min_x}, {"minY", min_y}, {"maxX", max_x}, {"maxY", max_y}};
 }
 
 QVariantList GeometryModel::holes() const {
     QVariantList result;
-    for (int i = 0; i < 73; ++i) {
-        const double angle = (2.0 * M_PI * i) / 73.0;
-        result.push_back(QVariantMap{{"x", 5.2 * std::cos(angle)},
-                                     {"y", 5.2 * std::sin(angle)}});
+    const auto points = board_points();
+    for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+        const auto xy = unit_xy(points[i]);
+        result.push_back(QVariantMap{{"id", i}, {"x", xy.x()}, {"y", xy.y()}});
     }
     return result;
 }
 
 QVariantList GeometryModel::edges() const {
     QVariantList result;
-    for (int i = 0; i < 72; ++i) {
-        const auto a = holes().at(i).toMap();
-        const auto b = holes().at(i + 1).toMap();
-        result.push_back(QVariantMap{{"x1", a.value("x")}, {"y1", a.value("y")},
-                                     {"x2", b.value("x")}, {"y2", b.value("y")}});
+    const auto points = board_points();
+    std::map<std::tuple<int, int, int>, int> ids;
+    for (int i = 0; i < static_cast<int>(points.size()); ++i)
+        ids[{points[i].x, points[i].y, points[i].z}] = i;
+    const int directions[6][3] = {{1,-1,0},{1,0,-1},{0,1,-1},{-1,1,0},{-1,0,1},{0,-1,1}};
+    for (int i = 0; i < static_cast<int>(points.size()); ++i) for (const auto& d : directions) {
+        const auto key = std::make_tuple(points[i].x + d[0], points[i].y + d[1], points[i].z + d[2]);
+        const auto it = ids.find(key);
+        if (it == ids.end() || i >= it->second) continue;
+        const auto a = unit_xy(points[i]); const auto b = unit_xy(points[it->second]);
+        result.push_back(QVariantMap{{"x1", a.x()}, {"y1", a.y()}, {"x2", b.x()}, {"y2", b.y()}});
     }
     return result;
 }
 
 QVariantList GeometryModel::camps() const {
     QVariantList result;
+    const auto points = board_points();
+    const int axes[6][2] = {{0,3},{1,3},{2,3},{0,-3},{1,-3},{2,-3}};
     for (int camp = 0; camp < 6; ++camp) {
-        const double angle = camp * M_PI / 3.0;
+        std::vector<std::pair<int, QPointF>> camp_candidates;
+        for (const auto& point : points) {
+            const int value = camp == 0 || camp == 3 ? point.x : camp == 1 || camp == 4 ? point.y : point.z;
+            const bool triangle = camp < 3 ? point.x >= -3 && point.y >= -3 && point.z >= -3
+                                           : point.x <= 3 && point.y <= 3 && point.z <= 3;
+            if (value != axes[camp][1] || !triangle) continue;
+            const auto xy = unit_xy(point);
+            camp_candidates.push_back({static_cast<int>(camp_candidates.size()), xy});
+        }
+        double centre_x = 0.0, centre_y = 0.0;
+        for (const auto& candidate : camp_candidates) { centre_x += candidate.second.x(); centre_y += candidate.second.y(); }
+        if (!camp_candidates.empty()) { centre_x /= camp_candidates.size(); centre_y /= camp_candidates.size(); }
+        std::sort(camp_candidates.begin(), camp_candidates.end(), [centre_x, centre_y](const auto& a, const auto& b) {
+            const auto da = std::pow(a.second.x() - centre_x, 2) + std::pow(a.second.y() - centre_y, 2);
+            const auto db = std::pow(b.second.x() - centre_x, 2) + std::pow(b.second.y() - centre_y, 2);
+            return da == db ? a.first < b.first : da > db;
+        });
+        QVariantList camp_points;
+        for (int i = 0; i < std::min(3, static_cast<int>(camp_candidates.size())); ++i)
+            camp_points.push_back(QVariantMap{{"x", camp_candidates[i].second.x()}, {"y", camp_candidates[i].second.y()}});
         result.push_back(QVariantMap{
-            {"inPlay", camp < 3},
-            {"color", camp == 0 ? "#FF3B30" : camp == 1 ? "#FFCC00" : "#34C759"},
-            {"points", QVariantList{
-                QVariantMap{{"x", 5.6 * std::cos(angle)}, {"y", 5.6 * std::sin(angle)}},
-                QVariantMap{{"x", 3.4 * std::cos(angle + 0.35)}, {"y", 3.4 * std::sin(angle + 0.35)}},
-                QVariantMap{{"x", 3.4 * std::cos(angle - 0.35)}, {"y", 3.4 * std::sin(angle - 0.35)}}
-            }}});
+            {"inPlay", camp != 1 && camp != 4 || player_count_ == 3},
+            {"color", camp == 0 || camp == 3 ? "#34C759" : camp == 1 || camp == 4 ? "#FFCC00" : "#FF3B30"},
+            {"points", camp_points}});
     }
     return result;
 }
@@ -124,12 +193,19 @@ void ContractListModel::setRows(QVariantList rows) {
 }
 
 NativeController::NativeController(QObject* parent) : QObject(parent) {
+    controller_startup_trace("ctor-start");
     geometry_ = new GeometryModel(this);
+    controller_startup_trace("geometry");
     board_model_ = new ContractListModel("board", this);
+    controller_startup_trace("board-model");
     piece_model_ = new ContractListModel("piece", this);
+    controller_startup_trace("piece-model");
     history_model_ = new ContractListModel("history", this);
+    controller_startup_trace("history-model");
     player_model_ = new ContractListModel("players", this);
+    controller_startup_trace("player-model");
     ai_worker_ = new NativeAiWorker(this);
+    controller_startup_trace("worker");
     connect(ai_worker_, &NativeAiWorker::resultReady, this,
             [this](quint64 generation, int action) {
                 if (generation != generation_ || !ai_thinking_) return;
@@ -169,8 +245,11 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     match_.players[0] = soo::PlayerSpec{1, 2, 5};
     match_.players[1] = soo::PlayerSpec{2, 0, 3};
     ai_seats_ = {2};
+    geometry_->setPlayerCount(match_.count);
+    controller_startup_trace("match-configured");
     state_.current_player = 1;
     loadTopology();
+    controller_startup_trace("topology-loaded");
     if (soo::mutable_topology().configured) {
         for (int camp = 0; camp < match_.count; ++camp) {
             const auto& spec = match_.players[camp];
@@ -178,7 +257,9 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 state_.occupancy[position] = spec.id;
         }
     }
+    controller_startup_trace("before-refresh");
     refreshModels();
+    controller_startup_trace("after-refresh");
 }
 
 NativeController::~NativeController() { cancelSearch(); }
@@ -194,8 +275,19 @@ QUrl NativeController::defaultSaveDir() const {
 }
 
 QVariantList NativeController::standings() const {
-    return {QVariantMap{{"place", 1}, {"placeLabel", "1st"}, {"name", "Player 1"},
-                        {"color", "#FF3B30"}, {"isAi", false}}};
+    QVariantList result;
+    for (int seat = 0; seat < match_.count; ++seat) {
+        const auto id = match_.players[seat].id;
+        int place = 0;
+        for (int i = 0; i < state_.finished_count; ++i)
+            if (state_.finish_order[i] == id) place = i + 1;
+        const QString place_label = place == 1 ? QStringLiteral("1st")
+            : place == 2 ? QStringLiteral("2nd") : place == 3 ? QStringLiteral("3rd") : QString();
+        result.push_back(QVariantMap{{"place", place}, {"placeLabel", place_label},
+            {"name", playerName(id)}, {"color", playerColor(id)},
+            {"isAi", ai_seats_.contains(id)}});
+    }
+    return result;
 }
 
 QVariantList NativeController::seatColorsFor(int count) const {
@@ -204,7 +296,9 @@ QVariantList NativeController::seatColorsFor(int count) const {
 }
 
 QString NativeController::playerColor(uint8_t id) const {
-    return id == 1 ? QStringLiteral("#FF3B30") : QStringLiteral("#34C759");
+    if (id == 1) return QStringLiteral("#FF3B30");
+    if (id == 2 && match_.count == 3) return QStringLiteral("#FFCC00");
+    return QStringLiteral("#34C759");
 }
 
 QString NativeController::playerName(uint8_t id) const { return QStringLiteral("Player %1").arg(id); }
@@ -225,6 +319,7 @@ void NativeController::startMatch(const QVariantList& order, const QVariantList&
     cancelSearch();
     match_ = {};
     match_.count = static_cast<uint8_t>(order.size());
+    geometry_->setPlayerCount(match_.count);
     const int camps2[2] = {2, 0};
     const int targets2[2] = {5, 3};
     const int camps3[3] = {2, 1, 0};
@@ -285,16 +380,22 @@ void NativeController::loadGame(const QUrl& path) {
 }
 
 void NativeController::loadTopology() {
+    controller_startup_trace("load-topology-start");
     const QString root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
+    controller_startup_trace("load-topology-root");
     auto& topo = soo::mutable_topology();
+    controller_startup_trace("load-topology-state");
     {
         std::ifstream file(root.toStdString() + "/topology_neighbour.i8", std::ios::binary);
+        controller_startup_trace("load-topology-neighbour-open");
         if (!file) return;
         file.read(reinterpret_cast<char*>(topo.neighbour.data()), sizeof(topo.neighbour));
+        controller_startup_trace("load-topology-neighbour-read");
         if (file.gcount() != static_cast<std::streamsize>(sizeof(topo.neighbour))) return;
     }
     std::vector<int32_t> camps(60), pairwise(5329), physical(438), canonical(438);
     auto read_vector = [&](const char* name, std::vector<int32_t>& values) {
+        controller_startup_trace(name);
         std::ifstream file(root.toStdString() + "/" + name, std::ios::binary);
         if (!file) return false;
         file.read(reinterpret_cast<char*>(values.data()), values.size() * sizeof(int32_t));
@@ -402,6 +503,14 @@ bool NativeController::gameSmoke() {
     std::vector<int32_t> actions;
     soo::legal_action_ids(state_, actions);
     if (actions.empty()) return false;
+    bool rejected_illegal = false;
+    try {
+        const int source = actions.front() / soo::kBoardSize;
+        (void)soo::apply_action(state_, match_, source * soo::kBoardSize + source);
+    } catch (const std::invalid_argument&) {
+        rejected_illegal = true;
+    }
+    if (!rejected_illegal) return false;
     const auto before = state_;
     const auto before_history = history_.size();
     state_history_.push_back(state_);

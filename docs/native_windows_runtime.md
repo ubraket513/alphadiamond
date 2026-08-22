@@ -380,8 +380,90 @@ diamond_qt.exe --smoke   # passed with QT_QPA_PLATFORM=offscreen
 ```
 
 This is intentionally a shell/contract gate, not controller parity: the
-placeholder owns no game rules or AI yet. Q4 will replace these placeholders
-with native game/controller models while preserving the QML surface. The
-direct smoke executable passes; CTest currently exposes a Qt teardown crash in
-the harness context and is deliberately not registered until that harness
-issue is isolated.
+native controller now owns the initial two-player state, legal move selection,
+undo, match setup, save/load JSON, and model refreshes from the existing Soo
+rules engine. The direct smoke executable passes; CTest currently exposes a Qt
+teardown crash in the harness context and is deliberately not registered until
+that harness issue is isolated.
+
+## Q4 native controller and AI lifecycle
+
+The QML contract is now backed by `NativeController` and `ContractListModel`:
+
+- two- and three-seat match setup uses the native `soo::Match`/`soo::State`
+  structures and the selected QML turn order/AI seats;
+- legal source/destination selection and undo call the native rules engine;
+- board, piece, and history models are rebuilt from native state;
+- save/load uses a versioned JSON document containing match order, AI seats,
+  occupancy, turn, and current player;
+- AI results are generation-checked and legal-action-checked; new matches,
+  undo, load, and controller destruction invalidate pending results.
+
+The visual source remains the existing QML bundle. Native geometry mirrors the
+PySide6 `BoardGeometry` contract (the same cube-coordinate projection, 73
+holes, lattice edges, bounds, camp corners, and seat colors), and the native
+`qta` provider supplies the existing icon names used by `Icon.qml`, so the
+window chrome and board composition do not fork at the native boundary.
+
+The worker cancellation mechanism is cooperative at the result boundary: a
+running LibTorch/MCTS call is allowed to finish, but its result is discarded
+after cancellation. This avoids use-after-free and stale-state commits while
+preserving the current synchronous evaluator API.
+
+## Q5 native Soo search and CPU configuration
+
+The optional `DIAMOND_BUILD_QT_SOO=ON` target links the Qt shell to the
+hand-authored LibTorch model/evaluator and `soo::MCTS2P`. It loads the exported
+raw weights and runs the same native search path used after a human move.
+Torch CPU thread counts are bounded to one intra-op and one inter-op thread by
+default; set `DIAMOND_TORCH_THREADS` to override intra-op parallelism.
+
+Verified on Windows:
+
+```text
+diamond_qt.exe --game-smoke   # passed, native shell with LibTorch
+diamond_qt.exe --soo-smoke    # passed, model load + two MCTS simulations
+```
+
+The Qt/LibTorch build defines `QT_NO_KEYWORDS` and uses `Q_SIGNALS`/`Q_EMIT` to
+avoid Qt's `slots` macro colliding with LibTorch's `IValue::slots()` API.
+
+## Q6 final verification and compatibility notes
+
+The implementation remains Python-free at runtime. The shell-only build works
+without LibTorch; the Soo-enabled build requires the exported
+`artifacts/soo-spike` weights/topology and the CPU LibTorch package. The app
+expects to be launched from the repository/artifact root at present, because
+the native controller resolves `artifacts/soo-spike` from the current working
+directory.
+
+Known non-blocking environment diagnostics are the missing optional Vulkan
+headers, the Torch CMake warning about the optional `kineto` library, and MSVC
+third-party-header narrowing warnings. The mamba activation script also probes
+for an unavailable VS 2022 toolset before successfully falling back to the
+installed VS 2026 14.51 toolset. These do not affect the passing native smoke
+checks. Final packaging should run `windeployqt` and ship the Qt DLLs, the
+LibTorch CPU DLLs when Soo search is enabled, and the exported artifact
+directory together.
+
+Use the included deployment script after activating `alphadiamond`. It copies
+the Qt runtime explicitly because the conda-forge `windeployqt` executable can
+resolve its prefix incorrectly on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\deploy_native_qt.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\deploy_native_qt.ps1 `
+  -BuildDir build-qt-soo-clean -OutputDir dist\diamond-qt-soo -WithSoo
+```
+
+The second command also copies the CPU LibTorch DLLs and Soo artifacts.
+
+For interactive launching, use `tools\run_native_qt.ps1`; it overrides any
+inherited `QT_QPA_PLATFORM=offscreen` value left by smoke tests:
+
+```powershell
+Get-Process diamond_qt -ErrorAction SilentlyContinue | Stop-Process -Force
+powershell -ExecutionPolicy Bypass -File .\tools\run_native_qt.ps1
+# Soo build:
+powershell -ExecutionPolicy Bypass -File .\tools\run_native_qt.ps1 -Soo
+```
