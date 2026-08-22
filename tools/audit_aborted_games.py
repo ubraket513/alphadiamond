@@ -23,10 +23,11 @@ native ``Episode`` retains every ``EpisodeMove`` for aborted games; only
 ``NativeSelfPlayPool`` drops them, because it has no terminal outcome to label
 them with. This reads the raw episodes instead.
 
-Position identity comes from the encoded root features, which are the canonical
-player-relative encoding of the position — so two moves with equal features are
-the same position from the same side's perspective, which is exactly the
-repetition notion that matters.
+Position identity comes from the encoded root features — the *canonical*
+player-relative encoding, which is a diagnosis-grade notion of "the same
+position" and not a control-grade one.  See ``_position_key``: a repetition
+trigger that changes search behaviour must key on the authoritative physical
+state instead.
 
 Usage::
 
