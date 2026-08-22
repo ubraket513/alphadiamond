@@ -199,6 +199,10 @@ SearchSession::Status SearchSession::advance() {
                 // the priors unchanged and draws nothing, so there is no RNG to
                 // reproduce here.
                 prepare_expansion(root_);
+                // Keep the root's own encoding: pending_encoded_ is about to be
+                // overwritten by every leaf this search expands, and a training
+                // sample is the root.
+                root_encoded_ = pending_encoded_;
                 phase_ = Phase::AwaitRoot;
                 return Status::NeedsEvaluation;
 

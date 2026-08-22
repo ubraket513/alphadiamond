@@ -7,6 +7,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -382,6 +383,74 @@ class Game {
         return pack(metrics);
     }
 
+    // Native self-play: a fixed set of games played to completion, each move
+    // recorded, over the Gate C scheduler and the Gate D callback.
+    //
+    // Features come back as one [moves, 73, F] float32 array per episode rather
+    // than nested lists.  A 90-move game at 73x4 is 26k floats; as Python lists
+    // that is 26k boxed objects per game, per iteration, on the parent process
+    // -- which is precisely the serialized resource the whole port exists to
+    // stop loading up.
+    py::dict play_episodes(const std::vector<std::pair<State, uint64_t>>& jobs,
+                           const EpisodeConfig& config, const py::object& callback,
+                           const std::string& mode) const {
+        if (mode != "value_only" && mode != "policy_value") {
+            throw std::invalid_argument("mode must be 'value_only' or 'policy_value'");
+        }
+        std::vector<EpisodeJob> native_jobs;
+        native_jobs.reserve(jobs.size());
+        for (const auto& job : jobs) native_jobs.push_back(EpisodeJob{job.first, job.second});
+
+        EpisodeMetrics metrics;
+        std::vector<Episode> episodes;
+        PythonBatchEvaluator evaluator(callback, mode == "policy_value", match_);
+        {
+            py::gil_scoped_release release;
+            episodes = run_episodes(match_, native_jobs, config, evaluator, metrics);
+        }
+
+        py::list out;
+        for (const Episode& episode : episodes) {
+            py::list moves;
+            for (const EpisodeMove& move : episode.moves) {
+                const size_t features = static_cast<size_t>(move.features.feature_count);
+                py::array_t<float> node_features(
+                    std::vector<py::ssize_t>{static_cast<py::ssize_t>(kBoardSize),
+                                             static_cast<py::ssize_t>(features)});
+                std::memcpy(node_features.mutable_data(), move.features.node_features.data(),
+                            move.features.node_features.size() * sizeof(float));
+                py::dict entry;
+                entry["node_features"] = node_features;
+                entry["canonical_player_ids"] =
+                    py::cast(std::vector<int>(move.features.canonical_player_ids.begin(),
+                                              move.features.canonical_player_ids.end()));
+                entry["root_actions"] = py::cast(move.root_actions);
+                entry["visit_counts"] = py::cast(move.visit_counts);
+                entry["selected_action"] = move.selected_action;
+                moves.append(entry);
+            }
+            py::dict record;
+            record["moves"] = moves;
+            record["finish_order"] =
+                py::cast(std::vector<int>(episode.finish_order.begin(), episode.finish_order.end()));
+            record["move_count"] = episode.move_count;
+            record["completed"] = episode.completed;
+            record["move_limit_exceeded"] = episode.move_limit_exceeded;
+            out.append(record);
+        }
+
+        py::dict result;
+        result["episodes"] = out;
+        result["evaluations"] = metrics.evaluations;
+        result["batches"] = metrics.batches;
+        result["moves"] = metrics.moves;
+        result["wall_seconds"] = metrics.wall_seconds;
+        result["evaluator_seconds"] = metrics.evaluator_seconds;
+        result["worker_busy_seconds"] = metrics.worker_busy_seconds;
+        result["batch_sizes"] = py::cast(metrics.batch_sizes);
+        return result;
+    }
+
     // Gate C.1: per-stage and whole-search native cost, no threads, no Python.
     py::dict profile(const std::vector<State>& states, const MCTSConfig& config, int repeats,
                      bool searches) const {
@@ -537,6 +606,21 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def_readwrite("dirichlet_epsilon", &MCTSConfig::dirichlet_epsilon)
         .def_readwrite("seed", &MCTSConfig::seed);
 
+    py::class_<EpisodeConfig>(m, "EpisodeConfig")
+        .def(py::init([](int lanes, int threads, int max_batch, int max_wait_us, int simulations,
+                         int max_moves, double temperature, int temperature_moves,
+                         double dirichlet_alpha, double dirichlet_epsilon) {
+                 return EpisodeConfig{lanes,       threads,         max_batch,
+                                      max_wait_us, simulations,     max_moves,
+                                      temperature, temperature_moves,
+                                      dirichlet_alpha, dirichlet_epsilon};
+             }),
+             py::arg("lanes") = 0,
+             py::arg("threads") = 4, py::arg("max_batch") = 32, py::arg("max_wait_us") = 2000,
+             py::arg("simulations") = 64, py::arg("max_moves") = 2000,
+             py::arg("temperature") = 1.0, py::arg("temperature_moves") = 20,
+             py::arg("dirichlet_alpha") = 0.3, py::arg("dirichlet_epsilon") = 0.25);
+
     py::class_<SchedulerConfig>(m, "SchedulerConfig")
         .def(py::init([](int games, int threads, int max_batch, int max_wait_us, int simulations,
                          int max_moves, double eval_latency_ms, double seconds,
@@ -587,6 +671,8 @@ PYBIND11_MODULE(_diamond_native, m) {
              py::arg("temperature") = 0.0, py::arg("trace") = false,
              py::arg("evaluator") = "hash")
         .def("schedule", &Game::schedule, py::arg("opening"), py::arg("config"))
+        .def("play_episodes", &Game::play_episodes, py::arg("jobs"), py::arg("config"),
+             py::arg("callback"), py::arg("mode") = "value_only")
         .def("schedule_with_callback", &Game::schedule_with_callback, py::arg("opening"),
              py::arg("config"), py::arg("callback"), py::arg("mode") = "value_only")
         .def("profile", &Game::profile, py::arg("states"), py::arg("config"),
