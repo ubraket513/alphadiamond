@@ -573,3 +573,42 @@ depth-expanded `128×12 @ 64 sims`, at roughly matched wall-clock — is the nex
 experiment, and it has to be judged on completion, discarded fraction, samples/s
 and head-to-head strength. Not on loss, which has been wrong at every step of
 this investigation.
+
+### 6.5 The flat-128 frozen control — A0 is stable at 128 simulations
+
+The 64-simulation frozen arm showed the learner degrading with the actor held
+still. Repeating it with self-play at 128 simulations — same pinned actor, same
+cloned replay, same 300 steps/iteration, four iterations — separates "censoring
+harms the learner" from "*this much* censoring harms the learner".
+
+All four cells at 768 fresh games:
+
+| checkpoint | @ 64 sims | @ 128 sims |
+|---|---|---|
+| actor, step 34,650 | 93.2 % / 28.7 % censored | **97.8 % / 11.6 %** |
+| learner trained on **128-sim** data | 86.2 % / 48.7 % | **97.9 % / 13.1 %** |
+| learner trained on **64-sim** data | 86.3 % / 44.8 % | — |
+
+Three readings, and the third is the awkward one.
+
+**At 128 simulations the training loop is stable.** The learner holds its actor's
+97.8 % and even improves the shape of its games: median 71 → 65, p90 131 → 89,
+p99 307 → 173. Shorter, more decisive. So ~12 % censoring is tolerable where
+~29 % is not, and A0 is viable — at 128.
+
+**The learner does not absorb the search advantage.** Trained entirely on
+128-simulation targets, it is no better at 64 simulations than the learner
+trained on 64-simulation targets: 86.2 % against 86.3 %. Whatever the deeper
+search knows, four iterations of distillation did not move it into the prior.
+
+**A0 training costs 64-simulation robustness regardless.** The B0 actor plays at
+93.2 % on 64 sims; both A0 learners drop to ~86 %, even the one whose data was
+only 13 % censored. So the 64-sim regression is not caused by censored data
+quality — clean data produced it too.
+
+That is the "learner@128 stable, learner@64 unchanged" row: **the search
+dependency is real and remains**. The immediate answer is to keep the extra
+search where it is needed rather than to hope the network learns to do without
+it, and the longer-term answer is a better network — but as an Elo/hour
+experiment, not as a patch over a broken loop, because the loop at 128 is not
+broken.
