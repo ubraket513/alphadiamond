@@ -55,6 +55,9 @@ class NativeSelfPlayPool:
         threads: int = 4,
         max_batch: int = 32,
         max_wait_us: int = 2000,
+        simulations_late: int = 0,
+        late_move_threshold: int = 0,
+        repeat_window: int = 0,
     ) -> None:
         if threads < 1:
             raise ValueError("threads must be positive")
@@ -66,6 +69,12 @@ class NativeSelfPlayPool:
         self.threads = threads
         self.max_batch = max_batch
         self.max_wait_us = max_wait_us
+        # Adaptive search. 0 disables it, which is the production default; see
+        # EpisodeConfig for why spending it only on the tail is the point.
+        self.simulations_late = simulations_late
+        self.late_move_threshold = late_move_threshold
+        # Repetition trigger; takes precedence over the move-number threshold.
+        self.repeat_window = repeat_window
         self.metrics: dict[str, Any] = {}
 
     def run(self, jobs: tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]:
@@ -118,6 +127,9 @@ class NativeSelfPlayPool:
             temperature_moves=selfplay.temperature_moves,
             dirichlet_alpha=mcts.dirichlet_alpha,
             dirichlet_epsilon=mcts.dirichlet_epsilon,
+            simulations_late=self.simulations_late,
+            late_move_threshold=self.late_move_threshold,
+            repeat_window=self.repeat_window,
         )
 
         native_jobs = [

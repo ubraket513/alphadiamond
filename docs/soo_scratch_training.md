@@ -486,3 +486,243 @@ Effect on the live run, at the first pruned iteration:
 | training step time | 16 s | 12 s |
 
 Disk is now bounded by the capacity window rather than by run length.
+
+---
+
+## 6. Why A0 fails: three measurements that settle it
+
+### 6.1 The frozen-actor experiment — censoring is causal
+
+Both A0 attempts confounded two things: the dataset was censored *and* the
+learner became the next iteration's actor immediately. Pinning the actor
+separates them. Two matched arms were cloned from the same checkpoint and the
+same replay; the frozen arm's self-play always ran the pinned step-34,650 actor
+while its learner trained normally for four iterations — four being the point at
+which 200k replay has turned over once at the observed A0 sample rate.
+
+The arm's *self-play* completion is stable by construction (same actor, same
+distribution), so it measures nothing. What matters is whether the **learner**
+degrades, measured at 768 games:
+
+| | completion | discarded |
+|---|---|---|
+| actor, step 34,650 (frozen) | **93.2 %** | 28.7 % |
+| learner after 4 frozen-actor iterations | **86.3 %** | 44.8 % |
+
+A 6.9-point drop, about 4.5 standard errors at n=768. **The learner degrades even
+when the state distribution is held completely still.** So the censored dataset
+is causal on its own; the actor-refresh loop can only be an amplifier.
+
+### 6.2 What the aborted games are actually doing
+
+"Wandering" had been an assumption. Auditing 13 aborted games at 64 simulations,
+using the encoded root features as position identity:
+
+| metric | median | range |
+|---|---|---|
+| unique positions / moves | **0.316** | 0.116 – 0.928 |
+| max revisits of a single position | **61** | 6 – 112 |
+| returns within 2/4/6/8 ply | **68.4 %** | 6.8 – 88.4 % |
+
+**Short-cycle shuffle**, not slow progress. One position was revisited 61 times.
+
+One caveat on the identity used. These are the *encoded* features, which the
+encoder canonicalises — the acting player's camp is rotated to a fixed
+orientation and the player channels reordered to `(self, next)`. So symmetric
+images hash together and the same position with the other side to move hashes
+apart. For diagnosis that is acceptable, and arguably the right notion, since it
+counts "the network saw this exact input again"; the 2/4/6/8-ply structure makes
+genuine repetition overwhelmingly likely either way. It is **not** acceptable for
+a control decision: anything that changes search behaviour on detecting a repeat
+must key on the authoritative physical state — occupancy, side to move, status —
+and exclude bookkeeping like `turn_number` that does not affect the dynamics.
+That explains §5.7 — a repetition attractor is indifferent to the move cap, so
+raising it changed nothing — and it predicts that deeper search should help,
+because escaping needs to see past the cycle.
+
+### 6.3 Search budget: 128 is the knee
+
+Same frozen actor, same seeds, exploration untouched — only the budget moves:
+
+| simulations | completion | **discarded** | terminal samples/s |
+|---|---|---|---|
+| 64 | 93.8 % | **28.6 %** | 176 |
+| **128** | **97.7 %** | **12.2 %** | 97 |
+| 256 | 97.7 % | 12.5 % | 30 |
+| **adaptive 64 → 128 at move 100** | **97.7 %** | **12.6 %** | **106** |
+
+Doubling to 128 **more than halves the censoring**; 256 adds nothing at three
+times the cost. So 64 simulations is not enough for this network to correct its
+own prior, and the deficiency has a threshold rather than a gradient.
+
+Adaptive search reaches flat-128's quality for 106 samples/s against 97 — real
+but modest, because although only ~15 % of *games* pass move 100, those games
+are long and carry roughly a third of all moves played. A stagnation detector
+would target the tail far more precisely than a move-number threshold; the audit
+above says the signal to detect is short-cycle repetition, not slow progress.
+
+### 6.4 What this does and does not settle
+
+It settles that **64 simulations was under-searching**, and that the censored
+dataset harms the learner **independently** of the actor-refresh loop.
+
+It does not settle whether more search or a better network is the right cure.
+128 simulations buys its improvement with test-time compute; a deeper network
+might buy the same thing at 64. That comparison — `128×6 @ 128 sims` against a
+depth-expanded `128×12 @ 64 sims`, at roughly matched wall-clock — is the next
+experiment, and it has to be judged on completion, discarded fraction, samples/s
+and head-to-head strength. Not on loss, which has been wrong at every step of
+this investigation.
+
+### 6.5 The flat-128 frozen control — A0 is stable at 128 simulations
+
+The 64-simulation frozen arm showed the learner degrading with the actor held
+still. Repeating it with self-play at 128 simulations — same pinned actor, same
+cloned replay, same 300 steps/iteration, four iterations — separates "censoring
+harms the learner" from "*this much* censoring harms the learner".
+
+All four cells at 768 fresh games:
+
+| checkpoint | @ 64 sims | @ 128 sims |
+|---|---|---|
+| actor, step 34,650 | 93.2 % / 28.7 % censored | **97.8 % / 11.6 %** |
+| learner trained on **128-sim** data | 86.2 % / 48.7 % | **97.9 % / 13.1 %** |
+| learner trained on **64-sim** data | 86.3 % / 44.8 % | — |
+
+Three readings, and the third is the awkward one.
+
+**At 128 simulations the training loop is stable.** The learner holds its actor's
+97.8 % and even improves the shape of its games: median 71 → 65, p90 131 → 89,
+p99 307 → 173. Shorter, more decisive. So ~12 % censoring is tolerable where
+~29 % is not, and A0 is viable — at 128.
+
+**The learner does not absorb the search advantage.** Trained entirely on
+128-simulation targets, it is no better at 64 simulations than the learner
+trained on 64-simulation targets: 86.2 % against 86.3 %. Whatever the deeper
+search knows, four iterations of distillation did not move it into the prior.
+
+**A0 training costs 64-simulation robustness regardless.** The B0 actor plays at
+93.2 % on 64 sims; both A0 learners drop to ~86 %, even the one whose data was
+only 13 % censored. So the 64-sim regression is not caused by censored data
+quality — clean data produced it too.
+
+That is the "learner@128 stable, learner@64 unchanged" row: **the search
+dependency is real and remains**. The immediate answer is to keep the extra
+search where it is needed rather than to hope the network learns to do without
+it, and the longer-term answer is a better network — but as an Elo/hour
+experiment, not as a patch over a broken loop, because the loop at 128 is not
+broken.
+
+### 6.6 The repetition trigger beats flat-128 on every axis
+
+The audit said the failure is a short-cycle attractor, so the trigger keys on
+repetition rather than lateness: base 64 simulations, 128 only when the current
+position already occurred within the last 8 plies of that game.
+
+Identity is the **physical** state — occupancy, side to move, status and finish
+order — hashed by `dynamics_key`. Deliberately not `State::operator==`, which
+includes `turn_number` and so can never report a repetition; and deliberately
+not the encoded features, which canonicalise orientation and player channels
+(§6.2).
+
+All three configurations, 768 fresh games, same actor, same seeds:
+
+| configuration | completion | **discarded** | terminal samples/s | moves boosted |
+|---|---|---|---|---|
+| flat 64 | 93.2 % | 28.7 % | 473 | — |
+| flat 128 | 97.8 % | 11.6 % | 247 | 100 % |
+| **repetition trigger** | **98.0 %** | **9.6 %** | **392** | **5.1 %** |
+
+It matches flat-128's completion, **beats** it on censoring, and runs at **1.59x
+its throughput** — while paying the extra search on one move in twenty. The
+signal was worth targeting: the audit's short-cycle finding translated directly
+into a trigger that spends 5 % of the compute flat-128 spends and gets more.
+
+### 6.7 A correction: the earlier yield figures were measured wrong
+
+§6.3's throughput column is not comparable and should not be used. Those runs
+were configured with `games == lanes`, which disables the job queue and
+reintroduces the straggler tail from §12.2 — the run finishes at the pace of its
+slowest game while most lanes sit idle. The effect scales with game length, so
+it penalised the higher simulation counts hardest and made the extra search look
+far more expensive than it is:
+
+| configuration | yield as first measured (`games == lanes`) | yield measured properly (768 games, 256 lanes) |
+|---|---|---|
+| flat 64 | 176/s | **473/s** |
+| flat 128 | 97/s | **247/s** |
+
+Completion and discarded fraction are unaffected — they are rates, and the
+scheduling does not change which games finish. Only the throughput column was
+wrong, and it was wrong by 2.5x.
+
+The lesson is one this project has now paid for twice: **`games_per_iteration`
+must exceed `native_lanes`**, in measurement harnesses exactly as in production.
+The gate's default of 20 games per seed against 64 lanes has the same flaw, which
+does not matter for the completion rate it exists to report but would matter the
+moment anyone read a timing off it.
+
+### 6.8 Step 3 overturns §6.5: it is target quality, not censoring
+
+The repetition trigger was run as a *generator* for a third frozen-actor arm —
+same pinned actor, same cloned replay, four iterations — and the learner was then
+measured at every budget. Together with the other two arms:
+
+**Actor, step 34,650:** 93.2 % @64 · 97.8 % @128 · 98.0 % @trigger
+
+**Learner after four frozen-actor iterations, by generator:**
+
+| generator | targets from 128-sim search | learner @64 | learner @128 | learner @trigger |
+|---|---|---|---|---|
+| flat 64 | 0 % | 86.3 % | — | — |
+| flat 128 | **100 %** | 86.2 % | **97.9 %** | — |
+| repetition trigger | 5 % | 84.9 % | 94.0 % | 91.5 % |
+
+Judged where it matters — does the learner hold its actor's level on the budget
+it was generated with?
+
+| generator | actor | learner | |
+|---|---|---|---|
+| flat 128 | 97.8 % | **97.9 %** | **holds** |
+| trigger | 98.0 % | 91.5 % | degrades 6.5 pt |
+| flat 64 | 93.2 % | 86.3 % | degrades 6.9 pt |
+
+**This contradicts §6.5.** That section concluded "~12 % censoring is tolerable
+where ~29 % is not". The trigger generator censors **9.6 %** — the lowest of the
+three — and its learner degrades anyway. Censoring is not the operative variable.
+
+What tracks the outcome perfectly is the **fraction of training targets produced
+by a 128-simulation search**: 100 % holds, 5 % degrades, 0 % degrades. And the
+trigger's learner is worse than the flat-128 learner even when both are measured
+at 128 sims (94.0 % against 97.9 %), so this is about the data it was trained on,
+not the budget it is tested with.
+
+The mechanism this points to is the one the few-simulation AlphaZero literature
+warns about: at 64 simulations the root search does not reliably improve on the
+network's own prior, so its visit distribution is not a policy-improvement
+target. Training on it moves the network sideways at best. At 128 the search does
+improve on the prior, and the loop becomes a genuine improvement operator.
+
+It also retro-explains why **B0 was always healthy at 64 simulations**. B0 does
+not use the neural prior at all — the vacancy heuristic replaces it — so the
+search is anchored to an external, informative signal rather than to the
+network's own weak prior. The self-referential loop that fails in A0 does not
+exist in B0.
+
+### 6.9 What the repetition trigger is, and is not, good for
+
+It remains the best *generator* on record: 98.0 % completion, 9.6 % censoring,
+392 samples/s, 5 % of moves boosted — beating flat-128 on all four. If the goal
+were producing terminal-labelled games cheaply, it would be the answer.
+
+But 95 % of its policy targets still come from 64-simulation search, and §6.8
+says that is what decides whether training helps. **A cheap generator does not
+make a cheap teacher.** The extra search has to be in the targets the network
+learns from, not only in the moves that were going wrong.
+
+So the production A0 configuration is **flat 128** — the only one with a
+demonstrated stable loop — at 247 terminal samples/s against B0's ~1,444. That
+is the price of heuristic-free training at this network size, and it is the
+number a larger network would have to beat: the `128×12 @ 64 sims` experiment now
+has a concrete target, which is `128×6 @ 128 sims` at 97.9 % learner stability
+and 247 samples/s.
