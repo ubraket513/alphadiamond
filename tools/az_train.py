@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import signal
@@ -36,9 +37,6 @@ from pathlib import Path
 import torch
 
 from diamond.alphazero.checkpoint import load_checkpoint, save_checkpoint
-from diamond.alphazero.hardware import available_cpu_count, resolve_worker_count
-from diamond.alphazero.inference.summary import summarize_metrics
-from diamond.alphazero.run_migrate import migrate_run_to_device
 from diamond.alphazero.config import (
     BOOTSTRAP_PRIORS,
     MCTSConfig,
@@ -46,6 +44,7 @@ from diamond.alphazero.config import (
     SelfPlayConfig,
     TrainingConfig,
 )
+from diamond.alphazero.hardware import available_cpu_count, resolve_worker_count
 from diamond.alphazero.identity import (
     MIN_MODEL_NAME,
     SOO_MODEL_NAME,
@@ -53,12 +52,14 @@ from diamond.alphazero.identity import (
 )
 from diamond.alphazero.inference.coordinator import InferenceConfig, InferenceCoordinator
 from diamond.alphazero.inference.model_pool import InferenceModelPool
+from diamond.alphazero.inference.summary import summarize_metrics
 from diamond.alphazero.network import MinModel, SooModel
 from diamond.alphazero.orchestration.replay_store import PersistentReplayStore
 from diamond.alphazero.orchestration.selfplay_workers import (
     SelfPlayJob,
     SelfPlayWorkerPool,
 )
+from diamond.alphazero.run_migrate import migrate_run_to_device
 from diamond.alphazero.trainer import AlphaZeroTrainer
 from diamond.game.state import build_players, initial_state
 
@@ -182,9 +183,9 @@ def throughput_summary(
 ) -> dict:
     """Per-hour rates so CPU and GPU sessions compare directly."""
     if elapsed_s <= 0:
-        per_hour = lambda total: None  # noqa: E731
+        per_hour = lambda total: None
     else:
-        per_hour = lambda total: total * 3600.0 / elapsed_s  # noqa: E731
+        per_hour = lambda total: total * 3600.0 / elapsed_s
     return {
         "games_per_hour": per_hour(attempted),
         "completed_games_per_hour": per_hour(completed),
@@ -196,6 +197,78 @@ def throughput_summary(
 # --------------------------------------------------------------------------
 # training loop
 # --------------------------------------------------------------------------
+
+
+
+SELFPLAY_BACKENDS = ("python", "native")
+"""``python`` is the default and the oracle.  Selection is explicit and additive:
+a run never silently changes which engine produced its data."""
+
+
+def _mean_batch(metrics: dict) -> float:
+    sizes = metrics.get("batch_sizes") or []
+    return sum(sizes) / len(sizes) if sizes else 0.0
+
+
+def run_self_play(
+    *,
+    backend: str,
+    jobs,
+    model_pool,
+    model_key,
+    inference_config,
+    selfplay_config,
+    worker_count: int,
+    device: str,
+    native_lanes: int,
+):
+    """One iteration of self-play, through whichever backend is selected.
+
+    Returns ``(episodes, inference_metrics, native_metrics)``.  The two metric
+    slots are mutually exclusive by construction: the native path has no
+    inference coordinator to report, because it has no inference coordinator.
+    """
+    if backend == "native":
+        from diamond.alphazero.native.selfplay_pool import NativeSelfPlayPool
+
+        if selfplay_config.max_game_seconds is not None:
+            # The native runner bounds a game by moves, not by wall clock.
+            # Silently ignoring a configured budget would let a run exceed a
+            # limit its own config says it respects.
+            raise ValueError(
+                "selfplay_backend='native' does not implement max_game_seconds; "
+                "set it to null or use the python backend"
+            )
+        pool = NativeSelfPlayPool(
+            model_pool.evaluator(model_key).model,
+            device=device,
+            lanes=native_lanes,
+            threads=worker_count,
+            max_batch=inference_config.max_batch_size,
+            max_wait_us=int(inference_config.max_wait_ms * 1000),
+        )
+        return pool.run(jobs), None, pool.metrics
+
+    coordinator = InferenceCoordinator(model_pool, inference_config)
+    coordinator.start()
+    try:
+        episodes = SelfPlayWorkerPool(
+            coordinator,
+            worker_count=worker_count,
+            # A game now aborts on its own budget, so the pool guard is only
+            # for a dead child or broken IPC.  With no budget configured we
+            # keep the previous global deadline.
+            per_game_timeout_s=selfplay_config.max_game_seconds,
+            worker_timeout_s=(
+                None
+                if selfplay_config.max_game_seconds is not None
+                else max(600.0, inference_config.response_timeout_s * 4)
+            ),
+        ).run(jobs)
+    finally:
+        metrics = coordinator.metrics
+        coordinator.stop()
+    return episodes, metrics, None
 
 
 def main() -> int:
@@ -213,6 +286,25 @@ def main() -> int:
     parser.add_argument("--train-steps-per-iteration", type=int, default=4)
     parser.add_argument("--threads", type=int, default=4, help="Parent-side torch threads.")
     parser.add_argument("--phase", default=None, help="Ledger label, e.g. B0 or A0.")
+    parser.add_argument(
+        "--selfplay-backend",
+        default=None,
+        choices=SELFPLAY_BACKENDS,
+        help=(
+            "Self-play engine.  'python' (default) is the multiprocess pool and the "
+            "oracle; 'native' is the in-process batched backend, ~18x faster on the "
+            "GPU host and gated against the oracle by tests/native."
+        ),
+    )
+    parser.add_argument(
+        "--native-lanes",
+        type=int,
+        default=0,
+        help=(
+            "Concurrent games for the native backend; 0 derives 2 x max_batch_size. "
+            "Jobs beyond this are queued, so a long game costs its own lane only."
+        ),
+    )
     parser.add_argument(
         "--workers",
         type=int,
@@ -258,6 +350,18 @@ def main() -> int:
     worker_count = resolve_worker_count(
         args.workers if args.workers is not None else workers.get("worker_count")
     )
+
+    # Backend selection is explicit and additive; "python" stays the default and
+    # the oracle, so a run can only end up on the native path by being told to.
+    selfplay_backend = args.selfplay_backend or workers.get("selfplay_backend", "python")
+    if selfplay_backend not in SELFPLAY_BACKENDS:
+        raise SystemExit(f"unknown selfplay_backend: {selfplay_backend}")
+    native_lanes = args.native_lanes
+    if selfplay_backend == "native":
+        # Fail at startup rather than after the first iteration's self-play.
+        from diamond.alphazero.native import require_native
+
+        require_native()
 
     torch.set_num_threads(args.threads)
 
@@ -323,6 +427,8 @@ def main() -> int:
             "bootstrap_prior": selfplay_config.bootstrap_prior,
             "simulations": mcts_config.simulations,
             "worker_count": worker_count,
+            "selfplay_backend": selfplay_backend,
+            "native_lanes": native_lanes if selfplay_backend == "native" else None,
             "games_per_iteration": workers["games_per_iteration"],
             "batch_size": training_config.batch_size,
             "train_steps_per_iteration": args.train_steps_per_iteration,
@@ -337,13 +443,13 @@ def main() -> int:
     print(
         f"[start] {model_name} run={args.run_id} phase={phase} "
         f"prior={selfplay_config.bootstrap_prior} sims={mcts_config.simulations} "
-        f"budget={args.hours}h",
+        f"backend={selfplay_backend} budget={args.hours}h",
         flush=True,
     )
 
     stop = {"requested": False}
 
-    def request_stop(signum, frame):  # noqa: ARG001
+    def request_stop(signum, frame):
         # Finish the current iteration, then exit cleanly with state persisted.
         stop["requested"] = True
         print("\n[signal] stop requested; finishing current iteration", flush=True)
@@ -381,22 +487,18 @@ def main() -> int:
             for index in range(workers["games_per_iteration"])
         )
 
-        coordinator = InferenceCoordinator(model_pool, inference_config)
-        coordinator.start()
         try:
-            episodes = SelfPlayWorkerPool(
-                coordinator,
+            episodes, inference_metrics, native_metrics = run_self_play(
+                backend=selfplay_backend,
+                jobs=jobs,
+                model_pool=model_pool,
+                model_key=model_key,
+                inference_config=inference_config,
+                selfplay_config=selfplay_config,
                 worker_count=worker_count,
-                # A game now aborts on its own budget, so the pool guard is only
-                # for a dead child or broken IPC.  With no budget configured we
-                # keep the previous global deadline.
-                per_game_timeout_s=selfplay_config.max_game_seconds,
-                worker_timeout_s=(
-                    None
-                    if selfplay_config.max_game_seconds is not None
-                    else max(600.0, inference_config.response_timeout_s * 4)
-                ),
-            ).run(jobs)
+                device=training_config.device,
+                native_lanes=native_lanes,
+            )
         except RuntimeError as error:
             # A stop signal terminates the worker children mid-episode.  That is
             # an intended shutdown, not a defect: the previous iteration is
@@ -405,10 +507,15 @@ def main() -> int:
                 print(f"[stop] self-play interrupted during shutdown: {error}", flush=True)
                 break
             raise
-        finally:
-            inference_metrics = coordinator.metrics
-            coordinator.stop()
         selfplay_s = time.perf_counter() - iteration_start
+        if native_metrics:
+            print(
+                f"[native] evals={native_metrics['evaluations']:,} "
+                f"batches={native_metrics['batches']:,} "
+                f"mean_batch={_mean_batch(native_metrics):.1f} "
+                f"evaluator={native_metrics['evaluator_seconds'] / max(1e-9, native_metrics['wall_seconds']) * 100:.0f}%",
+                flush=True,
+            )
 
         completed = aborted = new_samples = 0
         move_counts: list[int] = []
@@ -445,9 +552,11 @@ def main() -> int:
                 samples = replay.sample(training_config.batch_size)
                 metrics = trainer.train_batch(buffer.collate(samples, action_size=ACTION_SIZE))
                 if not all(
-                    map(
-                        lambda value: value == value and abs(value) != float("inf"),
-                        (metrics.total_loss, metrics.policy_loss, metrics.value_loss),
+                    math.isfinite(value)
+                    for value in (
+                        metrics.total_loss,
+                        metrics.policy_loss,
+                        metrics.value_loss,
                     )
                 ):
                     raise SystemExit(f"non-finite loss detected: {asdict(metrics)}")
@@ -506,7 +615,27 @@ def main() -> int:
                 train_steps=len(metrics_list),
                 elapsed_s=time.perf_counter() - iteration_start,
             ),
-            "inference": summarize_metrics(inference_metrics, elapsed_s=selfplay_s),
+            # Exactly one of these is populated.  The native path has no
+            # inference coordinator to summarise, so recording an empty
+            # coordinator summary would misreport it as one that did nothing.
+            "inference": (
+                summarize_metrics(inference_metrics, elapsed_s=selfplay_s)
+                if inference_metrics is not None
+                else None
+            ),
+            "native_selfplay": (
+                {
+                    "evaluations": native_metrics["evaluations"],
+                    "batches": native_metrics["batches"],
+                    "moves": native_metrics["moves"],
+                    "mean_batch": _mean_batch(native_metrics),
+                    "wall_seconds": native_metrics["wall_seconds"],
+                    "evaluator_seconds": native_metrics["evaluator_seconds"],
+                    "worker_busy_seconds": native_metrics["worker_busy_seconds"],
+                }
+                if native_metrics
+                else None
+            ),
         }
         append_ledger(ledger_path, record)
         loss = record["metrics"]["total_loss"] if record["metrics"] else None

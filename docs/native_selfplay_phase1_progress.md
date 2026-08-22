@@ -972,3 +972,126 @@ to detect anything.**
 Comparing on the CDF scale instead makes it a plain proportion with standard
 error `sqrt(p(1-p)/n) ≈ 0.0016`, so the 0.01 bound is about six sigma. Same
 comparison, stated on the scale where the statistics behave.
+
+---
+
+## 12. Gate F — the native backend behind the pool contract
+
+Gate E removed the blocker; this is the wiring, plus the gate that says the
+wiring is correct. `selfplay_backend = "native"` now runs a full training loop.
+
+### 12.1 What was built
+
+**`run_episodes`** in the native scheduler. `run_scheduler` is a measurement
+harness — it runs for a wall-clock window and recycles a lane the instant its
+game ends. Training needs the opposite: a fixed set of identified games, each
+played to its own terminal state, every move recorded. Same batching
+architecture, different stop condition, and samples instead of timings.
+
+**`NativeSelfPlayPool`**, which implements
+`run(tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]` — the same signature
+the process pool implements, producing the same values.
+
+**`--selfplay-backend`** on `az_train.py`, defaulting to `python`.
+
+### 12.2 The straggler tail, which cost 3x before it was found
+
+The first version gave one lane per job and ran 48 games in 17.1 s against the
+Python backend's 79 s — 4.6x, well short of Gate D's 18.5x. Mean batch was 22.7
+against a cap of 32 and the evaluator was only 42 % busy, so the batcher was
+starved rather than the GPU being saturated.
+
+Profiling the batch sizes *over the run* rather than in aggregate found it:
+
+| position in run | mean batch (cap 64) | full batches |
+|---|---|---|
+| first 10 % | **64.0** | 100 % |
+| 10–50 % | 44.8 | 62 % |
+| 50–90 % | **1.5** | 0 % |
+| last 10 % | **1.0** | 0 % |
+
+Game lengths ran from 63 to 402 moves. Once the short games finish, a handful of
+stragglers hold the whole run at batch 1 — **half of all dispatches were
+single-lane**, and the aggregate mean of 24.9 hid it completely.
+
+The fix is the one the Python pool already found and documented as Finding 3
+(worth 35 % samples/hour there): **a shared job queue**. Lanes are a fixed pool,
+jobs beyond that are queued, and a lane takes the next unstarted job the moment
+its own game ends. A straggler then costs its own lane and no other.
+
+| jobs | lanes | cap | threads | samples/s | vs Python |
+|---|---|---|---|---|---|
+| 48 | 48 | 32 | 8 | 387 | 6.9x |
+| 192 | 64 | 32 | 8 | 549 | 9.8x |
+| 384 | 128 | 64 | 12 | 974 | 17.5x |
+| **768** | **256** | **128** | **16** | **1,035** | **18.5x** |
+
+The Gate D headline reproduces end to end, on real episode production.
+
+### 12.3 The bug the parity gate caught, and the one it nearly missed
+
+**Recorded features were the wrong node.** `EpisodeMove.features` was taken from
+`session.pending_features()` at the moment a move completed — which is whichever
+*leaf* the search expanded last, not the root. A training sample is the position
+that was searched. The symptom was subtle and fatal: native reported
+`canonical_player_ids = (1, 2)` for every move where Python correctly alternates
+`(2, 1), (1, 2), …`, so **half of all value targets were inverted** — the label
+is `+1` if `canonical_player_ids[0]` is the winner. Nothing but an end-to-end
+comparison against the oracle would have found it; the games were legal, the
+policies were right, and the loss would have gone down.
+
+This is pitfall 7.2 exactly, one layer up, and it is now pitfall 7.11.
+`SearchSession::root_features()` exists so the mistake is not available.
+
+**The parity test was nearly vacuous.** The first version started from the
+opening, ran deterministically, and passed. It was comparing two *empty*
+episodes: with the step-80 checkpoint at 4, 8 and 16 simulations, greedy
+self-play from the opening burns the full 2000-move cap and produces zero
+samples. `0 == 0` for every field.
+
+That is worth stating as a property rather than an anecdote: **exact
+cross-backend episode parity is only definable where the backends are
+deterministic, and deterministic self-play does not terminate.** The resolution
+is to start the comparison from a near-terminal corpus position — and depth does
+not predict termination, so the position is pinned by tag after measurement:
+turn 383 ends in 1 move, 360 in 4, 340 in 6, while 300 and 375 do not terminate
+at all. `packing-s1-m338` gives six moves in 0.35 s.
+`test_the_parity_comparison_is_not_vacuous` asserts the episode completes and
+carries at least four samples, so the test cannot quietly become an
+`assert 0 == 0` again.
+
+### 12.4 What the gate asserts
+
+12 tests in `tests/native/test_selfplay_pool.py`. Beyond field-by-field episode
+parity against `SooSelfPlayRunner` (samples, policies, features, value targets,
+final order, move count):
+
+- identity and provenance come from the job, not the pool;
+- more jobs than lanes forces lane reuse, and reuse leaks nothing between games;
+- an aborted game contributes zero samples, as Python's does — inventing value
+  targets for a game with no terminal outcome is the failure being excluded;
+- the bootstrap prior *selects* the evaluator mode and an unknown prior is
+  refused rather than defaulted, because `value_only` computes the vacancy prior
+  natively and therefore **is** `canonical-target-vacancy-distance-v2`;
+- jobs that disagree on configuration are refused rather than silently run under
+  the first job's config.
+
+`max_game_seconds` is refused outright: the native runner bounds a game by moves,
+and silently ignoring a configured wall-clock budget would let a run exceed a
+limit its own config claims to respect.
+
+### 12.5 End to end, from scratch
+
+Three iterations, random initial network, heuristics on, native backend:
+
+```
+[start] Soo run=native-smoke prior=canonical-target-vacancy-distance-v2 sims=64 backend=native
+[i0000] 96/96 done median_moves=83 samples+8201 loss=8.7956 sp=38s
+[i0001] 96/96 done median_moves=87 samples+8641 loss=7.3023 sp=20s
+[i0002] 96/96 done median_moves=85 samples+8471 loss=6.6803 sp=42s
+```
+
+Every game completes and the loss falls. Note `mean_batch` of 27–45 against a cap
+of 64 here: 96 games against 128 lanes means the job queue never engages, which
+is §12.2's lesson restated as a configuration rule — **`games_per_iteration`
+must exceed `native_lanes`**, or the tail comes back.

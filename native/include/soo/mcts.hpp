@@ -86,6 +86,16 @@ class SearchSession {
     // evaluator that derives anything from position (the vacancy prior does)
     // must use this one.
     const State& pending_state() const { return pending_state_; }
+
+    // The encoding of the search ROOT -- NOT the pending node.  This is the
+    // mirror image of the trap above, and it bites whoever records training
+    // data: a sample is the position that was searched, paired with the visit
+    // distribution that search produced.  ``pending_features()`` after a
+    // completed search is whichever leaf happened to be expanded last, so
+    // recording it silently mislabels every sample's player-to-act -- and the
+    // value target is derived from that, so half the labels come out inverted.
+    // Caught by the Gate F episode comparison; nothing cheaper found it.
+    const Encoded& root_features() const { return root_encoded_; }
     void supply(const EvalOutcome& outcome) { pending_outcome_ = outcome; }
 
     const SearchResult& result() const { return result_; }
@@ -124,6 +134,7 @@ class SearchSession {
 
     State pending_state_;
     Encoded pending_encoded_;
+    Encoded root_encoded_;
     std::vector<int32_t> pending_actions_;
     EvalOutcome pending_outcome_;
 };

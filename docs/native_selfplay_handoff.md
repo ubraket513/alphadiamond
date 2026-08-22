@@ -35,6 +35,7 @@ Read in this order:
 | **C** | native + batcher throughput, no Python | **pass** — 8.2x–18x the Python ceiling at measured value-only latencies |
 | **D** | end-to-end with PyTorch | **pass** — 18.5x the Python backend at cap 32, same host, same seeded work |
 | **E** | stochastic MCTS: Dirichlet + temperature | **pass** — distribution parity with Python, deterministic per seed, 16 lanes → 16 games |
+| **F** | native backend behind the pool contract | **pass** — episode parity with `SooSelfPlayRunner`, 18.5x end to end, trains from scratch |
 
 Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
@@ -59,12 +60,18 @@ Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
    progress doc. Dirichlet noise at the root and temperature sampling of moves,
    gated on distribution rather than on stream, per §9's RNG policy. 16 lanes
    now play 16 distinct games where they played 1.
-2. **`selfplay_backend = "native"`.** The config switch and `backend.py` wiring
-   behind the existing pool contract —
-   `SelfPlayWorkerPool.run(tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]`,
-   in `orchestration/selfplay_workers.py`. Backend selection must stay explicit
-   and additive; `"python"` stays the default.
-3. **A training loop consuming native self-play samples**, end to end.
+2. ~~**`selfplay_backend = "native"`.**~~ **Done — Gate F**, §12. `az_train.py
+   --selfplay-backend native`; `"python"` remains the default and the oracle.
+3. ~~**A training loop consuming native self-play samples**~~ **Done** — §12.5.
+
+### 3.1.0 Configuring the native backend
+
+**`games_per_iteration` must exceed `native_lanes`**, and by a good margin.
+Lanes are a fixed pool and surplus jobs are queued; with one lane per job a
+handful of long games hold the whole run at batch 1 for the second half of its
+dispatches (§12.2 — it cost 3x before it was found). Measured operating points:
+`384 jobs / 128 lanes / cap 64 / 12 threads` gives 17.5x, and
+`768 / 256 / 128 / 16` gives 18.5x.
 
 ### 3.1.1 Worth doing when PolicyValue matters
 
@@ -262,13 +269,33 @@ comparison is statistically hopeless — see §11.5.
 
 ---
 
+### 7.11 A training sample is the root, not the pending node (Gate F)
+§7.2 says an *evaluator* must use `pending_state()`. The mirror image bites
+whoever records training data: after a completed search, `pending_features()` is
+whichever leaf was expanded last, so recording it mislabels every sample's
+player-to-act — and since the value target is `+1` when
+`canonical_player_ids[0]` is the winner, **half the labels come out inverted**.
+The games are legal, the policies are right, and the loss still goes down. Only
+an end-to-end comparison against the oracle finds it. Use
+`SearchSession::root_features()`.
+
+### 7.12 A deterministic parity test may be comparing nothing (Gate F)
+Cross-backend episode parity is only definable where both backends are
+deterministic — and **deterministic self-play does not terminate**. Greedy play
+from the opening burns the full 2000-move cap at 4, 8 and 16 simulations, so
+both sides produce zero samples and every field compares `0 == 0`. The first
+version of the Gate F parity test passed that way. Start such comparisons from a
+near-terminal corpus position, pin it by tag (depth does not predict
+termination: turns 300 and 375 never finish while 340 finishes in six moves), and
+assert the comparison is non-empty.
+
 ## 8. Repo conventions
 
 - **Branch + PR for everything**; `main` is the only long-lived branch and is
   kept clean of stale branches.
 - **CI jobs**: `core` (3.11/3.12/3.13, no compiler, no pybind11 — proves the
   extension stays optional), `gui` (Qt, offscreen), `lint` (changed files only),
-  `native (Gate A-E)` (builds the extension, installs CPU torch, asserts the
+  `native (Gate A-F)` (builds the extension, installs CPU torch, asserts the
   checkpoint digest, runs all gates).
 - **CI must not be allowed to skip silently.** Both the `gui` job and the
   `native` job assert their fixtures are present in a dedicated step, so a

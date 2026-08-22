@@ -1,5 +1,6 @@
 #include "soo/selfplay.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -378,6 +379,252 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
     if (config.trace_moves) metrics.lane_moves = std::move(lane_moves);
     if (failure) std::rethrow_exception(failure);
     return metrics;
+}
+
+// --------------------------------------------------------------------------
+// Episode production
+// --------------------------------------------------------------------------
+namespace {
+
+// One game being played to completion.  Unlike the benchmark Lane this never
+// recycles: when its game ends the lane retires and the run finishes once every
+// lane has.
+struct EpisodeLane {
+    EpisodeLane(const Match& match, const MCTSConfig& config) : session(match, config) {}
+
+    SearchSession session;
+    State state;
+    int move_count = 0;
+    uint64_t game_seed = 0;
+    bool done = false;
+    EvalOutcome outcome;
+    // Which job this lane is currently playing.  A lane outlives its game.
+    size_t job_index = 0;
+};
+
+}  // namespace
+
+std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJob>& jobs,
+                                  const EpisodeConfig& config, BatchEvaluator& batch_evaluator,
+                                  EpisodeMetrics& metrics) {
+    if (jobs.empty()) return {};
+    if (config.threads < 1) throw std::invalid_argument("threads must be positive");
+    if (config.max_batch < 1) throw std::invalid_argument("max_batch must be positive");
+
+    MCTSConfig search_config;
+    search_config.simulations = config.simulations;
+    search_config.dirichlet_alpha = config.dirichlet_alpha;
+    search_config.dirichlet_epsilon = config.dirichlet_epsilon;
+
+    // SooSelfPlayRunner's schedule exactly: full temperature for the first
+    // ``temperature_moves`` moves, greedy after.
+    const auto temperature_for = [&config](int move_count) {
+        return move_count < config.temperature_moves ? config.temperature : 0.0;
+    };
+
+    std::vector<Episode> episodes(jobs.size());
+    std::atomic<size_t> next_job{0};
+
+    const int derived_lanes =
+        config.lanes > 0 ? config.lanes : std::min<int>(static_cast<int>(jobs.size()),
+                                                        2 * config.max_batch);
+    const int lane_count = std::min<int>(derived_lanes, static_cast<int>(jobs.size()));
+
+    // Seat a lane on the next unstarted job.  Returns false when the queue is
+    // empty, which is how a lane retires.
+    const auto seat = [&](EpisodeLane& lane) {
+        for (;;) {
+            const size_t index = next_job.fetch_add(1, std::memory_order_acq_rel);
+            if (index >= jobs.size()) return false;
+            const EpisodeJob& job = jobs[index];
+            lane.job_index = index;
+            lane.state = job.initial_state;
+            lane.game_seed = job.seed;
+            lane.move_count = 0;
+            if (lane.state.status == kFinished) {
+                // A job handed a terminal position produces no moves rather
+                // than throwing out of a worker thread.  Take the next one.
+                episodes[index].completed = true;
+                episodes[index].finish_order.assign(
+                    lane.state.finish_order.begin(),
+                    lane.state.finish_order.begin() + lane.state.finished_count);
+                continue;
+            }
+            lane.session.reseed(lane.game_seed);
+            lane.session.begin(lane.state, temperature_for(0), false);
+            return true;
+        }
+    };
+
+    std::vector<std::unique_ptr<EpisodeLane>> lanes;
+    lanes.reserve(static_cast<size_t>(lane_count));
+    for (int i = 0; i < lane_count; ++i) {
+        auto lane = std::make_unique<EpisodeLane>(match, search_config);
+        lane->done = !seat(*lane);
+        lanes.push_back(std::move(lane));
+    }
+
+    Batcher batcher(config.max_batch, config.max_wait_us);
+    ReadyQueue ready;
+    std::mutex metrics_mutex;
+    std::atomic<bool> stop{false};
+    std::atomic<int> retired{0};
+
+    std::exception_ptr failure;
+    std::mutex failure_mutex;
+    const auto fail = [&](std::exception_ptr error) {
+        {
+            std::lock_guard<std::mutex> lock(failure_mutex);
+            if (!failure) failure = std::move(error);
+        }
+        stop.store(true, std::memory_order_relaxed);
+        ready.stop();
+        batcher.stop();
+    };
+
+    const auto retire = [&](EpisodeLane& lane) {
+        lane.done = true;
+        if (retired.fetch_add(1, std::memory_order_acq_rel) + 1 >= lane_count) {
+            stop.store(true, std::memory_order_relaxed);
+            ready.stop();
+            batcher.stop();
+        }
+    };
+
+    for (int i = 0; i < lane_count; ++i) {
+        if (lanes[static_cast<size_t>(i)]->done) {
+            retire(*lanes[static_cast<size_t>(i)]);
+        } else {
+            ready.push(i);
+        }
+    }
+
+    const auto started = Clock::now();
+    std::vector<double> busy(static_cast<size_t>(config.threads), 0.0);
+    std::vector<std::thread> workers;
+    for (int w = 0; w < config.threads; ++w) {
+        workers.emplace_back([&, w] {
+          try {
+            int lane_id = 0;
+            while (!stop.load(std::memory_order_relaxed)) {
+                if (!ready.pop(lane_id)) break;
+                const auto work_start = Clock::now();
+                EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
+
+                const SearchSession::Status status = lane.session.advance();
+                if (status == SearchSession::Status::NeedsEvaluation) {
+                    BatchItem item{&lane.session.pending_state(),
+                                   &lane.session.pending_features(),
+                                   &lane.session.pending_actions(), 0, &lane.outcome};
+                    batch_evaluator.prepare(item);
+                    busy[static_cast<size_t>(w)] += seconds_since(work_start);
+                    batcher.submit(lane_id);
+                    continue;
+                }
+
+                // A move is ready.  Record it *before* applying it: a training
+                // sample is the position that was searched, paired with the
+                // visit distribution that search produced.
+                const SearchResult& result = lane.session.result();
+                Episode& episode = episodes[lane.job_index];
+                EpisodeMove move;
+                // root_features(), not pending_features(): see the comment on
+                // SearchSession::root_features.
+                move.features = lane.session.root_features();
+                move.root_actions = result.root_actions;
+                move.visit_counts = result.visit_counts;
+                move.selected_action = result.selected_action;
+                episode.moves.push_back(std::move(move));
+
+                lane.state = apply_action(
+                    lane.state, match,
+                    to_physical_action(result.selected_action, match, lane.state.current_player));
+                ++lane.move_count;
+
+                const bool finished = lane.state.status == kFinished;
+                const bool out_of_moves = lane.move_count >= config.max_moves;
+                if (finished || out_of_moves) {
+                    episode.move_count = lane.move_count;
+                    if (finished) {
+                        episode.completed = true;
+                        episode.finish_order.assign(
+                            lane.state.finish_order.begin(),
+                            lane.state.finish_order.begin() + lane.state.finished_count);
+                    } else {
+                        episode.move_limit_exceeded = true;
+                    }
+                    // The lane does not retire with its game: it takes the next
+                    // queued job, so a straggler costs its own lane and no
+                    // other.
+                    if (!seat(lane)) {
+                        busy[static_cast<size_t>(w)] += seconds_since(work_start);
+                        retire(lane);
+                        continue;
+                    }
+                    busy[static_cast<size_t>(w)] += seconds_since(work_start);
+                    ready.push(lane_id);
+                    continue;
+                }
+
+                lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
+                lane.session.begin(lane.state, temperature_for(lane.move_count), false);
+                busy[static_cast<size_t>(w)] += seconds_since(work_start);
+                ready.push(lane_id);
+            }
+          } catch (...) {
+            fail(std::current_exception());
+          }
+        });
+    }
+
+    std::thread evaluator([&] {
+      try {
+        std::vector<int> batch;
+        std::vector<BatchItem> items;
+        while (batcher.collect(batch)) {
+            items.clear();
+            items.reserve(batch.size());
+            for (const int lane_id : batch) {
+                EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
+                items.push_back(BatchItem{&lane.session.pending_state(),
+                                          &lane.session.pending_features(),
+                                          &lane.session.pending_actions(), 0, &lane.outcome});
+            }
+            const auto eval_start = Clock::now();
+            batch_evaluator.evaluate(items);
+            const double eval_seconds = seconds_since(eval_start);
+            {
+                std::lock_guard<std::mutex> lock(metrics_mutex);
+                metrics.batch_sizes.push_back(static_cast<uint32_t>(batch.size()));
+                metrics.evaluations += batch.size();
+                ++metrics.batches;
+                metrics.evaluator_seconds += eval_seconds;
+            }
+            for (const int lane_id : batch) {
+                lanes[static_cast<size_t>(lane_id)]->session.supply(
+                    lanes[static_cast<size_t>(lane_id)]->outcome);
+            }
+            ready.push_many(batch);
+        }
+      } catch (...) {
+        fail(std::current_exception());
+      }
+    });
+
+    for (std::thread& worker : workers) worker.join();
+    stop.store(true, std::memory_order_relaxed);
+    ready.stop();
+    batcher.stop();
+    evaluator.join();
+
+    metrics.wall_seconds = seconds_since(started);
+    for (const double value : busy) metrics.worker_busy_seconds += value;
+    if (failure) std::rethrow_exception(failure);
+
+    for (const Episode& episode : episodes) {
+        metrics.moves += static_cast<uint64_t>(episode.move_count);
+    }
+    return episodes;
 }
 
 }  // namespace soo

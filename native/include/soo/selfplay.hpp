@@ -85,6 +85,78 @@ struct SchedulerConfig {
     uint64_t seed = 0;              // base seed; each lane derives its own
 };
 
+// --------------------------------------------------------------------------
+// Episode production: the same scheduler, driven to produce training data.
+//
+// run_scheduler is a measurement harness -- it runs for a wall-clock window and
+// recycles a lane the moment its game ends.  Training needs the opposite: a
+// fixed set of games, each played to its own terminal state, with every move
+// recorded.  Same batching architecture, different stop condition and an
+// output that is samples rather than timings.
+// --------------------------------------------------------------------------
+
+struct EpisodeJob {
+    State initial_state;
+    uint64_t seed = 0;      // Python's derive_game_seed for this attempt
+};
+
+// One recorded move.  The features are the *request* the evaluator answered, so
+// a sample is exactly what the network saw, not a re-encoding of it.
+struct EpisodeMove {
+    Encoded features;
+    std::vector<int32_t> root_actions;    // canonical ids, authoritative order
+    std::vector<uint32_t> visit_counts;   // aligned; the policy target
+    int32_t selected_action = 0;          // canonical
+};
+
+struct Episode {
+    std::vector<EpisodeMove> moves;
+    std::vector<uint8_t> finish_order;
+    int move_count = 0;
+    bool completed = false;
+    // Set when the game hit max_moves instead of a terminal state.  Python's
+    // runner returns zero samples for an aborted episode; the moves are kept
+    // here anyway so the caller can decide, and the caller does discard them.
+    bool move_limit_exceeded = false;
+};
+
+struct EpisodeConfig {
+    // Concurrent games.  0 means "derive it": min(jobs, 2 * max_batch), which
+    // is pitfall 7.6's rule.
+    //
+    // Jobs beyond this many are *queued*, not run in parallel, and a lane takes
+    // the next unstarted job the moment its own game ends.  That is not a
+    // detail -- with one lane per job, batch occupancy collapses to 1.0 for the
+    // second half of the run while a handful of long games straggle (measured:
+    // 128 games, lengths 63 to 402, mean batch 64.0 over the first tenth of
+    // dispatches and 1.0 over the last half).  The Python pool learned the same
+    // thing and calls it Finding 3, worth 35 % samples/hour.
+    int lanes = 0;
+    int threads = 4;
+    int max_batch = 32;
+    int max_wait_us = 2000;
+    int simulations = 64;
+    int max_moves = 2000;
+    double temperature = 1.0;
+    int temperature_moves = 20;
+    double dirichlet_alpha = 0.3;
+    double dirichlet_epsilon = 0.25;
+};
+
+struct EpisodeMetrics {
+    uint64_t evaluations = 0;
+    uint64_t batches = 0;
+    uint64_t moves = 0;
+    double wall_seconds = 0.0;
+    double evaluator_seconds = 0.0;
+    double worker_busy_seconds = 0.0;
+    std::vector<uint32_t> batch_sizes;
+};
+
+std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJob>& jobs,
+                                  const EpisodeConfig& config, BatchEvaluator& batch_evaluator,
+                                  EpisodeMetrics& metrics);
+
 struct SchedulerMetrics {
     uint64_t evaluations = 0;
     uint64_t batches = 0;
