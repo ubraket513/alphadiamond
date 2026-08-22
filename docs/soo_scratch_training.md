@@ -153,7 +153,59 @@ The gap to Gate F's 18.5x is the from-scratch network's game profile: shorter,
 more variable games than the step-80 checkpoint the sweep used, so the batcher
 still runs at ~50 % occupancy.
 
-### 5.3 The replay store had to be bounded first
+### 5.3 The batcher wait was the real constraint — 2.6x
+
+By iteration 15 the picture did not add up. Worker threads sat at **0.6 of 16
+thread-equivalents** — 4 % utilisation — and the evaluator at 46 %. Neither side
+was saturated, so the time was going somewhere neither number covered: 507
+batches/s against 0.91 ms of forward means **54 % of every cycle was batch
+collection**.
+
+Sweeping the candidates against the live checkpoint settled it in one pass:
+
+| lanes | cap | wait µs | threads | samples/s | evaluator |
+|---|---|---|---|---|---|
+| 256 | 128 | 2000 | 16 | 355 | 39 % |
+| 256 | 128 | 500 | 16 | 767 | 63 % |
+| 256 | 128 | 200 | 16 | 955 | 78 % |
+| 512 | 128 | 2000 | 16 | 355 | 39 % |
+| 512 | 128 | 500 | 16 | 773 | 63 % |
+| 384 | 64 | 500 | 8 | 773 | 63 % |
+
+**Lane count changes nothing. Thread count changes nothing. Only the wait
+matters.** Refining it:
+
+| cap | wait µs | mean batch | samples/s | evaluator |
+|---|---|---|---|---|
+| 128 | 200 | 50.6 | 955 | 78 % |
+| 128 | 100 | 49.9 | 1,024 | 84 % |
+| **128** | **50** | **49.9** | **1,077** | **88 %** |
+| 48 | 200 | 31.1 | 801 | 82 % |
+| 64 | 100 | 36.8 | 900 | 87 % |
+
+The mechanism, once seen, is obvious. With 256 lanes running 64-simulation
+searches, only ~50 lanes are ready to submit at any instant, so **the batch never
+reaches the cap** — which means the batcher always waits the full `max_wait`,
+every cycle. At 2 ms against a 0.9 ms forward that is more dead time than work.
+Lowering the *cap* to meet the supply is worse, because it shrinks the batches
+without removing the wait; keeping the cap high and the wait short is what wins.
+
+The 2 ms came from `inference.max_wait_ms`, the **Python coordinator's** knob,
+where a batch genuinely takes milliseconds to assemble and milliseconds are the
+right unit. Deriving the native wait from it was the mistake. The native backend
+now has `native_max_wait_us`, separate by design.
+
+Live effect at iteration 18:
+
+| | before | after |
+|---|---|---|
+| self-play per iteration | 111 s | **41 s** |
+| evaluator occupancy | 46 % | **93 %** |
+| mean batch | 68 | 80 |
+| samples/s | 685 | **1,444** |
+| vs the Python backend | 12.3x | **25.9x** |
+
+### 5.4 The replay store had to be bounded first
 
 The run could not have finished a six-hour block. `PersistentReplayStore` is
 append-only, and two costs compound:

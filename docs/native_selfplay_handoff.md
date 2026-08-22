@@ -66,12 +66,21 @@ Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
 ### 3.1.0 Configuring the native backend
 
-**`games_per_iteration` must exceed `native_lanes`**, and by a good margin.
-Lanes are a fixed pool and surplus jobs are queued; with one lane per job a
-handful of long games hold the whole run at batch 1 for the second half of its
-dispatches (§12.2 — it cost 3x before it was found). Measured operating points:
-`384 jobs / 128 lanes / cap 64 / 12 threads` gives 17.5x, and
-`768 / 256 / 128 / 16` gives 18.5x.
+Two rules, both paid for:
+
+1. **`games_per_iteration` must exceed `native_lanes`**, and by a good margin.
+   Lanes are a fixed pool and surplus jobs are queued; with one lane per job a
+   handful of long games hold the whole run at batch 1 for the second half of
+   its dispatches (§12.2 — it cost 3x before it was found).
+2. **Set `native_max_wait_us` from the forward, not from
+   `inference.max_wait_ms`.** The batch never fills, so the wait is spent in
+   full every cycle; 2 ms against a 0.9 ms forward costs **2.6x**. See pitfall
+   7.13.
+
+The measured operating point on the RTX 5090 is `768 jobs / 256 lanes / cap 128
+/ 12 threads / 50 µs`: **1,444 samples/s in the live training loop, 25.9x the
+Python backend**, evaluator 93 % busy. Lane count and thread count are not
+sensitive; the wait is.
 
 ### 3.1.1 Worth doing when PolicyValue matters
 
@@ -288,6 +297,22 @@ version of the Gate F parity test passed that way. Start such comparisons from a
 near-terminal corpus position, pin it by tag (depth does not predict
 termination: turns 300 and 375 never finish while 340 finishes in six moves), and
 assert the comparison is non-empty.
+
+### 7.13 The native batcher's wait is not the coordinator's wait
+`inference.max_wait_ms` belongs to the **Python** coordinator, where a batch
+takes milliseconds to assemble and milliseconds are the right unit. Deriving the
+native batcher's wait from it costs **2.6x**. With 256 lanes running
+64-simulation searches only ~50 are ready to submit at any instant, so the batch
+never reaches the cap and the batcher spends the *whole* wait, every cycle — 2 ms
+of it against a 0.9 ms forward. Measured on the training checkpoint: 2000 µs
+gives 355 samples/s at 39 % evaluator occupancy, 50 µs gives 1,077 at 88 %.
+
+Two things make this hard to spot. Lane count and thread count change *nothing*,
+so the obvious knobs all read as dead ends; and worker threads sit at 4 %
+utilisation while the evaluator reads 46 %, so neither number points at the gap
+between them. Lowering the *cap* to meet the lane supply is also worse, not
+better — it shrinks batches without removing the wait. Keep the cap high and the
+wait short. `native_max_wait_us` is a separate knob for this reason.
 
 ## 8. Repo conventions
 
