@@ -270,6 +270,8 @@ Implemented:
   `SooModel`, optionally loads a compatibility-checked checkpoint, emits a
   traced `model.ts`, strict `metadata.json`, and deterministic float32 parity
   corpus files;
+- `diamond.alphazero.deployment`, a shared strict metadata validator with
+  negative tests for missing, unknown, and mismatched fields;
 - optional `soo_libtorch_probe` CMake target, linked against the LibTorch
   package shipped in the active environment;
 - metadata checks for artifact format, model identity, dtype, width, and trunk
@@ -298,6 +300,59 @@ build-libtorch/native/soo_libtorch_probe.exe artifacts/soo-spike
 ```
 
 This proves the Windows LibTorch execution path for a platform-neutral
-TorchScript artifact and a deterministic forward pass. It does not yet prove
-the final hand-authored C++ Soo model or legal-action policy extraction. Those
-remain required before Q5 native human-vs-Soo integration.
+TorchScript artifact and a deterministic forward pass. The hand-authored
+model and evaluator probes below extend the same artifact contract to native
+MCTS.
+
+The metadata validator tests currently pass **5/5**. The generated artifact is
+ignored by Git and should be regenerated for each parity run.
+
+## Hand-authored C++ Soo model parity
+
+The LibTorch spike now includes `diamond_model::SooModel`, a C++ implementation
+of the authoritative Python topology:
+
+- 4-feature input projection over 73 nodes;
+- six directional projections per residual block;
+- six residual blocks with LayerNorm and GELU;
+- source/destination scaled policy head with 5,329 logits;
+- mean-node value head with Linear/GELU/Linear/Tanh;
+- explicit float32 raw-weight loading with shape checks and a no-grad guard.
+
+`soo_native_model_probe` loads the raw weights emitted by the Python exporter
+and compares the hand-authored C++ forward pass with the Python corpus. The
+Windows probe passed with:
+
+```text
+Soo native model parity passed
+max_policy_error=0
+max_value_error=0
+```
+
+This completes the model-parity task and supplies the evaluator implementation
+used by the native MCTS integration below.
+
+## Native evaluator and MCTS integration status
+
+Implemented:
+
+- `diamond_model::SooEvaluator`, which implements the existing
+  `soo::Evaluator` contract and applies the authoritative legal-only softmax
+  over canonical action ids;
+- deterministic Python-exported topology and two-player initial-state fixture
+  data for native search verification;
+- `soo_evaluator_probe`, proving native legal-prior extraction against the
+  Python corpus;
+- `soo_mcts_probe`, which configures the native topology, runs `soo::MCTS2P`
+  with the hand-authored evaluator, and checks the root legal-action sequence
+  against Python's `DiamondSearchAdapter`.
+
+Verified on Windows:
+
+```text
+Soo legal-prior parity passed; max_error=0
+Soo native MCTS evaluator integration passed; root_actions=18, evaluator_calls=3
+```
+
+This closes the evaluator/MCTS parity task. The remaining implementation work
+is the native Qt shell and controller/resource parity described in Q3–Q6.

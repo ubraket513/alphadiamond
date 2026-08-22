@@ -66,6 +66,20 @@ endif()
 
 if(DIAMOND_BUILD_LIBTORCH_PROBE)
     find_package(Torch REQUIRED)
+    add_library(diamond_model STATIC src/soo_model.cpp src/soo_evaluator.cpp)
+    add_library(alphadiamond::diamond_model ALIAS diamond_model)
+    target_link_libraries(diamond_model PUBLIC alphadiamond::soo_core ${TORCH_LIBRARIES})
+    target_include_directories(diamond_model
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            ${TORCH_INCLUDE_DIRS}
+    )
+    target_compile_features(diamond_model PUBLIC cxx_std_20)
+    target_compile_definitions(diamond_model PUBLIC _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(diamond_model PRIVATE /bigobj)
+    endif()
+
     add_executable(soo_libtorch_probe src/soo_libtorch_probe.cpp)
     target_link_libraries(soo_libtorch_probe PRIVATE alphadiamond::soo_search ${TORCH_LIBRARIES})
     target_compile_features(soo_libtorch_probe PRIVATE cxx_std_20)
@@ -73,6 +87,30 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
     target_compile_definitions(soo_libtorch_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
     if(MSVC)
         target_compile_options(soo_libtorch_probe PRIVATE /bigobj)
+    endif()
+
+    add_executable(soo_native_model_probe src/soo_native_model_probe.cpp)
+    target_link_libraries(soo_native_model_probe PRIVATE alphadiamond::diamond_model)
+    target_compile_features(soo_native_model_probe PRIVATE cxx_std_20)
+    target_compile_definitions(soo_native_model_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(soo_native_model_probe PRIVATE /bigobj)
+    endif()
+
+    add_executable(soo_evaluator_probe src/soo_evaluator_probe.cpp)
+    target_link_libraries(soo_evaluator_probe PRIVATE alphadiamond::diamond_model)
+    target_compile_features(soo_evaluator_probe PRIVATE cxx_std_20)
+    target_compile_definitions(soo_evaluator_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(soo_evaluator_probe PRIVATE /bigobj)
+    endif()
+
+    add_executable(soo_mcts_probe src/soo_mcts_probe.cpp)
+    target_link_libraries(soo_mcts_probe PRIVATE alphadiamond::diamond_model alphadiamond::soo_search)
+    target_compile_features(soo_mcts_probe PRIVATE cxx_std_20)
+    target_compile_definitions(soo_mcts_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(soo_mcts_probe PRIVATE /bigobj)
     endif()
 endif()
 

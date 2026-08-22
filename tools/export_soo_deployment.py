@@ -18,8 +18,12 @@ import torch
 
 from diamond.alphazero.checkpoint import load_inference_checkpoint
 from diamond.alphazero.config import NetworkConfig
+from diamond.alphazero.deployment import validate_metadata
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.network.soo import SooModel
+from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
+from diamond.alphazero.native.topology import player_table, topology_tables
+from diamond.game.state import build_players
 
 ARTIFACT_FORMAT_VERSION = 1
 MODEL_VERSION = "0.1.0"
@@ -30,6 +34,45 @@ CORPUS_BATCH = 2
 def _write_f32(path: Path, tensor: torch.Tensor) -> None:
     values = tensor.detach().cpu().contiguous().view(-1).tolist()
     path.write_bytes(struct.pack(f"<{len(values)}f", *values))
+
+
+def _weight_filename(key: str) -> str:
+    return key.replace(".", "__") + ".f32"
+
+
+def _write_i32(path: Path, values: list[int] | tuple[int, ...]) -> None:
+    path.write_bytes(struct.pack(f"<{len(values)}i", *values))
+
+
+def _write_i8(path: Path, rows: tuple[tuple[int, ...], ...]) -> None:
+    flat = [value for row in rows for value in row]
+    path.write_bytes(struct.pack(f"<{len(flat)}b", *flat))
+
+
+def _export_mcts_fixture(output: Path) -> None:
+    """Export Python-authoritative data needed by the native MCTS probe."""
+    tables = topology_tables()
+    for name in (
+        "neighbour",
+        "camp_positions",
+        "pairwise_distance",
+        "physical_to_canonical",
+        "canonical_to_physical",
+    ):
+        rows = tuple(tuple(int(value) for value in row) for row in tables[name])
+        if name == "neighbour":
+            _write_i8(output / "topology_neighbour.i8", rows)
+        else:
+            _write_i32(output / f"topology_{name}.i32", [value for row in rows for value in row])
+
+    players = build_players(2)
+    game = AlphaZeroGameAdapter(players)
+    adapter = DiamondSearchAdapter(game)
+    state = adapter.initial_state()
+    _write_i8(output / "mcts_occupancy.u8", (tuple(int(value) for value in state.occupancy),))
+    _write_i32(output / "mcts_players.i32", [value for row in player_table(players) for value in row])
+    (output / "mcts_current_player.u8").write_bytes(bytes([state.current_player_id]))
+    _write_i32(output / "mcts_legal_actions.i32", adapter.legal_action_ids(state))
 
 
 def export(output: Path, checkpoint: Path | None = None) -> None:
@@ -50,6 +93,8 @@ def export(output: Path, checkpoint: Path | None = None) -> None:
     inputs = torch.randn(CORPUS_BATCH, 73, 4, generator=generator)
     with torch.inference_mode():
         policy, value = model(inputs)
+        legal_actions = torch.tensor([0, 1, 42, 5328], dtype=torch.long)
+        legal_priors = torch.softmax(policy[:, legal_actions], dim=1)
 
     output.mkdir(parents=True, exist_ok=True)
     traced = torch.jit.trace(model, inputs, strict=True)
@@ -57,6 +102,13 @@ def export(output: Path, checkpoint: Path | None = None) -> None:
     _write_f32(output / "inputs.f32", inputs)
     _write_f32(output / "expected_policy.f32", policy)
     _write_f32(output / "expected_value.f32", value)
+    _write_f32(output / "expected_legal_priors.f32", legal_priors)
+    (output / "legal_actions.i32").write_bytes(struct.pack("<4i", 0, 1, 42, 5328))
+    weights = output / "weights"
+    weights.mkdir(exist_ok=True)
+    for key, tensor in model.state_dict().items():
+        _write_f32(weights / _weight_filename(key), tensor)
+    _export_mcts_fixture(output)
 
     model_sha256 = hashlib.sha256((output / "model.ts").read_bytes()).hexdigest()
     metadata = {
@@ -76,6 +128,7 @@ def export(output: Path, checkpoint: Path | None = None) -> None:
         "model_sha256": model_sha256,
         "checkpoint_sha256": checkpoint_sha256,
     }
+    validate_metadata(metadata)
     (output / "metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
