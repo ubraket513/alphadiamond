@@ -79,10 +79,22 @@ its own — and explicitly not a claim about playing strength. Run it with
 `probes/`.
 
 One throughput consequence to expect at the switch: heuristics-on is the native
-`value_only` path, heuristics-off is `policy_value`, which reaches only 53 % of
-its roofline against value_only's 89 % (§10.3). The gap is the per-row Python
-softmax loop in `policy_value_callback`, and it becomes worth fixing at that
-point.
+`value_only` path, heuristics-off is `policy_value`, which reached only 53 % of
+its roofline against value_only's 89 % (§10.3).
+
+Part of that has now been removed ahead of the switch. The per-row Python
+softmax loop is replaced by a device-side segmented softmax — worth **1.23x of
+the whole callback at the production batch of 128**, and 1.75x at 256, agreeing
+with the loop to 1.8e-7 on real logits.
+
+It is worth being precise about what that does *not* fix, because the first
+version of this note overclaimed it. The loop was **part** of the roofline gap,
+not all of it. The remainder is work `value_only` simply does not do — the
+gather over `[B, 5329]` logits and the device-to-host copy of the ragged priors
+— and no amount of softmax tuning touches that. Expect `policy_value` to sit
+below `value_only` after the switch regardless, and **re-sweep the batch knobs
+then**: its callback latency and lane request cadence both change, so the B0
+optimum of 256 lanes / cap 128 / 50 µs cannot be assumed to carry over.
 
 ---
 
