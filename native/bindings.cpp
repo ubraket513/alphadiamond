@@ -13,6 +13,8 @@
 #include "soo/action.hpp"
 #include "soo/board.hpp"
 #include "soo/encoder.hpp"
+#include "soo/evaluator.hpp"
+#include "soo/mcts.hpp"
 #include "soo/prior.hpp"
 #include "soo/rules.hpp"
 #include "soo/state.hpp"
@@ -199,7 +201,53 @@ class Game {
         return soo::to_physical_action(action, match_, state.current_player);
     }
 
+    // Gate B: one deterministic search, single-threaded, no Python callback.
+    py::dict search(const State& state, const MCTSConfig& config, double temperature,
+                    bool trace, const std::string& evaluator_name) const {
+        DeterministicEvaluator hashed;
+        UniformPriorEvaluator uniform;
+        Evaluator& evaluator = pick(evaluator_name, hashed, uniform);
+        MCTS2P search(match_, evaluator, config);
+        const SearchResult result = search.run(state, temperature, trace);
+
+        py::dict out;
+        out["selected_action"] = result.selected_action;
+        out["root_actions"] = py::cast(result.root_actions);
+        out["visit_counts"] = py::cast(result.visit_counts);
+        out["q_values"] = py::cast(result.q_values);
+        out["policy"] = py::cast(result.policy);
+        out["simulations_run"] = result.simulations_run;
+        out["evaluator_calls"] = result.evaluator_calls;
+        out["nodes_created"] = result.nodes_created;
+        py::list trace_out;
+        for (const EvalRecord& record : result.trace) {
+            trace_out.append(py::make_tuple(record.request_hash, py::cast(record.legal_actions)));
+        }
+        out["trace"] = trace_out;
+        return out;
+    }
+
+    // The reference evaluator, exposed on its own so evaluator parity can be
+    // tested apart from search parity.
+    py::tuple evaluate(const State& state, const std::string& evaluator_name) const {
+        const Encoded encoded = soo::encode(state, match_);
+        std::vector<int32_t> legal;
+        soo::canonical_legal_action_ids(state, match_, legal);
+        DeterministicEvaluator hashed;
+        UniformPriorEvaluator uniform;
+        const EvalOutcome outcome = pick(evaluator_name, hashed, uniform).evaluate(encoded, legal);
+        return py::make_tuple(py::cast(legal), py::cast(outcome.priors), outcome.value,
+                              request_hash(encoded, legal));
+    }
+
   private:
+    static Evaluator& pick(const std::string& name, DeterministicEvaluator& hashed,
+                           UniformPriorEvaluator& uniform) {
+        if (name == "hash") return hashed;
+        if (name == "uniform") return uniform;
+        throw std::invalid_argument("unknown reference evaluator: " + name);
+    }
+
     Match match_;
 };
 
@@ -209,7 +257,7 @@ PYBIND11_MODULE(_diamond_native, m) {
     m.doc() = "Native Soo self-play primitives (Phase 1: rules, encoding, prior)";
     m.attr("BOARD_SIZE") = kBoardSize;
     m.attr("ACTION_SIZE") = kActionSize;
-    m.attr("PHASE") = 1;
+    m.attr("PHASE") = 2;
 
     m.def("configure", &configure, py::arg("tables"),
           "Install the authoritative board tables exported from Python.");
@@ -238,6 +286,20 @@ PYBIND11_MODULE(_diamond_native, m) {
             return out.str();
         });
 
+    py::class_<MCTSConfig>(m, "MCTSConfig")
+        .def(py::init([](int simulations, double c_puct, double dirichlet_alpha,
+                         double dirichlet_epsilon, uint64_t seed) {
+                 return MCTSConfig{simulations, c_puct, dirichlet_alpha, dirichlet_epsilon, seed};
+             }),
+             py::arg("simulations") = 200, py::arg("c_puct") = 1.5,
+             py::arg("dirichlet_alpha") = 0.3, py::arg("dirichlet_epsilon") = 0.0,
+             py::arg("seed") = 0)
+        .def_readwrite("simulations", &MCTSConfig::simulations)
+        .def_readwrite("c_puct", &MCTSConfig::c_puct)
+        .def_readwrite("dirichlet_alpha", &MCTSConfig::dirichlet_alpha)
+        .def_readwrite("dirichlet_epsilon", &MCTSConfig::dirichlet_epsilon)
+        .def_readwrite("seed", &MCTSConfig::seed);
+
     py::class_<Game>(m, "Game")
         .def(py::init<const std::vector<std::array<int, 3>>&>(), py::arg("players"),
              "players: (seat id, camp index, target camp index) in turn order")
@@ -253,5 +315,11 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def("to_canonical_action", &Game::to_canonical_action, py::arg("action_id"),
              py::arg("state"))
         .def("to_physical_action", &Game::to_physical_action, py::arg("action_id"),
-             py::arg("state"));
+             py::arg("state"))
+        .def("search", &Game::search, py::arg("state"), py::arg("config"),
+             py::arg("temperature") = 0.0, py::arg("trace") = false,
+             py::arg("evaluator") = "hash")
+        .def("reference_evaluate", &Game::evaluate, py::arg("state"),
+             py::arg("evaluator") = "hash",
+             "(legal actions, priors, value, request hash) from the Gate B evaluator");
 }

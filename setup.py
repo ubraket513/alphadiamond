@@ -18,6 +18,8 @@ SOURCES = [
     "native/bindings.cpp",
     "native/src/board.cpp",
     "native/src/encoder.cpp",
+    "native/src/evaluator.cpp",
+    "native/src/mcts.cpp",
     "native/src/prior.cpp",
     "native/src/rules.cpp",
 ]
