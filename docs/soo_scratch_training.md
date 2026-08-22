@@ -25,11 +25,34 @@ it was gated.
 
 `vast-capabilities` reports `workspace_is_volume: false`. **Nothing on this
 instance survives a recycle or destroy** — including the training run. A
-stop/start is safe; a recycle is not. Anything that must outlive the instance
-has to be copied off-box. The run directory is deliberately *outside* the repo
-(`/workspace/alphadiamond-training`, not `/workspace/alphadiamond`) so that
-checkpoints and replay chunks cannot silently re-bloat git the way the previous
-run's 213 MB did.
+stop/start is safe; a recycle is not. The run directory is deliberately *outside*
+the repo (`/workspace/alphadiamond-training`, not `/workspace/alphadiamond`) so
+that checkpoints and replay chunks cannot silently re-bloat git the way the
+previous run's 213 MB did.
+
+`tools/backup_training_run.py` takes the durable copy. Three artefacts —
+`latest.pt`, the replay manifest and its retained chunks, and the run
+config/ledger/provenance — validated before they are trusted and staged at
+**23.9 MB** total (the replay store compresses 357 MB → 15 MB).
+
+Two properties matter more than the copying:
+
+- **It is validated, not assumed.** A checkpoint torn by a concurrent write
+  still has a plausible size, so the script *loads* it. A replay archive whose
+  manifest references a chunk it does not contain is a backup of nothing, so
+  every reference is checked against the archive.
+- **It does not pause the run.** Stopping a healthy trainer to back it up is the
+  wrong trade, so the capture retries until provably consistent. That is sound
+  because chunks are written before the manifest that references them, and
+  pruning rewrites the manifest before unlinking — so any capture whose manifest
+  is fully covered by its own chunks is a real point in time. (The first
+  attempt did catch a live write; the check is not theoretical.)
+
+Publishing is deliberately a separate step (`--publish`). The repository is
+public, so uploading should never be a side effect of taking a backup.
+
+**The heuristics-off transition checkpoint must be preserved separately.** That
+is a reproducibility requirement, not an optimisation.
 
 ---
 
