@@ -486,3 +486,79 @@ Effect on the live run, at the first pruned iteration:
 | training step time | 16 s | 12 s |
 
 Disk is now bounded by the capacity window rather than by run length.
+
+---
+
+## 6. Why A0 fails: three measurements that settle it
+
+### 6.1 The frozen-actor experiment — censoring is causal
+
+Both A0 attempts confounded two things: the dataset was censored *and* the
+learner became the next iteration's actor immediately. Pinning the actor
+separates them. Two matched arms were cloned from the same checkpoint and the
+same replay; the frozen arm's self-play always ran the pinned step-34,650 actor
+while its learner trained normally for four iterations — four being the point at
+which 200k replay has turned over once at the observed A0 sample rate.
+
+The arm's *self-play* completion is stable by construction (same actor, same
+distribution), so it measures nothing. What matters is whether the **learner**
+degrades, measured at 768 games:
+
+| | completion | discarded |
+|---|---|---|
+| actor, step 34,650 (frozen) | **93.2 %** | 28.7 % |
+| learner after 4 frozen-actor iterations | **86.3 %** | 44.8 % |
+
+A 6.9-point drop, about 4.5 standard errors at n=768. **The learner degrades even
+when the state distribution is held completely still.** So the censored dataset
+is causal on its own; the actor-refresh loop can only be an amplifier.
+
+### 6.2 What the aborted games are actually doing
+
+"Wandering" had been an assumption. Auditing 13 aborted games at 64 simulations,
+using the encoded root features as position identity:
+
+| metric | median | range |
+|---|---|---|
+| unique positions / moves | **0.316** | 0.116 – 0.928 |
+| max revisits of a single position | **61** | 6 – 112 |
+| returns within 2/4/6/8 ply | **68.4 %** | 6.8 – 88.4 % |
+
+**Short-cycle shuffle**, not slow progress. One position was revisited 61 times.
+That explains §5.7 — a repetition attractor is indifferent to the move cap, so
+raising it changed nothing — and it predicts that deeper search should help,
+because escaping needs to see past the cycle.
+
+### 6.3 Search budget: 128 is the knee
+
+Same frozen actor, same seeds, exploration untouched — only the budget moves:
+
+| simulations | completion | **discarded** | terminal samples/s |
+|---|---|---|---|
+| 64 | 93.8 % | **28.6 %** | 176 |
+| **128** | **97.7 %** | **12.2 %** | 97 |
+| 256 | 97.7 % | 12.5 % | 30 |
+| **adaptive 64 → 128 at move 100** | **97.7 %** | **12.6 %** | **106** |
+
+Doubling to 128 **more than halves the censoring**; 256 adds nothing at three
+times the cost. So 64 simulations is not enough for this network to correct its
+own prior, and the deficiency has a threshold rather than a gradient.
+
+Adaptive search reaches flat-128's quality for 106 samples/s against 97 — real
+but modest, because although only ~15 % of *games* pass move 100, those games
+are long and carry roughly a third of all moves played. A stagnation detector
+would target the tail far more precisely than a move-number threshold; the audit
+above says the signal to detect is short-cycle repetition, not slow progress.
+
+### 6.4 What this does and does not settle
+
+It settles that **64 simulations was under-searching**, and that the censored
+dataset harms the learner **independently** of the actor-refresh loop.
+
+It does not settle whether more search or a better network is the right cure.
+128 simulations buys its improvement with test-time compute; a deeper network
+might buy the same thing at 64. That comparison — `128×6 @ 128 sims` against a
+depth-expanded `128×12 @ 64 sims`, at roughly matched wall-clock — is the next
+experiment, and it has to be judged on completion, discarded fraction, samples/s
+and head-to-head strength. Not on loss, which has been wrong at every step of
+this investigation.

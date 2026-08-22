@@ -141,6 +141,17 @@ struct EpisodeConfig {
     int temperature_moves = 20;
     double dirichlet_alpha = 0.3;
     double dirichlet_epsilon = 0.25;
+
+    // Adaptive search: spend more only where games go wrong.
+    //
+    // ``simulations_late`` applies from move ``late_move_threshold`` onward; 0
+    // disables it and every move uses ``simulations``.  The aborted tail is a
+    // short-cycle attractor -- median 31.6 % unique positions, one position
+    // revisited 61 times, 68 % of moves returning within 8 ply -- and deeper
+    // search is what sees past it.  Applying that depth to the 90 % of games
+    // that never get into trouble buys nothing and costs half the throughput.
+    int simulations_late = 0;
+    int late_move_threshold = 0;
 };
 
 struct EpisodeMetrics {

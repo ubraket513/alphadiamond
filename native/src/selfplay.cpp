@@ -421,6 +421,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     const auto temperature_for = [&config](int move_count) {
         return move_count < config.temperature_moves ? config.temperature : 0.0;
     };
+    const auto simulations_for = [&config](int move_count) {
+        return (config.simulations_late > 0 && move_count >= config.late_move_threshold)
+                   ? config.simulations_late
+                   : config.simulations;
+    };
 
     std::vector<Episode> episodes(jobs.size());
     std::atomic<size_t> next_job{0};
@@ -451,6 +456,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 continue;
             }
             lane.session.reseed(lane.game_seed);
+            lane.session.set_simulations(simulations_for(0));
             lane.session.begin(lane.state, temperature_for(0), false);
             return true;
         }
@@ -567,6 +573,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 }
 
                 lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
+                lane.session.set_simulations(simulations_for(lane.move_count));
                 lane.session.begin(lane.state, temperature_for(lane.move_count), false);
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);

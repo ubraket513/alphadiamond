@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -78,6 +79,21 @@ class SearchSession {
     // it every move of a lane would continue one stream -- still deterministic,
     // but no longer reproducible from a move index alone.
     void reseed(uint64_t seed) { rng_.reseed(seed); }
+
+    // Change the search budget between moves.
+    //
+    // 64 simulations is this project's reference point, not a measured optimum,
+    // and it is not enough everywhere: measured on the A0 actor, doubling to 128
+    // takes the discarded-move fraction from 28.6 % to 12.2 %, while 256 adds
+    // nothing (12.5 %).  The cost is not uniform though -- most games finish
+    // comfortably at 64, and the failures are a short-cycle attractor in a small
+    // tail.  Paying for 128 everywhere is therefore mostly waste; paying for it
+    // only where a game is already going wrong is not.  Must be called before
+    // ``begin``.
+    void set_simulations(int simulations) {
+        if (simulations <= 0) throw std::invalid_argument("simulations must be positive");
+        config_.simulations = simulations;
+    }
 
     Status advance();
     const Encoded& pending_features() const { return pending_encoded_; }

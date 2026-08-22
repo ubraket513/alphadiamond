@@ -315,6 +315,20 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--actor-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Freeze self-play on this checkpoint while the learner keeps "
+            "training. Normally the learner becomes the next iteration's actor "
+            "immediately, which makes the loop's feedback gain very high: the "
+            "actor lags by zero iterations and a 200k replay turns over in "
+            "about three. Pinning the actor holds the state distribution still, "
+            "so a learner that degrades anyway indicts the dataset rather than "
+            "the actor-refresh loop. Diagnostic; leave unset for production."
+        ),
+    )
+    parser.add_argument(
         "--native-max-wait-us",
         type=int,
         default=None,
@@ -476,6 +490,7 @@ def main() -> int:
             "simulations": mcts_config.simulations,
             "worker_count": worker_count,
             "selfplay_backend": selfplay_backend,
+            "frozen_actor": str(args.actor_checkpoint) if args.actor_checkpoint else None,
             "native_lanes": native_lanes if selfplay_backend == "native" else None,
             "native_max_wait_us": (
                 native_max_wait_us if selfplay_backend == "native" else None
@@ -509,6 +524,18 @@ def main() -> int:
     signal.signal(signal.SIGTERM, request_stop)
 
     model_pool = InferenceModelPool(device=training_config.device)
+    frozen_actor_key = None
+    if args.actor_checkpoint is not None:
+        # Activated once, outside the loop: the whole point is that it never
+        # changes while the learner does.
+        frozen_actor_key = model_pool.activate_checkpoint(
+            args.actor_checkpoint, expected=compatibility
+        )
+        print(
+            f"[frozen-actor] self-play pinned to {args.actor_checkpoint}; "
+            "the learner will train but will not be deployed",
+            flush=True,
+        )
     inference_config = InferenceConfig(**config["inference"])
     deadline = time.perf_counter() + args.hours * 3600.0
     session_start = time.perf_counter()
@@ -518,8 +545,15 @@ def main() -> int:
         iteration_start = time.perf_counter()
 
         # Self-play always runs against the current durable checkpoint, so the
-        # data provenance and the trained weights can never disagree.
-        model_key = model_pool.activate_checkpoint(latest, expected=compatibility)
+        # data provenance and the trained weights can never disagree -- unless
+        # the actor is deliberately frozen for the diagnostic above, in which
+        # case the provenance correctly records the *actor* that produced the
+        # games.
+        model_key = (
+            frozen_actor_key
+            if frozen_actor_key is not None
+            else model_pool.activate_checkpoint(latest, expected=compatibility)
+        )
         players = build_players(compatibility.identity.player_count)
         start_state = initial_state(players)
         jobs = tuple(
