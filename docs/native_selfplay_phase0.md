@@ -7,8 +7,7 @@ checkpoints and the PyTorch model stay in Python.
 This is the evidence, the proposed shapes, and the parity plan that Phase 1 is
 judged against. It is a design record and is **not** rewritten as work lands.
 
-**Status: Gates A and B pass.** Gates C and D are open, and both need the GPU
-host. See
+**Status: Gates A, B and C pass.** Gate D is open and needs the GPU host. See
 [native_selfplay_phase1_progress.md](native_selfplay_phase1_progress.md).
 
 Follows [rtx5060_bottleneck_findings.md](rtx5060_bottleneck_findings.md).

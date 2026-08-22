@@ -16,6 +16,8 @@
 #include "soo/evaluator.hpp"
 #include "soo/mcts.hpp"
 #include "soo/prior.hpp"
+#include "soo/profile.hpp"
+#include "soo/selfplay.hpp"
 #include "soo/rules.hpp"
 #include "soo/state.hpp"
 
@@ -227,6 +229,55 @@ class Game {
         return out;
     }
 
+    // Gate C.1: per-stage and whole-search native cost, no threads, no Python.
+    py::dict profile(const std::vector<State>& states, const MCTSConfig& config, int repeats,
+                     bool searches) const {
+        StageTiming timing;
+        {
+            py::gil_scoped_release release;
+            timing = searches ? profile_searches(states, match_, config, repeats)
+                              : profile_stages(states, match_, repeats);
+        }
+        py::dict out;
+        out["legal_ns"] = timing.legal_ns;
+        out["prior_ns"] = timing.prior_ns;
+        out["encode_ns"] = timing.encode_ns;
+        out["apply_ns"] = timing.apply_ns;
+        out["search_ns"] = timing.search_ns;
+        out["evaluations"] = timing.evaluations;
+        out["searches"] = timing.searches;
+        out["nodes"] = timing.nodes;
+        return out;
+    }
+
+    // Gate C.2/C.3: many logical games over a fixed worker pool, one global
+    // batcher, dummy evaluator. The GIL is released for the whole run -- no
+    // Python is touched between here and the return.
+    py::dict schedule(const State& opening, const SchedulerConfig& config) const {
+        SchedulerMetrics metrics;
+        {
+            py::gil_scoped_release release;
+            metrics = run_scheduler(match_, opening, config);
+        }
+        py::dict out;
+        out["evaluations"] = metrics.evaluations;
+        out["batches"] = metrics.batches;
+        out["moves"] = metrics.moves;
+        out["games_finished"] = metrics.games_finished;
+        out["batcher_wakeups"] = metrics.batcher_wakeups;
+        out["wall_seconds"] = metrics.wall_seconds;
+        out["worker_busy_seconds"] = metrics.worker_busy_seconds;
+        out["evaluator_seconds"] = metrics.evaluator_seconds;
+        out["batch_sizes"] = py::cast(metrics.batch_sizes);
+        out["ready_depth"] = py::cast(metrics.ready_depth);
+        out["waiting"] = py::cast(metrics.waiting);
+        out["wait_ns"] = py::cast(metrics.wait_ns);
+        py::list lane_moves;
+        for (const auto& moves : metrics.lane_moves) lane_moves.append(py::cast(moves));
+        out["lane_moves"] = lane_moves;
+        return out;
+    }
+
     // The reference evaluator, exposed on its own so evaluator parity can be
     // tested apart from search parity.
     py::tuple evaluate(const State& state, const std::string& evaluator_name) const {
@@ -300,6 +351,21 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def_readwrite("dirichlet_epsilon", &MCTSConfig::dirichlet_epsilon)
         .def_readwrite("seed", &MCTSConfig::seed);
 
+    py::class_<SchedulerConfig>(m, "SchedulerConfig")
+        .def(py::init([](int games, int threads, int max_batch, int max_wait_us, int simulations,
+                         int max_moves, double eval_latency_ms, double seconds,
+                         bool trace_moves, int stop_after_moves) {
+                 return SchedulerConfig{games,           threads,     max_batch,
+                                        max_wait_us,     simulations, max_moves,
+                                        eval_latency_ms, seconds,     trace_moves,
+                                        stop_after_moves};
+             }),
+             py::arg("games") = 64, py::arg("threads") = 4, py::arg("max_batch") = 32,
+             py::arg("max_wait_us") = 2000, py::arg("simulations") = 64,
+             py::arg("max_moves") = 400, py::arg("eval_latency_ms") = 0.0,
+             py::arg("seconds") = 5.0, py::arg("trace_moves") = false,
+             py::arg("stop_after_moves") = 0);
+
     py::class_<Game>(m, "Game")
         .def(py::init<const std::vector<std::array<int, 3>>&>(), py::arg("players"),
              "players: (seat id, camp index, target camp index) in turn order")
@@ -319,6 +385,9 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def("search", &Game::search, py::arg("state"), py::arg("config"),
              py::arg("temperature") = 0.0, py::arg("trace") = false,
              py::arg("evaluator") = "hash")
+        .def("schedule", &Game::schedule, py::arg("opening"), py::arg("config"))
+        .def("profile", &Game::profile, py::arg("states"), py::arg("config"),
+             py::arg("repeats") = 1, py::arg("searches") = false)
         .def("reference_evaluate", &Game::evaluate, py::arg("state"),
              py::arg("evaluator") = "hash",
              "(legal actions, priors, value, request hash) from the Gate B evaluator");

@@ -4,10 +4,9 @@ Implementation log for [native_selfplay_phase0.md](native_selfplay_phase0.md) §
 Follows the standing instruction there: **exact parity and a simple native
 representation before low-level micro-optimization.**
 
-**Status: Gate A passes. Gate B passes.**
-The batch callback ABI, the batcher, threading and the backend switch are not
-started, deliberately — Gate B is single-threaded, single-game, and never calls
-into Python.
+**Status: Gates A, B and C pass.** Gate D needs the GPU host and is not started.
+The Python batch callback ABI and the `selfplay_backend = "native"` switch are
+also not started — Gate C runs entirely native, with a dummy evaluator.
 
 > Everything below was done on a **local development machine**, not the
 > RTX 5060 Ti / Xeon training host. No GPU numbers, no throughput claims and no
@@ -351,3 +350,186 @@ oracle and the native backend against each other for correctness only. §0.5
 stands: native cost per evaluation is a Gate C question, on the GPU host, and
 Gate C should separate *native single-search cost* from *scheduler + dummy
 evaluator throughput* rather than reporting one blended number.
+
+
+---
+
+## 8. Gate C — throughput, no Python
+
+Run on the **local development machine** (i7-1165G7, 4 physical / 8 logical
+cores), not the 36-core training host. Absolute ceilings will differ there;
+the *shape* — what binds and what does not — is what this section claims.
+
+Split into the three questions the design says to keep apart, so that a
+disappointing number identifies a culprit instead of prompting a guess.
+
+### 8.0 A prerequisite: the search had to become resumable
+
+Synchronous MCTS allows one outstanding request per lane. A worker that blocks
+on its own evaluation therefore pins a lane to a thread, caps the achievable
+batch at the thread count, and makes "many logical games" buy nothing. So
+`MCTS2P` was refactored into a `SearchSession` that **suspends at its
+evaluation points** and is driven from outside; `MCTS2P` is now a thin
+synchronous driver over it, which is the Gate B shape.
+
+Gate B was the regression test for that refactor, and it is why the refactor
+was safe to attempt: the restructured search still produces bit-identical q
+values and the identical evaluator request sequence.
+
+### 8.1 Native single-search cost
+
+`az-bench/profiles/bench_native_single_search.py`. Per-call stage cost over the
+722 full-game two-player corpus positions, with Python re-measured **on the same
+machine** — quoting against the §0.1 table would compare two different hosts.
+
+| stage | python µs | native µs | ratio |
+|---|---|---|---|
+| legal move generation | 142.18 | 1.44 | 98.9x |
+| vacancy prior | 208.45 | 7.48 | 27.9x |
+| canonical encoder | 27.66 | 0.38 | 73.7x |
+| state + apply_action | 37.99 | 0.14 | 274.4x |
+| **total** | **416.28** | **9.43** | **44.1x** |
+
+Stable to ±5 % across runs. `steady_clock::now()` costs 14 ns, so the two clock
+reads per stage inflate the fastest native stages by up to ~20 % — the error
+runs *against* native, making these conservative.
+
+Whole search, 64 simulations, dummy evaluator: **2.6 µs/eval**, 0.166 ms/search,
+**~380,000 evals/s on one lane**. That is below the stage total because the
+search does not compute the vacancy prior — the dummy evaluator stands in for it.
+A production-shaped lane is roughly `2.6 + 7.5 ≈ 10 µs/eval`.
+
+**The vacancy prior is now the dominant native lane cost** — 79 % of the
+four-stage total, having been 50 % in Python. It is the obvious optimisation
+target, and it is deliberately *not* optimised here: §8.2 shows the lane side is
+nowhere near binding, so tuning it now would be tuning against an unmeasured
+constraint.
+
+### 8.2 Scheduler with a dummy evaluator
+
+`az-bench/profiles/bench_native_scheduler.py`. Many logical games over a fixed
+worker pool and one global batcher, per the agreed architecture.
+
+**Batch formation is never the problem.** At every combination tested with at
+least 2x cap lanes in flight, batches were **100 % full at the cap** — mean, p50
+and p90 all equal to `max_batch`. Lane starvation did not occur anywhere in the
+sweep.
+
+Throughput is exactly `max_batch / evaluator_latency`, at 87–93 % of that
+roofline. At a fixed 3 ms per batch:
+
+| batch cap | evals/s | roofline | achieved |
+|---|---|---|---|
+| 16 | 4,872 | 5,333 | 91 % |
+| 32 | 9,540 | 10,667 | 89 % |
+| 64 | 18,922 | 21,333 | 89 % |
+| 128 | 37,300 | 42,667 | 87 % |
+
+The missing 7–13 % is the batcher thread's own serial work between dispatches.
+
+Three conclusions, one of which contradicts the expectation going in:
+
+1. **`max_batch` is the only knob that moves throughput.** Exactly risk 4 in the
+   design; now measured rather than anticipated. It should be promoted to a
+   first-class knob.
+2. **More games do not help beyond ~2x the batch cap.** Going from 64 to 512
+   lanes at cap 32 left throughput flat at ~9,600 evals/s while per-eval latency
+   grew from 3.1 ms to 49 ms. **512 logical games is not a natural operating
+   point** at these caps — it is pure queueing. The right rule is
+   `games ≈ 2 x max_batch`: one batch being evaluated while the next is
+   assembled.
+3. **CPU utilisation is 1–5 %** at realistic latency. The lane work is nearly
+   free relative to inference, which is the good outcome, not a wasted machine.
+
+**The scheduler's own ceiling**, with zero evaluator latency:
+
+| threads | evals/s | cpu |
+|---|---|---|
+| 1 | 178,609 | 52 % |
+| 2 | 447,211 | 78 % |
+| 4 | **770,157** | 90 % |
+| 8 | 259,956 | 14 % |
+
+Scaling is near-linear to 4 threads and then **collapses**. Eight workers plus
+the batcher oversubscribe four physical cores, the batcher thread stops getting
+CPU, and everything queues behind it (`runnable` falls to 2.5, `waiting` rises to
+253). **The batcher thread must not be starved**: worker count should leave a
+core for it. That is a scheduling constraint the design did not anticipate, and
+it will matter when choosing thread counts on the 36-core host.
+
+At 770k evals/s the scheduler is ~90x faster than needed to feed a 3.8 ms
+value-only batch of 32. **The scheduler is not the bottleneck. The evaluator is** —
+which is exactly where the design wanted the constraint to sit.
+
+### 8.3 Evaluator latency sweep
+
+The question that decides Gate D's odds: does batch formation survive at real
+inference latency? Measured at §0.4's *own* value-only figures rather than round
+numbers, with `games = 2 x cap`:
+
+| cap | latency (§0.4 path D) | evals/s | batch | roofline | achieved | vs ~950 |
+|---|---|---|---|---|---|---|
+| 32 | 3.784 ms | 7,775 | 32.0 | 8,457 | 92 % | **8.2x** |
+| 64 | 4.586 ms | 12,815 | 64.0 | 13,956 | 92 % | **13.5x** |
+| 128 | 6.944 ms | 17,130 | 128.0 | 18,433 | 93 % | **18.0x** |
+
+Batches stay **completely full** at every latency from 0 to 5 ms. The scheduler
+does not need a slow evaluator to fill batches, and it does not degrade when it
+gets one.
+
+### 8.4 Verdict against the Gate C stop condition
+
+> **C** — native + batcher throughput, no Python. *Stop if: no substantial
+> headroom over 950 evals/s.*
+
+**Gate C passes.** At the measured value-only latency for a batch of 32, the
+native scheduler sustains 7,775 evals/s against a Python production ceiling of
+~950 — **8.2x**, rising to 13.5x at B64 and 18.0x at B128, and it reaches 92 % of
+the single-evaluator-thread roofline in every case.
+
+The caveat that keeps this honest: the evaluator here is a dummy that *sleeps*.
+It holds no GIL, allocates nothing, and never touches Python. Gate D replaces it
+with a real callback, and risk 5 says plainly that one evaluator thread holding
+the GIL is the next ceiling. What Gate C establishes is narrower and still
+worth having: **everything on the native side of that callback has ceased to be
+the constraint.**
+
+### 8.5 Correctness, because a fast wrong scheduler is worthless
+
+`tests/native/test_scheduler.py`, six tests, all under a watchdog so a hang fails
+rather than wedging CI.
+
+The strongest is **thread-count invariance**: a lane's evaluations depend only on
+its own request and its own salt, so its entire game must be identical whether
+one worker ran it or eight, however batches happened to form. It holds exactly
+across 1/2/4/8 threads. Also covered: the single-lane tail (a solitary lane
+dispatches alone at the full `max_wait_us`), batch-scale dispatch counts, workers
+staying fed with more lanes than threads, and termination across degenerate
+shapes including `games=1, max_batch=32` and `max_batch=1, threads=8`.
+
+### 8.6 A bug that would have made this whole section a lie
+
+The dummy evaluator salts each lane so trajectories diverge. The first
+implementation mixed the salt in as
+`hash ^= salt + K + (hash << 6) + (hash >> 2)` — which moves mostly low bits,
+and the value is read from `hash >> 11`, which discards them.
+
+Lane values then differed at the **11th decimal place**. Every lane played
+identical moves: 32 lanes, **1 distinct trajectory**. Batching would have looked
+flawless because all lanes marched in lockstep, submitting in perfect step —
+the error flattered every number in this section.
+
+Caught by checking the assumption rather than the throughput, which looked
+entirely healthy throughout. Fixed with splitmix64's finaliser, giving 32/32
+distinct trajectories; `test_lanes_play_different_games` now asserts it
+permanently.
+
+### 8.7 Not done, and still out of scope
+
+- **No micro-optimisation.** No SIMD, no bitset tricks, no custom allocators.
+  The vacancy prior is the identified target and stays untouched until there is
+  a measurement that says it binds — §8.2 says it does not.
+- **Gate D**: the real PyTorch callback, the `ValueOnly` ABI, GIL behaviour under
+  a real evaluator, and the `selfplay_backend = "native"` switch.
+- **All numbers here are from an 8-logical-core laptop.** The 36-core host will
+  differ, and the 4-thread collapse point certainly will.
