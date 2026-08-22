@@ -69,6 +69,10 @@ class SearchSession {
     Status advance();
     const Encoded& pending_features() const { return pending_encoded_; }
     const std::vector<int32_t>& pending_actions() const { return pending_actions_; }
+    // The state of the node awaiting evaluation -- NOT the search root. An
+    // evaluator that derives anything from position (the vacancy prior does)
+    // must use this one.
+    const State& pending_state() const { return pending_state_; }
     void supply(const EvalOutcome& outcome) { pending_outcome_ = outcome; }
 
     const SearchResult& result() const { return result_; }
@@ -98,6 +102,7 @@ class SearchSession {
     // visit aggregate in step with the edge it increments.
     std::vector<std::pair<uint32_t, uint32_t>> path_;
 
+    State pending_state_;
     Encoded pending_encoded_;
     std::vector<int32_t> pending_actions_;
     EvalOutcome pending_outcome_;

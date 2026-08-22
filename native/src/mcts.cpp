@@ -53,11 +53,11 @@ void SearchSession::begin(const State& state, double temperature, bool trace) {
 }
 
 void SearchSession::prepare_expansion(uint32_t node_index) {
-    const State state = arena_.node(node_index).state;
-    pending_encoded_ = soo::encode(state, match_);
+    pending_state_ = arena_.node(node_index).state;
+    pending_encoded_ = soo::encode(pending_state_, match_);
     pending_actions_.clear();
     pending_actions_.reserve(64);
-    canonical_legal_action_ids(state, match_, pending_actions_);
+    canonical_legal_action_ids(pending_state_, match_, pending_actions_);
 }
 
 double SearchSession::complete_expansion(uint32_t node_index) {

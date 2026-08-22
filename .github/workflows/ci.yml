@@ -60,7 +60,7 @@ jobs:
   # authoritative rule implementations drifting apart, and the committed corpus
   # is the only thing that catches it.
   native:
-    name: native (Gate A/B parity)
+    name: native (Gate A-D)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,12 +74,33 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest "pybind11>=2.12" setuptools wheel
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install --no-deps -e .
 
       - name: Build the extension
         run: python tools/build_native.py
 
-      - name: Gate A/B parity
+      # Gate D's end-to-end tests skip themselves without torch or the
+      # checkpoint. That is right on a developer machine and wrong here, where a
+      # skip would quietly retire the only test that proves the native backend
+      # plays the same game as the Python one. Same reasoning as the gui job's
+      # QtMultimedia check.
+      - name: Confirm the Gate D fixtures are present
+        run: |
+          python - <<'PY'
+          import hashlib
+          import pathlib
+
+          import torch  # noqa: F401
+
+          checkpoint = pathlib.Path("runtime/runs/soo/cpu8h-soo-20260819/latest.pt")
+          digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+          expected = "1634b901e213b065c107eea734b8c172c14babb1c2565352203961e86ea165af"
+          assert digest == expected, f"checkpoint digest {digest}"
+          print("torch and the immutable step-80 checkpoint are present")
+          PY
+
+      - name: Gate A-D
         run: pytest tests/native -v --durations=10
 
   # Qt lives in its own job: it needs the system libraries and an offscreen

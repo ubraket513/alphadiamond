@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -68,12 +69,12 @@ uint64_t salted_hash(const Encoded& encoded, const std::vector<int32_t>& actions
 // on one visit, and the temperature-0 tie-break picks the lowest action id --
 // so the value never enters the decision at all. 16 lanes, 1 distinct
 // trajectory. A sweep run on that would be measuring one game replayed N times.
-void fill_outcome(Lane& lane) {
-    const auto& actions = lane.session.pending_actions();
-    const uint64_t hash = salted_hash(lane.session.pending_features(), actions, lane.salt);
+void fill_outcome_impl(const Encoded& encoded, const std::vector<int32_t>& actions,
+                       uint64_t salt, EvalOutcome& outcome) {
+    const uint64_t hash = salted_hash(encoded, actions, salt);
 
-    lane.outcome.priors.clear();
-    lane.outcome.priors.reserve(actions.size());
+    outcome.priors.clear();
+    outcome.priors.reserve(actions.size());
     double total = 0.0;
     for (const int32_t action : actions) {
         uint64_t action_hash = hash;
@@ -81,11 +82,11 @@ void fill_outcome(Lane& lane) {
         action_hash *= 0x100000001b3ULL;
         const double weight =
             static_cast<double>(action_hash >> 11) / 9007199254740992.0 + 0.25;
-        lane.outcome.priors.push_back(weight);
+        outcome.priors.push_back(weight);
         total += weight;
     }
-    for (double& prior : lane.outcome.priors) prior /= total;
-    lane.outcome.value = static_cast<double>(hash >> 11) / 9007199254740992.0 * 2.0 - 1.0;
+    for (double& prior : outcome.priors) prior /= total;
+    outcome.value = static_cast<double>(hash >> 11) / 9007199254740992.0 * 2.0 - 1.0;
 }
 
 // A queue of runnable lanes. Workers block here and nowhere else.
@@ -138,8 +139,18 @@ class ReadyQueue {
 
 }  // namespace
 
+void DummyBatchEvaluator::evaluate(std::vector<BatchItem>& batch) {
+    for (BatchItem& item : batch) {
+        fill_outcome_impl(*item.encoded, *item.actions, item.salt, *item.outcome);
+    }
+    // Artificial inference cost, per batch, the way a GPU call bills.
+    if (latency_ms_ > 0.0) {
+        std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(latency_ms_));
+    }
+}
+
 SchedulerMetrics run_scheduler(const Match& match, const State& opening,
-                               const SchedulerConfig& config) {
+                               const SchedulerConfig& config, BatchEvaluator& batch_evaluator) {
     MCTSConfig search_config;
     search_config.simulations = config.simulations;
     search_config.dirichlet_epsilon = 0.0;
@@ -165,6 +176,22 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
     std::vector<std::vector<int32_t>> lane_moves(static_cast<size_t>(config.games));
     std::atomic<int> lanes_done{0};
 
+    // A Python callback that raises, or a rules violation on a worker, would
+    // otherwise escape a std::thread and terminate the process. Capture the
+    // first failure, tear the run down so nobody waits on a dead thread, and
+    // rethrow it on the calling thread where the caller can see it.
+    std::exception_ptr failure;
+    std::mutex failure_mutex;
+    const auto fail = [&](std::exception_ptr error) {
+        {
+            std::lock_guard<std::mutex> lock(failure_mutex);
+            if (!failure) failure = std::move(error);
+        }
+        stop.store(true, std::memory_order_relaxed);
+        ready.stop();
+        batcher.stop();
+    };
+
     for (int i = 0; i < config.games; ++i) ready.push(i);
 
     const auto started = Clock::now();
@@ -174,6 +201,7 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
     std::vector<double> busy(static_cast<size_t>(config.threads), 0.0);
     for (int w = 0; w < config.threads; ++w) {
         workers.emplace_back([&, w] {
+          try {
             int lane_id = 0;
             while (!stop.load(std::memory_order_relaxed)) {
                 if (!ready.pop(lane_id)) break;
@@ -183,6 +211,12 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
                 // Drive this lane until it needs an evaluation or has a move.
                 const SearchSession::Status status = lane.session.advance();
                 if (status == SearchSession::Status::NeedsEvaluation) {
+                    // Request-only work happens here, on an idle worker, rather
+                    // than on the evaluator thread.
+                    BatchItem item{&lane.session.pending_state(),
+                                   &lane.session.pending_features(),
+                                   &lane.session.pending_actions(), lane.salt, &lane.outcome};
+                    batch_evaluator.prepare(item);
                     lane.submitted_at = Clock::now();
                     waiting.fetch_add(1, std::memory_order_relaxed);
                     busy[static_cast<size_t>(w)] += seconds_since(work_start);
@@ -232,26 +266,36 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);
             }
+          } catch (...) {
+            fail(std::current_exception());
+          }
         });
     }
 
     // --- batcher / evaluator thread ----------------------------------------
     std::thread evaluator([&] {
+      try {
         std::vector<int> batch;
+        std::vector<BatchItem> items;
         while (batcher.collect(batch)) {
             const auto dispatch_at = Clock::now();
             const int ready_depth = static_cast<int>(ready.depth());
             const int waiting_now = waiting.load(std::memory_order_relaxed);
 
+            items.clear();
+            items.reserve(batch.size());
             for (const int lane_id : batch) {
-                fill_outcome(*lanes[static_cast<size_t>(lane_id)]);
+                Lane& lane = *lanes[static_cast<size_t>(lane_id)];
+                // pending_state(), not lane.state: the request belongs to the
+                // node being expanded, which is only the root on the first
+                // expansion of each move.
+                items.push_back(BatchItem{&lane.session.pending_state(),
+                                          &lane.session.pending_features(),
+                                          &lane.session.pending_actions(), lane.salt,
+                                          &lane.outcome});
             }
-            // Artificial inference cost, per batch, the way a GPU call bills.
             const auto eval_start = Clock::now();
-            if (config.eval_latency_ms > 0.0) {
-                std::this_thread::sleep_for(
-                    std::chrono::duration<double, std::milli>(config.eval_latency_ms));
-            }
+            batch_evaluator.evaluate(items);
             const double eval_seconds = seconds_since(eval_start);
 
             {
@@ -277,6 +321,9 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
             }
             ready.push_many(batch);
         }
+      } catch (...) {
+        fail(std::current_exception());
+      }
     });
 
     if (config.stop_after_moves > 0) {
@@ -292,6 +339,7 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
         metrics.batcher_wakeups = batcher.wakeups();
         for (const double value : busy) metrics.worker_busy_seconds += value;
         if (config.trace_moves) metrics.lane_moves = std::move(lane_moves);
+        if (failure) std::rethrow_exception(failure);
         return metrics;
     }
 
@@ -308,6 +356,7 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
     metrics.batcher_wakeups = batcher.wakeups();
     for (const double value : busy) metrics.worker_busy_seconds += value;
     if (config.trace_moves) metrics.lane_moves = std::move(lane_moves);
+    if (failure) std::rethrow_exception(failure);
     return metrics;
 }
 

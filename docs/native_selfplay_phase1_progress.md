@@ -4,9 +4,9 @@ Implementation log for [native_selfplay_phase0.md](native_selfplay_phase0.md) §
 Follows the standing instruction there: **exact parity and a simple native
 representation before low-level micro-optimization.**
 
-**Status: Gates A, B and C pass.** Gate D needs the GPU host and is not started.
-The Python batch callback ABI and the `selfplay_backend = "native"` switch are
-also not started — Gate C runs entirely native, with a dummy evaluator.
+**Status: Gates A, B and C pass. Gate D's correctness half passes on CPU;
+its throughput half needs the GPU host.** The `selfplay_backend = "native"`
+config switch is not written.
 
 > Everything below was done on a **local development machine**, not the
 > RTX 5060 Ti / Xeon training host. No GPU numbers, no throughput claims and no
@@ -533,3 +533,158 @@ permanently.
   a real evaluator, and the `selfplay_backend = "native"` switch.
 - **All numbers here are from an 8-logical-core laptop.** The 36-core host will
   differ, and the 4-thread collapse point certainly will.
+
+
+---
+
+## 9. Gate D — the Python callback, on CPU
+
+Gate D as specified needs the GPU host: *"same immutable checkpoint, seed and
+config as the Python backend; report the full A/B table."* That table is not in
+this document and no throughput claim is made for it.
+
+What does **not** need a GPU is everything else Gate D asks: the batch callback
+ABI, the GIL discipline, and whether the native backend actually plays the same
+game as the Python one. All of that is done, against the same immutable
+checkpoint — `sha256:1634b901…`, `training_step` 80 — which is committed to this
+repository and hash-checked by a test.
+
+### 9.1 The callback ABI
+
+`ValueOnly` — the B0 production path:
+
+```
+C++  -> Python     float32 features[B][73][4]
+Python -> C++      float32 values[B]
+```
+
+Nothing else crosses. The vacancy prior is native (Gate A), so the entire policy
+tail is absent from the boundary: no bounds check, no padded index build, no
+gather, no mask, no softmax, no validity sync, no `[B, 5329]` device-to-host
+copy, no priors dict, no response envelope.
+
+`PolicyValue` — the reference path — additionally passes ragged legal sets as a
+flat array plus offsets rather than padded, so the Python side gathers without
+materialising `[B, max_legal]`. Both modes stay compiled and both are tested.
+
+The feature array is a **view onto a buffer the native side reuses**, not a copy.
+It is valid for the duration of the call only; the contract is documented on
+`backend.py` and the buffer is refilled on the next batch.
+
+### 9.2 GIL discipline
+
+The entry point releases the GIL for the whole run. The single evaluator thread
+is the only thread that ever reacquires it, around the callback and nothing
+else. Lane threads never touch Python.
+
+Section 5 names the deadlock this design must not have — an entry point that
+kept the GIL would leave the evaluator thread blocked on it forever. Its three
+required tests are implemented, all under a watchdog so a hang fails rather than
+wedging CI:
+
+- **Deadlock guard** — a callback that imports, allocates and runs `gc.collect()`,
+  under four workers.
+- **Single-lane tail** — one lane dispatches alone at the full `max_wait_us`.
+- **Callback frequency** — crossings equal *batches*, not evaluations; 32
+  evaluations per GIL acquisition at cap 32.
+
+Two failure modes not in the design's list, both real:
+
+- **A raising callback used to terminate the process.** An exception escaping a
+  `std::thread` is fatal. Worker and evaluator threads now capture the first
+  failure, tear the run down so nothing waits on a dead thread, and rethrow on
+  the calling thread — the original Python exception type survives, and the
+  scheduler is reusable afterwards.
+- **A callback returning the wrong number of values** is rejected rather than
+  read out of bounds.
+
+### 9.3 End-to-end: the native backend plays the same game
+
+The correctness claim Gate D exists for, on the immutable checkpoint:
+
+| simulations | moves | result |
+|---|---|---|
+| 32 | 20 | **identical move for move** |
+| 64 | 12 | **identical move for move** |
+
+Python runs `MCTS2P` + `VacancyPriorEvaluator` over `TorchEvaluator`; native
+computes the vacancy prior itself and takes only values across the boundary.
+Same weights, `epsilon = 0`, `temperature = 0`.
+
+A single lane is used deliberately, so both sides evaluate at batch 1. Batch
+size perturbs the model's own output by **~3e-8** (measured), which dwarfs the
+≤1e-12 by which the native and Python priors differ — comparing across different
+batch shapes would test the model's numerics rather than the backend.
+
+`trunk_only` is **bit-identical** to the full forward, so skipping the policy
+head is a pure saving and not a different evaluator. That is asserted, because
+every parity claim above depends on it.
+
+### 9.4 A bug only an end-to-end test could find
+
+`PythonBatchEvaluator` computed the vacancy prior from **the lane's root state**
+instead of the state of the node being expanded. The two coincide only on the
+first expansion of each move, so every deeper node got priors for the wrong
+position.
+
+It was invisible to Gate C: the dummy evaluator derives priors from the request
+hash and never looks at a state. It showed up on the first real comparison
+against the Python oracle — 9 of 10 moves matched and move 7 diverged, and
+crucially it was **not a near-tie**: Python gave the chosen action 14 of 32
+visits while native picked a 1-visit action. That gap is what ruled out the
+≤1e-12 prior difference as an explanation and forced the real diagnosis.
+
+`SearchSession` now exposes `pending_state()` — the node awaiting evaluation, not
+the search root — and the comment says why an evaluator must use it.
+
+### 9.5 What the boundary costs
+
+The CPU forward here is ~30x the GPU host's (87 ms vs 3.1 ms at batch 32), so
+absolute throughput with a real model says nothing about Gate D and is not
+quoted. The transferable quantity is the cost of the boundary itself.
+
+Measured with a null callback, ValueOnly, per **evaluator-thread** microsecond:
+
+| batch cap | µs/crossing | µs/eval |
+|---|---|---|
+| 32 | 30.4 | 0.95 |
+| 64 | 38.8 | 0.61 |
+| 128 | 55.5 | 0.43 |
+
+Marshalling plus one GIL acquisition costs **30–55 µs per batch**. Against §0.4's
+measured 3.784 ms value-only forward at batch 32, that is **0.8 %**. The ABI is
+not the ceiling.
+
+### 9.6 Moving the prior off the critical thread
+
+Those numbers are *after* a structural fix the measurement prompted.
+
+The vacancy prior is a pure function of the request, but it was being computed
+inside `evaluate()` — on the single evaluator thread. At 7.5 µs/eval that is
+**241 µs of serial work per batch of 32**, charged to precisely the thread §8.2
+showed must never be starved, while the search workers sat at ~15 % utilisation.
+
+`BatchEvaluator` now has a `prepare()` hook that runs **on a search worker**
+before the lane is handed over. Request-only work belongs there.
+
+| | evaluator µs/crossing | evaluator µs/eval | worker cpu |
+|---|---|---|---|
+| prior in `evaluate()` | 240.9 | 7.53 | 15 % |
+| prior in `prepare()` | **30.4** | **0.95** | **78 %** |
+
+Same total work, moved from the scarce serial resource to the idle one — 7.9x
+less time on the evaluator thread, and 6 % of a real value-only batch handed
+back.
+
+This is not the micro-optimisation the plan defers. It is a scheduling fix that
+only became visible once the boundary was measured, and it changes which thread
+does the work rather than how fast the work is.
+
+### 9.7 What Gate D still needs from the GPU host
+
+- The **A/B throughput table** against the Python backend.
+- Whether the callback recreates the ceiling under a *real* forward — risk 5's
+  actual question. §9.5 shows the marshalling does not; the forward is untested
+  at GPU speed from the native side.
+- `selfplay_backend = "native"`, and a full training loop consuming native
+  self-play samples.
