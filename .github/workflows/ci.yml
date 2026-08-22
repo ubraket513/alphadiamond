@@ -60,7 +60,7 @@ jobs:
   # authoritative rule implementations drifting apart, and the committed corpus
   # is the only thing that catches it.
   native:
-    name: native (Gate A parity)
+    name: native (Gate A/B parity)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +79,7 @@ jobs:
       - name: Build the extension
         run: python tools/build_native.py
 
-      - name: Gate A parity
+      - name: Gate A/B parity
         run: pytest tests/native -v --durations=10
 
   # Qt lives in its own job: it needs the system libraries and an offscreen
