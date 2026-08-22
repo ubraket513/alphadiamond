@@ -312,6 +312,26 @@ def main() -> int:
         help="Explicit self-play worker count; default is available CPUs minus two.",
     )
     parser.add_argument(
+        "--archive-every",
+        type=int,
+        default=1,
+        help=(
+            "Write a numbered checkpoint archive every N iterations (default 1). "
+            "latest.pt is still written every iteration either way, so resume "
+            "safety does not depend on this."
+        ),
+    )
+    parser.add_argument(
+        "--keep-archives",
+        type=int,
+        default=0,
+        help=(
+            "Retain only the newest N archives; 0 (default) keeps every one. "
+            "A checkpoint is ~8.7 MB, so an unbounded long run is measured in "
+            "gigabytes -- set this on a small disk."
+        ),
+    )
+    parser.add_argument(
         "--per-game-seconds",
         type=float,
         default=None,
@@ -564,14 +584,27 @@ def main() -> int:
         train_s = time.perf_counter() - train_start
 
         # ---- checkpoint every iteration; the run is never all-or-nothing ----
+        # latest.pt is unconditional: it is what a resume reads, and making it
+        # conditional on the archive cadence would trade crash safety for disk.
         if metrics_list:
             save_checkpoint(
                 latest, trainer, operation_id=f"{args.run_id}-i{iteration:06d}"
             )
-            archive = checkpoints_dir / (
-                f"{phase}-i{iteration:06d}-step{trainer.training_step:09d}.pt"
-            )
-            save_checkpoint(archive, trainer, operation_id=f"{args.run_id}-i{iteration:06d}")
+            if args.archive_every > 0 and iteration % args.archive_every == 0:
+                archive = checkpoints_dir / (
+                    f"{phase}-i{iteration:06d}-step{trainer.training_step:09d}.pt"
+                )
+                save_checkpoint(
+                    archive, trainer, operation_id=f"{args.run_id}-i{iteration:06d}"
+                )
+                if args.keep_archives > 0:
+                    stale = sorted(checkpoints_dir.glob(f"{phase}-i*.pt"))[
+                        : -args.keep_archives
+                    ]
+                    for path in stale:
+                        path.unlink()
+            else:
+                archive = None
         else:
             archive = None
 
