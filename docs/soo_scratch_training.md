@@ -408,6 +408,25 @@ It also explains §5.7. Raising `max_moves` did not help because the wanderers a
 not near-misses — they are the tail that censoring is systematically deleting
 from the dataset.
 
+**How much is deleted.** An aborted game runs the full 500-move cap and then
+contributes nothing, so the discarded volume is exactly `aborted × 500` moves:
+
+| iteration | phase | completed | moves kept | moves discarded | **% thrown away** | median | p90 |
+|---|---|---|---|---|---|---|---|
+| 75 | B0 | 767/768 | 57,575 | 500 | **1 %** | 73 | 86 |
+| 76 | B0 | 768/768 | 59,009 | 0 | **0 %** | 75 | 89 |
+| 77 | A0 | 709/768 | 63,578 | 29,500 | 32 % | 74 | 125 |
+| 78 | A0 | 685/768 | 65,274 | 41,500 | 39 % | 78 | 144 |
+| 79 | A0 | 606/768 | 68,797 | 81,000 | **54 %** | 95 | 187 |
+| 80 | A0 | 612/768 | 69,132 | 78,000 | **53 %** | 91 | 193 |
+
+Trial 1 went further, reaching **74 %** discarded by its sixth A0 iteration.
+
+So this is not a dataset missing a few games. Within four iterations **more than
+half of every move played is thrown away**, and it is the long half — selected,
+precisely, for being the experience the network most needs in order to stop
+producing it. B0 discards 0–2 % by comparison.
+
 ### 5.10 The replay store had to be bounded first
 
 The run could not have finished a six-hour block. `PersistentReplayStore` is
