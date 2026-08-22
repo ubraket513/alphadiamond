@@ -3,11 +3,16 @@
 #include <QDir>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
+#include <mutex>
 #include <vector>
 
 #include "soo/board.hpp"
@@ -16,6 +21,19 @@
 #ifdef DIAMOND_QT_HAS_SOO
 #include "diamond_model/soo_evaluator.hpp"
 #include "soo/mcts.hpp"
+
+namespace {
+void configure_torch_cpu() {
+    static std::once_flag configured;
+    std::call_once(configured, [] {
+        bool ok = false;
+        const int requested = qEnvironmentVariableIntValue("DIAMOND_TORCH_THREADS", &ok);
+        const int threads = ok && requested > 0 ? requested : 1;
+        torch::set_num_threads(threads);
+        torch::set_num_interop_threads(1);
+    });
+}
+}
 #endif
 
 GeometryModel::GeometryModel(QObject* parent) : QObject(parent) {}
@@ -115,6 +133,14 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     connect(ai_worker_, &NativeAiWorker::resultReady, this,
             [this](quint64 generation, int action) {
                 if (generation != generation_ || !ai_thinking_) return;
+                std::vector<int32_t> legal;
+                soo::legal_action_ids(state_, legal);
+                if (std::find(legal.begin(), legal.end(), action) == legal.end()) {
+                    ai_thinking_ = false;
+                    qWarning() << "native AI returned an illegal action" << action;
+                    Q_EMIT changed();
+                    return;
+                }
                 ai_thinking_ = false;
                 selected_position_ = -1;
                 legal_actions_.clear();
@@ -142,6 +168,7 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     match_.count = 2;
     match_.players[0] = soo::PlayerSpec{1, 2, 5};
     match_.players[1] = soo::PlayerSpec{2, 0, 3};
+    ai_seats_ = {2};
     state_.current_player = 1;
     loadTopology();
     if (soo::mutable_topology().configured) {
@@ -152,6 +179,14 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
         }
     }
     refreshModels();
+}
+
+NativeController::~NativeController() { cancelSearch(); }
+
+void NativeController::cancelSearch() {
+    ++generation_;
+    if (ai_worker_) ai_worker_->cancel();
+    ai_thinking_ = false;
 }
 
 QUrl NativeController::defaultSaveDir() const {
@@ -177,7 +212,77 @@ QString NativeController::playerName(uint8_t id) const { return QStringLiteral("
 QString NativeController::currentPlayerName() const { return playerName(state_.current_player); }
 QString NativeController::currentPlayerColor() const { return playerColor(state_.current_player); }
 
-QVariantList NativeController::turnOrder() const { return {1, 2}; }
+QVariantList NativeController::turnOrder() const {
+    QVariantList result;
+    for (const auto& player : match_.players) if (player.id != 0) result.push_back(player.id);
+    return result;
+}
+
+QVariantList NativeController::aiSeats() const { return ai_seats_; }
+
+void NativeController::startMatch(const QVariantList& order, const QVariantList& aiSeats) {
+    if (order.size() < 2 || order.size() > 3) return;
+    cancelSearch();
+    match_ = {};
+    match_.count = static_cast<uint8_t>(order.size());
+    const int camps2[2] = {2, 0};
+    const int targets2[2] = {5, 3};
+    const int camps3[3] = {2, 1, 0};
+    const int targets3[3] = {5, 4, 3};
+    for (int i = 0; i < match_.count; ++i) {
+        const int id = order.at(i).toInt();
+        const int camp = match_.count == 2 ? camps2[i] : camps3[i];
+        const int target = match_.count == 2 ? targets2[i] : targets3[i];
+        match_.players[i] = soo::PlayerSpec{static_cast<uint8_t>(id),
+                                             static_cast<uint8_t>(camp),
+                                             static_cast<uint8_t>(target)};
+    }
+    ai_seats_ = aiSeats;
+    state_ = {};
+    state_.current_player = static_cast<uint8_t>(order.at(0).toInt());
+    state_history_.clear(); history_.clear(); selected_position_ = -1; legal_actions_.clear();
+    for (int i = 0; i < match_.count; ++i)
+        for (const auto position : soo::topology().camp_positions[match_.players[i].camp])
+            state_.occupancy[position] = match_.players[i].id;
+    refreshModels(); Q_EMIT changed();
+}
+
+void NativeController::saveGame(const QUrl& path) {
+    if (!path.isLocalFile()) return;
+    QJsonObject root;
+    root["version"] = 1;
+    root["playerCount"] = match_.count;
+    root["currentPlayer"] = state_.current_player;
+    root["turnNumber"] = state_.turn_number;
+    QJsonArray order, ai, occupancy;
+    for (const auto& p : match_.players) if (p.id != 0) order.push_back(p.id);
+    for (const auto& seat : ai_seats_) ai.push_back(seat.toInt());
+    for (const auto piece : state_.occupancy) occupancy.push_back(piece);
+    root["order"] = order; root["aiSeats"] = ai; root["occupancy"] = occupancy;
+    QFile file(path.toLocalFile());
+    if (file.open(QIODevice::WriteOnly)) file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+void NativeController::loadGame(const QUrl& path) {
+    if (!path.isLocalFile()) return;
+    QFile file(path.toLocalFile());
+    if (!file.open(QIODevice::ReadOnly)) return;
+    const auto root = QJsonDocument::fromJson(file.readAll()).object();
+    const auto orderJson = root.value("order").toArray();
+    const auto aiJson = root.value("aiSeats").toArray();
+    QVariantList order, ai;
+    for (const auto value : orderJson) order.push_back(value.toInt());
+    for (const auto value : aiJson) ai.push_back(value.toInt());
+    if (order.size() < 2 || order.size() > 3) return;
+    startMatch(order, ai);
+    const auto occupancy = root.value("occupancy").toArray();
+    if (occupancy.size() == soo::kBoardSize) {
+        for (int i = 0; i < soo::kBoardSize; ++i) state_.occupancy[i] = static_cast<uint8_t>(occupancy.at(i).toInt());
+        state_.current_player = static_cast<uint8_t>(root.value("currentPlayer").toInt(state_.current_player));
+        state_.turn_number = root.value("turnNumber").toInt(0);
+        refreshModels(); Q_EMIT changed();
+    }
+}
 
 void NativeController::loadTopology() {
     const QString root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
@@ -247,7 +352,7 @@ void NativeController::selectPosition(int position) {
                 {"moveText", QStringLiteral("%1 → %2").arg(selected_position_).arg(position)},
                 {"pathText", QStringLiteral("%1 → %2").arg(selected_position_).arg(position)}, {"hopCount", 1}});
             selected_position_ = -1;
-            if (state_.current_player == 2 && !isGameOver()) {
+            if (match_.count == 2 && ai_seats_.contains(state_.current_player) && !isGameOver()) {
                 ai_thinking_ = true;
                 const quint64 generation = ++generation_;
                 const soo::State search_state = state_;
@@ -255,6 +360,7 @@ void NativeController::selectPosition(int position) {
                 const QString model_root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
                 ai_worker_->start(generation, [search_state, search_match, model_root] {
 #ifdef DIAMOND_QT_HAS_SOO
+                    configure_torch_cpu();
                     diamond_model::SooModel model(128, 6);
                     model->load_weights(model_root.toStdString() + "/weights");
                     diamond_model::SooEvaluator evaluator(model);
@@ -320,4 +426,31 @@ bool NativeController::workerSmoke() {
     ai_worker_->cancel();
     while (ai_worker_->isRunning()) QThread::msleep(5);
     return !ai_worker_->isRunning();
+}
+
+bool NativeController::sooSmoke() {
+#ifdef DIAMOND_QT_HAS_SOO
+    if (!nativeRulesReady()) return false;
+    try {
+        configure_torch_cpu();
+        diamond_model::SooModel model(128, 6);
+        const QString root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
+        model->load_weights(root.toStdString() + "/weights");
+        diamond_model::SooEvaluator evaluator(model);
+        soo::MCTSConfig config;
+        config.simulations = 2;
+        config.c_puct = 1.5;
+        config.dirichlet_epsilon = 0.0;
+        soo::MCTS2P search(match_, evaluator, config);
+        const auto result = search.run(state_, 0.0, false);
+        return result.selected_action >= 0 &&
+               std::find(result.root_actions.begin(), result.root_actions.end(),
+                         result.selected_action) != result.root_actions.end();
+    } catch (const std::exception& error) {
+        qWarning() << "Soo smoke failed:" << error.what();
+        return false;
+    }
+#else
+    return false;
+#endif
 }

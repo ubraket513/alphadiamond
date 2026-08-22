@@ -87,6 +87,7 @@ class NativeController final : public QObject {
 
   public:
     explicit NativeController(QObject* parent = nullptr);
+    ~NativeController() override;
 
     QObject* boardModel() const { return board_model_; }
     QObject* pieceModel() const { return piece_model_; }
@@ -120,7 +121,7 @@ class NativeController final : public QObject {
     QUrl defaultSaveDir() const;
     QVariantList standings() const;
     QVariantList turnOrder() const;
-    QVariantList aiSeats() const { return {2}; }
+    QVariantList aiSeats() const;
     bool nativeRulesReady() const { return soo::mutable_topology().configured; }
     bool aiThinking() const { return ai_thinking_; }
 
@@ -133,11 +134,12 @@ class NativeController final : public QObject {
     Q_INVOKABLE void previewSound() {}
     Q_INVOKABLE void setSoundEnabled(bool) {}
     Q_INVOKABLE void setSoundVolume(double) {}
-    Q_INVOKABLE void startMatch(const QVariantList&, const QVariantList&) {}
-    Q_INVOKABLE void saveGame(const QUrl&) {}
-    Q_INVOKABLE void loadGame(const QUrl&) {}
+    Q_INVOKABLE void startMatch(const QVariantList& order, const QVariantList& aiSeats);
+    Q_INVOKABLE void saveGame(const QUrl& path);
+    Q_INVOKABLE void loadGame(const QUrl& path);
     Q_INVOKABLE bool gameSmoke();
     Q_INVOKABLE bool workerSmoke();
+    Q_INVOKABLE bool sooSmoke();
 
   Q_SIGNALS:
     void changed();
@@ -145,6 +147,7 @@ class NativeController final : public QObject {
   private:
     void loadTopology();
     void refreshModels();
+    void cancelSearch();
     QString playerColor(uint8_t id) const;
     QString playerName(uint8_t id) const;
 
@@ -153,6 +156,7 @@ class NativeController final : public QObject {
     QVector<soo::State> state_history_;
     QVariantList history_;
     QVector<int32_t> legal_actions_;
+    QVariantList ai_seats_;
     int selected_position_ = -1;
     bool ai_thinking_ = false;
     quint64 generation_ = 0;

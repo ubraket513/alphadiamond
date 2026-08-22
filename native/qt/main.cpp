@@ -42,6 +42,8 @@ int main(int argc, char* argv[]) {
             return controller.gameSmoke() ? 0 : 1;
         if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--worker-smoke"))
             return controller.workerSmoke() ? 0 : 1;
+        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--soo-smoke"))
+            return controller.sooSmoke() ? 0 : 1;
         if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--smoke")) std::_Exit(0);
     }
     return app.exec();
