@@ -1,0 +1,15 @@
+# Ignore an entire directory and all its subfolders
+tests/** linguist-vendored
+docs/** linguist-vendored
+blueprint/** linguist-vendored
+.vscode/** linguist-vendored
+.github/** linguist-vendored
+
+# Ignore specific files
+# path/to/large-file.js linguist-vendored
+# Gemfile linguist-vendored
+
+# Ignore all files matching a specific extension (e.g., Jupyter Notebooks or HTML)
+# *.ipynb linguist-vendored
+# *.html linguist-detectable=false
+# *.css linguist-detectable=false
