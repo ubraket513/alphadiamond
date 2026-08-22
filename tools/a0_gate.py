@@ -141,6 +141,17 @@ def main() -> int:
         help="Search budget from --late-move-threshold onward; 0 disables adaptive search.",
     )
     parser.add_argument("--late-move-threshold", type=int, default=0)
+    parser.add_argument(
+        "--repeat-window",
+        type=int,
+        default=0,
+        help=(
+            "Spend --simulations-late only on moves whose position already "
+            "occurred within this many plies. 0 disables. Targets what the "
+            "abort audit found -- a short-cycle attractor -- rather than "
+            "lateness, which pays for every long game whether stuck or not."
+        ),
+    )
     parser.add_argument("--lanes", type=int, default=64)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--out", type=Path, default=None, help="JSONL time series to append to")
@@ -203,7 +214,11 @@ def main() -> int:
         f"sims={mcts.simulations} eps={mcts.dirichlet_epsilon} "
         f"T={selfplay.temperature}/{selfplay.temperature_moves} max_moves={max_moves} "
         + (
-            f"adaptive={args.simulations_late}@{args.late_move_threshold} "
+            (
+                f"adaptive={args.simulations_late}@repeat<={args.repeat_window}ply "
+                if args.repeat_window
+                else f"adaptive={args.simulations_late}@move{args.late_move_threshold} "
+            )
             if args.simulations_late
             else ""
         )
@@ -221,9 +236,11 @@ def main() -> int:
         max_wait_us=int(config["workers"].get("native_max_wait_us", 500)),
         simulations_late=args.simulations_late,
         late_move_threshold=args.late_move_threshold,
+        repeat_window=args.repeat_window,
     )
 
     per_seed = []
+    pool_metrics: list[dict] = []
     all_episodes = []
     started = time.perf_counter()
     for seed in seeds:
@@ -243,6 +260,7 @@ def main() -> int:
             for index in range(args.games)
         )
         episodes = pool.run(jobs)
+        pool_metrics.append(dict(pool.metrics))
         all_episodes.extend(episodes)
         row = _report(f"seed={seed}", episodes)
         per_seed.append(row)
@@ -284,6 +302,14 @@ def main() -> int:
         f"{elapsed:.1f}s = {aggregate['samples'] / elapsed:,.0f}/s",
         flush=True,
     )
+    boosted = sum(m.get("boosted_moves", 0) for m in pool_metrics)
+    total_moves = sum(m.get("moves", 0) for m in pool_metrics)
+    if args.simulations_late:
+        print(
+            f"  trigger: {boosted:,} of {total_moves:,} moves boosted to "
+            f"{args.simulations_late} sims = {boosted / max(1, total_moves) * 100:.1f}%",
+            flush=True,
+        )
     for name, ok in checks.items():
         print(f"    {'ok  ' if ok else 'FAIL'} {name}")
     print(f"[gate] {'PASS' if passed else 'FAIL'}", flush=True)

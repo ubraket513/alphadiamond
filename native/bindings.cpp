@@ -444,6 +444,7 @@ class Game {
         result["evaluations"] = metrics.evaluations;
         result["batches"] = metrics.batches;
         result["moves"] = metrics.moves;
+        result["boosted_moves"] = metrics.boosted_moves;
         result["wall_seconds"] = metrics.wall_seconds;
         result["evaluator_seconds"] = metrics.evaluator_seconds;
         result["worker_busy_seconds"] = metrics.worker_busy_seconds;
@@ -610,20 +611,23 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def(py::init([](int lanes, int threads, int max_batch, int max_wait_us, int simulations,
                          int max_moves, double temperature, int temperature_moves,
                          double dirichlet_alpha, double dirichlet_epsilon,
-                         int simulations_late, int late_move_threshold) {
-                 return EpisodeConfig{lanes,           threads,
-                                      max_batch,       max_wait_us,
-                                      simulations,     max_moves,
-                                      temperature,     temperature_moves,
-                                      dirichlet_alpha, dirichlet_epsilon,
-                                      simulations_late, late_move_threshold};
+                         int simulations_late, int late_move_threshold,
+                         int repeat_window) {
+                 return EpisodeConfig{lanes,            threads,
+                                      max_batch,        max_wait_us,
+                                      simulations,      max_moves,
+                                      temperature,      temperature_moves,
+                                      dirichlet_alpha,  dirichlet_epsilon,
+                                      simulations_late, late_move_threshold,
+                                      repeat_window};
              }),
              py::arg("lanes") = 0,
              py::arg("threads") = 4, py::arg("max_batch") = 32, py::arg("max_wait_us") = 2000,
              py::arg("simulations") = 64, py::arg("max_moves") = 2000,
              py::arg("temperature") = 1.0, py::arg("temperature_moves") = 20,
              py::arg("dirichlet_alpha") = 0.3, py::arg("dirichlet_epsilon") = 0.25,
-             py::arg("simulations_late") = 0, py::arg("late_move_threshold") = 0);
+             py::arg("simulations_late") = 0, py::arg("late_move_threshold") = 0,
+             py::arg("repeat_window") = 0);
 
     py::class_<SchedulerConfig>(m, "SchedulerConfig")
         .def(py::init([](int games, int threads, int max_batch, int max_wait_us, int simulations,

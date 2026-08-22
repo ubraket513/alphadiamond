@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <chrono>
 #include <exception>
 #include <condition_variable>
@@ -400,6 +401,18 @@ struct EpisodeLane {
     EvalOutcome outcome;
     // Which job this lane is currently playing.  A lane outlives its game.
     size_t job_index = 0;
+    // Dynamics keys of the recent plies, newest last, for the repetition
+    // trigger.  Bounded by repeat_window, so this is a handful of integers.
+    std::deque<uint64_t> recent;
+
+    void remember(uint64_t key, size_t window) {
+        recent.push_back(key);
+        while (recent.size() > window) recent.pop_front();
+    }
+
+    bool seen_recently(uint64_t key) const {
+        return std::find(recent.begin(), recent.end(), key) != recent.end();
+    }
 };
 
 }  // namespace
@@ -421,10 +434,16 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     const auto temperature_for = [&config](int move_count) {
         return move_count < config.temperature_moves ? config.temperature : 0.0;
     };
-    const auto simulations_for = [&config](int move_count) {
-        return (config.simulations_late > 0 && move_count >= config.late_move_threshold)
-                   ? config.simulations_late
-                   : config.simulations;
+    // Repetition wins over lateness when both are configured: it is the more
+    // specific signal, and the audit says it is the right one.
+    const auto simulations_for = [&config](const EpisodeLane& lane, uint64_t key,
+                                           int move_count) {
+        if (config.simulations_late <= 0) return config.simulations;
+        if (config.repeat_window > 0) {
+            return lane.seen_recently(key) ? config.simulations_late : config.simulations;
+        }
+        return move_count >= config.late_move_threshold ? config.simulations_late
+                                                        : config.simulations;
     };
 
     std::vector<Episode> episodes(jobs.size());
@@ -455,8 +474,13 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                     lane.state.finish_order.begin() + lane.state.finished_count);
                 continue;
             }
+            lane.recent.clear();
+            const uint64_t key = dynamics_key(lane.state);
             lane.session.reseed(lane.game_seed);
-            lane.session.set_simulations(simulations_for(0));
+            lane.session.set_simulations(simulations_for(lane, key, 0));
+            if (config.repeat_window > 0) {
+                lane.remember(key, static_cast<size_t>(config.repeat_window));
+            }
             lane.session.begin(lane.state, temperature_for(0), false);
             return true;
         }
@@ -475,6 +499,9 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     std::mutex metrics_mutex;
     std::atomic<bool> stop{false};
     std::atomic<int> retired{0};
+    // How often the boosted search budget fired.  Reported rather than
+    // inferred: the trigger only earns its complexity if this stays small.
+    std::atomic<uint64_t> boosted{0};
 
     std::exception_ptr failure;
     std::mutex failure_mutex;
@@ -572,8 +599,16 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                     continue;
                 }
 
+                const uint64_t key = dynamics_key(lane.state);
+                const int budget = simulations_for(lane, key, lane.move_count);
+                if (budget > config.simulations) {
+                    boosted.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (config.repeat_window > 0) {
+                    lane.remember(key, static_cast<size_t>(config.repeat_window));
+                }
                 lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
-                lane.session.set_simulations(simulations_for(lane.move_count));
+                lane.session.set_simulations(budget);
                 lane.session.begin(lane.state, temperature_for(lane.move_count), false);
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);
@@ -631,6 +666,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     for (const Episode& episode : episodes) {
         metrics.moves += static_cast<uint64_t>(episode.move_count);
     }
+    metrics.boosted_moves = boosted.load();
     return episodes;
 }
 

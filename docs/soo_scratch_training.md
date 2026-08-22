@@ -612,3 +612,52 @@ search where it is needed rather than to hope the network learns to do without
 it, and the longer-term answer is a better network — but as an Elo/hour
 experiment, not as a patch over a broken loop, because the loop at 128 is not
 broken.
+
+### 6.6 The repetition trigger beats flat-128 on every axis
+
+The audit said the failure is a short-cycle attractor, so the trigger keys on
+repetition rather than lateness: base 64 simulations, 128 only when the current
+position already occurred within the last 8 plies of that game.
+
+Identity is the **physical** state — occupancy, side to move, status and finish
+order — hashed by `dynamics_key`. Deliberately not `State::operator==`, which
+includes `turn_number` and so can never report a repetition; and deliberately
+not the encoded features, which canonicalise orientation and player channels
+(§6.2).
+
+All three configurations, 768 fresh games, same actor, same seeds:
+
+| configuration | completion | **discarded** | terminal samples/s | moves boosted |
+|---|---|---|---|---|
+| flat 64 | 93.2 % | 28.7 % | 473 | — |
+| flat 128 | 97.8 % | 11.6 % | 247 | 100 % |
+| **repetition trigger** | **98.0 %** | **9.6 %** | **392** | **5.1 %** |
+
+It matches flat-128's completion, **beats** it on censoring, and runs at **1.59x
+its throughput** — while paying the extra search on one move in twenty. The
+signal was worth targeting: the audit's short-cycle finding translated directly
+into a trigger that spends 5 % of the compute flat-128 spends and gets more.
+
+### 6.7 A correction: the earlier yield figures were measured wrong
+
+§6.3's throughput column is not comparable and should not be used. Those runs
+were configured with `games == lanes`, which disables the job queue and
+reintroduces the straggler tail from §12.2 — the run finishes at the pace of its
+slowest game while most lanes sit idle. The effect scales with game length, so
+it penalised the higher simulation counts hardest and made the extra search look
+far more expensive than it is:
+
+| configuration | yield as first measured (`games == lanes`) | yield measured properly (768 games, 256 lanes) |
+|---|---|---|
+| flat 64 | 176/s | **473/s** |
+| flat 128 | 97/s | **247/s** |
+
+Completion and discarded fraction are unaffected — they are rates, and the
+scheduling does not change which games finish. Only the throughput column was
+wrong, and it was wrong by 2.5x.
+
+The lesson is one this project has now paid for twice: **`games_per_iteration`
+must exceed `native_lanes`**, in measurement harnesses exactly as in production.
+The gate's default of 20 games per seed against 64 lanes has the same flaw, which
+does not matter for the completion rate it exists to report but would matter the
+moment anyone read a timing off it.
