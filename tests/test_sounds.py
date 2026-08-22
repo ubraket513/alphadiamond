@@ -8,12 +8,28 @@ built without sound never touches an audio backend.
 from __future__ import annotations
 
 import pytest
-from conftest import pump
 
+from conftest import pump
 from diamond.agents.random_agent import RandomAgent
 from diamond.app.controller import GameController, Phase
-from diamond.app.sounds import MOVE_SOUND, MovePlayer
+from diamond.app.sounds import MOVE_SOUND, MovePlayer, QMediaPlayer
 from diamond.game.state import DEFAULT_PLAYERS
+
+needs_audio = pytest.mark.skipif(
+    QMediaPlayer is None,
+    reason="PySide6 build has no QtMultimedia; audio is optional by design",
+)
+"""Skip, do not fail, when the build cannot do audio at all.
+
+:mod:`diamond.app.sounds` states the contract these tests exist to protect: a
+machine with no device, no codec or a locked-down backend must still play a
+full match.  A build without QtMultimedia is exactly that machine, so a test
+that *fails* there is asserting the opposite of the design.
+
+Skipping is not a licence to lose the coverage silently.  CI installs the
+backend and then asserts it imported, so a skip on a runner is a red build at
+that step rather than five quiet skips here.
+"""
 
 
 def test_the_move_sound_ships_with_the_package():
@@ -27,12 +43,14 @@ def _loaded(qapp, player):
     return player
 
 
+@needs_audio
 def test_player_loads_without_error(qapp):
     player = _loaded(qapp, MovePlayer())
     assert player.available
     assert player.status == ""
 
 
+@needs_audio
 def test_play_before_the_media_loads_is_queued_not_dropped(qapp):
     """setSource() is asynchronous. A move confirmed in the first moments of a
     match used to be swallowed; the request is now replayed once loaded."""
@@ -46,6 +64,7 @@ def test_play_before_the_media_loads_is_queued_not_dropped(qapp):
     assert pump(qapp, lambda: any("Playing" in s for s in states), timeout=5.0)
 
 
+@needs_audio
 def test_muting_silences_playback(qapp):
     player = _loaded(qapp, MovePlayer())
     player.set_muted(True)
@@ -68,6 +87,7 @@ def test_controllers_are_silent_unless_sound_is_requested(qapp):
         controller.shutdown()
 
 
+@needs_audio
 def test_sound_can_be_toggled_on_a_sounding_controller(qapp):
     controller = GameController(
         DEFAULT_PLAYERS,
@@ -181,7 +201,7 @@ def _double_jump_position(board):
                     break
                 chain.append(hole)
             if len(chain) == 5:
-                h0, h1, h2, h3, h4 = chain
+                h0, h1, _h2, h3, h4 = chain
                 return {h0: 1, h1: 2, h3: 2}, h0, h4
     raise AssertionError("no straight 5-hole corridor on the board")
 
@@ -235,6 +255,7 @@ def test_volume_round_trips_and_clamps(qapp):
     assert player.volume == 0.0
 
 
+@needs_audio
 def test_raising_the_volume_unmutes(qapp, board):
     controller = GameController(
         DEFAULT_PLAYERS,
