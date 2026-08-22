@@ -46,17 +46,30 @@ def load_model() -> SooModel:
     return model
 
 
-def forward_cost(model: SooModel, batch: int, repeats: int = 20) -> tuple[float, float]:
-    """Isolated per-batch cost of the two paths, in milliseconds."""
-    features = torch.zeros(batch, 73, 4)
+def forward_cost(
+    model: SooModel, batch: int, device: str = "cpu", repeats: int = 20
+) -> tuple[float, float]:
+    """Isolated per-batch cost of the two paths, in milliseconds.
+
+    On CUDA the launch is asynchronous, so every timed region is bracketed by a
+    synchronize. Without it this measures queueing, not the forward.
+    """
+    torch_device = torch.device(device)
+    features = torch.zeros(batch, 73, 4, device=torch_device)
+
+    def sync() -> None:
+        if torch_device.type == "cuda":
+            torch.cuda.synchronize()
+
     timings = []
     for value_only in (True, False):
-        for _ in range(3):  # warm up
+        for _ in range(10):  # warm up; CUDA needs more than CPU does
             with torch.inference_mode():
                 if value_only:
                     model.value_head(model.trunk(features).mean(dim=1))
                 else:
                     model(features)
+        sync()
         start = time.perf_counter()
         for _ in range(repeats):
             with torch.inference_mode():
@@ -64,6 +77,7 @@ def forward_cost(model: SooModel, batch: int, repeats: int = 20) -> tuple[float,
                     model.value_head(model.trunk(features).mean(dim=1))
                 else:
                     model(features)
+        sync()
         timings.append((time.perf_counter() - start) / repeats * 1000.0)
     return timings[0], timings[1]
 
@@ -73,6 +87,7 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--simulations", type=int, default=64)
     parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--device", default="cpu", help="torch device for the model, e.g. cuda:0")
     args = parser.parse_args()
 
     torch.set_num_threads(1)  # the evaluator is one thread; keep it that way
@@ -87,13 +102,16 @@ def main() -> None:
         status=0,
         finish_order=[],
     )
-    model = load_model()
+    model = load_model().to(torch.device(args.device))
 
-    print(f"checkpoint: {CHECKPOINT.name}   torch threads: {torch.get_num_threads()}")
+    print(
+        f"checkpoint: {CHECKPOINT.name}   torch threads: {torch.get_num_threads()}   "
+        f"device: {args.device}"
+    )
     print("\n--- model forward, isolated (ms/batch) ---")
     print(f"{'batch':>6} {'value_only':>11} {'full':>8} {'tail cost':>10}")
     for batch in (16, 32, 64, 128):
-        value_only, full = forward_cost(model, batch)
+        value_only, full = forward_cost(model, batch, args.device)
         print(f"{batch:>6} {value_only:>11.3f} {full:>8.3f} {full / value_only:>9.2f}x")
 
     # The transferable measurement. The CPU forward here is ~30x the GPU host's
@@ -131,7 +149,7 @@ def main() -> None:
     for mode, factory in (("value_only", value_only_callback), ("policy_value", policy_value_callback)):
         for cap in (32, 64):
             calls = {"n": 0}
-            inner = factory(model, device="cpu")
+            inner = factory(model, device=args.device)
 
             if mode == "value_only":
                 def wrapped(features, _inner=inner, _calls=calls):

@@ -1,0 +1,10 @@
+run=P5090-w24-g48
+workers=24
+train_steps=2
+config=az-bench/configs/soo-rtx5060-w48-g48.json
+source=/tmp/claude-0/-workspace-alphadiamond/646f78a8-6d87-4473-9b33-34bfd0a872f2/scratchpad/pinned-src/diamond/__init__.py
+checkpoint=/workspace/alphadiamond/runtime/runs/soo/cpu8h-soo-20260819/latest.pt
+checkpoint_sha256=1634b901e213b065c107eea734b8c172c14babb1c2565352203961e86ea165af
+git_head=e1d4cfd93a1ea7a77a11e9d86c429b0e64117585
+git_dirty=0
+started_at=2026-08-22T08:38:04+00:00
