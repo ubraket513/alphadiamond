@@ -540,10 +540,11 @@ def main() -> int:
         completed = aborted = new_samples = 0
         move_counts: list[int] = []
         iteration_aborts: dict[str, int] = {}
+        # One manifest write for the whole iteration, not one per episode.
+        # ingest_episodes is idempotent on game_id exactly as ingest_episode is,
+        # so a resumed iteration still cannot double-count what it persisted.
+        replay.ingest_episodes(episodes)
         for episode in episodes:
-            # ingest_episode is idempotent on game_id, so a resumed iteration
-            # cannot double-count an episode it already persisted.
-            replay.ingest_episode(episode)
             if episode.completed:
                 completed += 1
                 new_samples += len(episode.samples)
@@ -561,6 +562,11 @@ def main() -> int:
         state.data["aborted"] += aborted
         state.data["samples_generated"] += new_samples
         state.data["move_counts"].extend(move_counts)
+
+        # Chunks older than the capacity window are read and immediately evicted
+        # by every load_buffer, so they cost disk and time and can never be
+        # sampled.  Unpruned, this run grows ~79 MB an iteration.
+        pruned = replay.prune_to_capacity()
 
         # ---- training ----
         replay_size = len(replay.load_buffer())
@@ -641,6 +647,7 @@ def main() -> int:
             "train_s": round(train_s, 2),
             "elapsed_s": round(elapsed, 1),
             "checkpoint": str(archive) if archive else None,
+            "replay_chunks_pruned": pruned,
             "throughput": throughput_summary(
                 attempted=len(episodes),
                 completed=completed,

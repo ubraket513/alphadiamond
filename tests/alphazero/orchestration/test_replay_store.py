@@ -193,3 +193,107 @@ def test_orphan_chunk_before_manifest_is_ignored_and_recoverable(tmp_path: Path)
     assert restarted.manifest.game_ids == ()
     assert len(restarted.load_buffer()) == 0
     assert (restarted.chunks_path / "orphan.json").exists()
+
+
+def test_bulk_ingest_writes_the_manifest_once(tmp_path: Path, monkeypatch) -> None:
+    """The reason this method exists.
+
+    ``ingest_episode`` rewrites the whole manifest per call.  At 768 games an
+    iteration against a manifest that had grown to 1.4 MB, that is about a
+    gigabyte of manifest writes to record what one write records.
+    """
+    spec = _spec()
+    store = PersistentReplayStore(tmp_path, spec, capacity=100, seed=3)
+    writes = {"n": 0}
+    original = store._write_manifest
+
+    def counted(manifest):
+        writes["n"] += 1
+        return original(manifest)
+
+    monkeypatch.setattr(store, "_write_manifest", counted)
+    ingested = store.ingest_episodes(
+        _episode(spec, f"game-{index}", markers=(index + 1,)) for index in range(8)
+    )
+    assert ingested == 8
+    assert writes["n"] == 1
+    assert len(store.manifest.chunks) == 8
+
+
+def test_bulk_ingest_matches_one_by_one_ingest(tmp_path: Path) -> None:
+    """Same semantics, including duplicates and the resulting buffer."""
+    spec = _spec()
+    episodes = [_episode(spec, f"game-{index}", markers=(index + 1,)) for index in range(5)]
+
+    single = PersistentReplayStore(tmp_path / "a", spec, capacity=100, seed=3)
+    for episode in episodes:
+        single.ingest_episode(episode)
+    bulk = PersistentReplayStore(tmp_path / "b", spec, capacity=100, seed=3)
+    bulk.ingest_episodes(episodes)
+
+    assert single.manifest.chunks == bulk.manifest.chunks
+    assert single.manifest.game_ids == bulk.manifest.game_ids
+    assert len(single.load_buffer()) == len(bulk.load_buffer())
+    # A repeat is a no-op on both paths.
+    assert bulk.ingest_episodes(episodes) == 0
+
+
+def test_bulk_ingest_rejects_a_conflicting_duplicate(tmp_path: Path) -> None:
+    spec = _spec()
+    store = PersistentReplayStore(tmp_path, spec, capacity=100, seed=3)
+    store.ingest_episode(_episode(spec, "game-0", markers=(1,)))
+    with pytest.raises(ReplayStoreError, match="conflicting duplicate"):
+        store.ingest_episodes([_episode(spec, "game-0", markers=(9,))])
+
+
+def test_pruning_drops_only_chunks_the_buffer_cannot_reach(tmp_path: Path) -> None:
+    """The safety property: pruning must not change what ``load_buffer`` returns.
+
+    ``load_buffer`` extends a bounded buffer in manifest order, so only the
+    newest ``capacity`` samples survive.  Everything older is read and evicted
+    on every iteration -- work and disk spent on data that cannot be sampled.
+    """
+    spec = _spec()
+    store = PersistentReplayStore(tmp_path, spec, capacity=10, seed=3)
+    # 12 episodes of 2 samples each: 24 samples against a capacity of 10.
+    store.ingest_episodes(
+        _episode(spec, f"game-{index}", markers=(index + 1, index + 2))
+        for index in range(12)
+    )
+    before = [tuple(s.sparse_policy) for s in store.load_buffer().samples]
+    assert len(store.manifest.chunks) == 12
+
+    removed = store.prune_to_capacity()
+    assert removed > 0
+    assert len(store.manifest.chunks) == 12 - removed
+    after = [tuple(s.sparse_policy) for s in store.load_buffer().samples]
+    assert after == before, "pruning changed the sampled buffer"
+
+    # The dropped files are actually gone, which is the point.
+    assert len(list((tmp_path).rglob("chunks/*.json"))) == 12 - removed
+
+
+def test_pruning_survives_a_reopen(tmp_path: Path) -> None:
+    """A pruned store must still load: the manifest may not reference a file
+    that was deleted."""
+    spec = _spec()
+    store = PersistentReplayStore(tmp_path, spec, capacity=10, seed=3)
+    store.ingest_episodes(
+        _episode(spec, f"game-{index}", markers=(index + 1, index + 2))
+        for index in range(12)
+    )
+    expected = [tuple(s.sparse_policy) for s in store.load_buffer().samples]
+    store.prune_to_capacity()
+
+    reopened = PersistentReplayStore(tmp_path, spec, capacity=10, seed=3)
+    assert [tuple(s.sparse_policy) for s in reopened.load_buffer().samples] == expected
+
+
+def test_pruning_is_a_noop_below_capacity(tmp_path: Path) -> None:
+    spec = _spec()
+    store = PersistentReplayStore(tmp_path, spec, capacity=1000, seed=3)
+    store.ingest_episodes(
+        _episode(spec, f"game-{index}", markers=(index + 1,)) for index in range(4)
+    )
+    assert store.prune_to_capacity() == 0
+    assert len(store.manifest.chunks) == 4
