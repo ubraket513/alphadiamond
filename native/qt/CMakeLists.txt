@@ -1,7 +1,16 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
 
+if(DIAMOND_BUILD_QT_SOO)
+    find_package(Torch REQUIRED)
+    if(NOT TARGET alphadiamond::diamond_model)
+        message(FATAL_ERROR "DIAMOND_BUILD_QT_SOO requires DIAMOND_BUILD_LIBTORCH_PROBE=ON")
+    endif()
+endif()
+
 qt_add_executable(diamond_qt
     main.cpp
+    ai_worker.cpp
+    ai_worker.hpp
     native_controller.cpp
     native_controller.hpp
 )
@@ -41,6 +50,11 @@ target_link_libraries(diamond_qt PRIVATE
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2
     alphadiamond::soo_core alphadiamond::soo_search
 )
+if(DIAMOND_BUILD_QT_SOO)
+    target_link_libraries(diamond_qt PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
+    target_include_directories(diamond_qt PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_compile_definitions(diamond_qt PRIVATE DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE)
+endif()
 target_compile_features(diamond_qt PRIVATE cxx_std_20)
 set_target_properties(diamond_qt PROPERTIES AUTOMOC ON WIN32_EXECUTABLE TRUE)
 

@@ -6,6 +6,7 @@ option(DIAMOND_BUILD_PYBIND "Build the optional pybind11 extension" OFF)
 option(DIAMOND_BUILD_NATIVE_TESTS "Build portable native smoke tests" ON)
 option(DIAMOND_BUILD_LIBTORCH_PROBE "Build the Q2 LibTorch parity probe" OFF)
 option(DIAMOND_BUILD_QT "Build the native Qt/QML shell" OFF)
+option(DIAMOND_BUILD_QT_SOO "Build Qt shell with native LibTorch Soo search" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +18,6 @@ find_package(Threads REQUIRED)
 
 add_subdirectory(native)
 
-if(DIAMOND_BUILD_QT)
+if(DIAMOND_BUILD_QT OR DIAMOND_BUILD_QT_SOO)
     add_subdirectory(native/qt)
 endif()

@@ -38,6 +38,10 @@ int main(int argc, char* argv[]) {
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) return 1;
     for (int i = 1; i < argc; ++i) {
+        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--game-smoke"))
+            return controller.gameSmoke() ? 0 : 1;
+        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--worker-smoke"))
+            return controller.workerSmoke() ? 0 : 1;
         if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--smoke")) std::_Exit(0);
     }
     return app.exec();

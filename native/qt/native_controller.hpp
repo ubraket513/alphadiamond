@@ -5,6 +5,10 @@
 #include <QObject>
 #include <QUrl>
 #include <QVariantList>
+#include <QVector>
+
+#include "soo/state.hpp"
+#include "ai_worker.hpp"
 
 class GeometryModel final : public QObject {
     Q_OBJECT
@@ -35,9 +39,12 @@ class ContractListModel final : public QAbstractListModel {
     int rowCount(const QModelIndex& parent = {}) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
+    void setRows(QVariantList rows);
 
   private:
     QString kind_;
+    QVariantList rows_;
+    QHash<int, QByteArray> roles_;
 };
 
 class NativeController final : public QObject {
@@ -75,6 +82,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList standings READ standings NOTIFY changed)
     Q_PROPERTY(QVariantList turnOrder READ turnOrder NOTIFY changed)
     Q_PROPERTY(QVariantList aiSeats READ aiSeats NOTIFY changed)
+    Q_PROPERTY(bool nativeRulesReady READ nativeRulesReady CONSTANT)
+    Q_PROPERTY(bool aiThinking READ aiThinking NOTIFY changed)
 
   public:
     explicit NativeController(QObject* parent = nullptr);
@@ -85,13 +94,13 @@ class NativeController final : public QObject {
     QObject* playerModel() const { return player_model_; }
     QObject* geometry() const { return geometry_; }
     QString gameLabel() const { return QStringLiteral("Game #001"); }
-    int playerCount() const { return 3; }
-    int turnNumber() const { return 1; }
-    QString currentPlayerName() const { return QStringLiteral("Player 1"); }
-    QString currentPlayerColor() const { return QStringLiteral("#FF3B30"); }
-    bool isGameOver() const { return false; }
-    bool canSelect() const { return true; }
-    bool canUndo() const { return false; }
+    int playerCount() const { return match_.count; }
+    int turnNumber() const { return state_.turn_number; }
+    QString currentPlayerName() const;
+    QString currentPlayerColor() const;
+    bool isGameOver() const { return state_.status == soo::kFinished; }
+    bool canSelect() const { return !isGameOver() && !ai_thinking_; }
+    bool canUndo() const { return !history_.isEmpty(); }
     bool canConfirm() const { return false; }
     bool canCancel() const { return false; }
     bool hasProposal() const { return false; }
@@ -101,23 +110,25 @@ class NativeController final : public QObject {
     QString proposalPath() const { return {}; }
     QVariantList proposalPathIds() const { return {}; }
     QString aiAgentName() const { return QStringLiteral("Native shell placeholder"); }
-    QString aiStatus() const { return QStringLiteral("Ready"); }
+    QString aiStatus() const { return ai_thinking_ ? QStringLiteral("Thinking…") : QStringLiteral("Ready"); }
     QVariantList aiDetails() const { return {}; }
-    int selectedPosition() const { return -1; }
+    int selectedPosition() const { return selected_position_; }
     bool soundAvailable() const { return false; }
     bool soundEnabled() const { return false; }
     QString soundStatus() const { return QStringLiteral("Sound is not enabled in Q3 shell."); }
     double soundVolume() const { return 0.0; }
     QUrl defaultSaveDir() const;
     QVariantList standings() const;
-    QVariantList turnOrder() const { return {1, 2, 3}; }
-    QVariantList aiSeats() const { return {}; }
+    QVariantList turnOrder() const;
+    QVariantList aiSeats() const { return {2}; }
+    bool nativeRulesReady() const { return soo::mutable_topology().configured; }
+    bool aiThinking() const { return ai_thinking_; }
 
     Q_INVOKABLE QVariantList seatColorsFor(int count) const;
     Q_INVOKABLE void selectPosition(int position);
     Q_INVOKABLE void confirmProposal() {}
-    Q_INVOKABLE void cancelProposal() {}
-    Q_INVOKABLE void undoLastMove() {}
+    Q_INVOKABLE void cancelProposal();
+    Q_INVOKABLE void undoLastMove();
     Q_INVOKABLE void thinkAgain() {}
     Q_INVOKABLE void previewSound() {}
     Q_INVOKABLE void setSoundEnabled(bool) {}
@@ -125,11 +136,27 @@ class NativeController final : public QObject {
     Q_INVOKABLE void startMatch(const QVariantList&, const QVariantList&) {}
     Q_INVOKABLE void saveGame(const QUrl&) {}
     Q_INVOKABLE void loadGame(const QUrl&) {}
+    Q_INVOKABLE bool gameSmoke();
+    Q_INVOKABLE bool workerSmoke();
 
   signals:
     void changed();
 
   private:
+    void loadTopology();
+    void refreshModels();
+    QString playerColor(uint8_t id) const;
+    QString playerName(uint8_t id) const;
+
+    soo::Match match_;
+    soo::State state_;
+    QVector<soo::State> state_history_;
+    QVariantList history_;
+    QVector<int32_t> legal_actions_;
+    int selected_position_ = -1;
+    bool ai_thinking_ = false;
+    quint64 generation_ = 0;
+    NativeAiWorker* ai_worker_;
     GeometryModel* geometry_;
     ContractListModel* board_model_;
     ContractListModel* piece_model_;
