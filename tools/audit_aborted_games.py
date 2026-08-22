@@ -58,7 +58,22 @@ from diamond.game.state import build_players
 
 
 def _position_key(move) -> str:
-    """Canonical position identity, from the features the network was shown."""
+    """Position identity, from the features the network was shown.
+
+    **This is the encoded, canonical form, not the physical state.**  The encoder
+    rotates the acting player's camp to a fixed orientation and reorders the
+    player channels to ``(self, next)``, so two physically distinct positions
+    that are symmetric images of one another hash the same, and the same
+    physical position with different sides to move hashes differently.
+
+    For *diagnosis* that is acceptable and arguably the right notion -- it counts
+    "the network saw this exact input again" -- and the 2/4/6/8-ply return
+    structure makes genuine repetition overwhelmingly likely.  It is **not**
+    acceptable for a control decision.  Anything that changes search behaviour on
+    detecting a repeat must key on the authoritative physical state
+    (``occupancy`` + ``current_player`` + status/finish order), excluding
+    bookkeeping like ``turn_number`` that does not affect the dynamics.
+    """
     return hashlib.blake2b(move["node_features"].tobytes(), digest_size=8).hexdigest()
 
 

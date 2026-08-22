@@ -525,6 +525,17 @@ using the encoded root features as position identity:
 | returns within 2/4/6/8 ply | **68.4 %** | 6.8 – 88.4 % |
 
 **Short-cycle shuffle**, not slow progress. One position was revisited 61 times.
+
+One caveat on the identity used. These are the *encoded* features, which the
+encoder canonicalises — the acting player's camp is rotated to a fixed
+orientation and the player channels reordered to `(self, next)`. So symmetric
+images hash together and the same position with the other side to move hashes
+apart. For diagnosis that is acceptable, and arguably the right notion, since it
+counts "the network saw this exact input again"; the 2/4/6/8-ply structure makes
+genuine repetition overwhelmingly likely either way. It is **not** acceptable for
+a control decision: anything that changes search behaviour on detecting a repeat
+must key on the authoritative physical state — occupancy, side to move, status —
+and exclude bookkeeping like `turn_number` that does not affect the dynamics.
 That explains §5.7 — a repetition attractor is indifferent to the move cap, so
 raising it changed nothing — and it predicts that deeper search should help,
 because escaping needs to see past the cycle.
