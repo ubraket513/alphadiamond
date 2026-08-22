@@ -27,6 +27,7 @@
 #include "native_move_player.hpp"
 
 #ifdef DIAMOND_QT_HAS_SOO
+#include "diamond_model/deployment_artifact.hpp"
 #include "diamond_model/soo_evaluator.hpp"
 #include "soo/mcts.hpp"
 
@@ -252,12 +253,15 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 soo::legal_action_ids(state_, legal);
                 if (std::find(legal.begin(), legal.end(), action) == legal.end()) {
                     ai_thinking_ = false;
+                    ai_failure_latched_ = true;
+                    ai_restart_when_idle_ = false;
                     ai_status_ = QStringLiteral("Invalid proposal");
                     qWarning() << "native AI returned an illegal action" << action;
                     fail(QStringLiteral("Agent proposed an illegal move."));
                     return;
                 }
                 ai_thinking_ = false;
+                ai_failure_latched_ = false;
                 selected_position_ = -1;
                 legal_actions_.clear();
                 ai_status_ = QStringLiteral("Proposal ready");
@@ -271,6 +275,8 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
             [this](quint64 generation, const QString& message) {
                 if (generation != generation_) return;
                 ai_thinking_ = false;
+                ai_failure_latched_ = true;
+                ai_restart_when_idle_ = false;
                 ai_status_ = QStringLiteral("Error");
                 qWarning() << "native AI worker:" << message;
                 fail(QStringLiteral("Agent failed: %1").arg(message));
@@ -284,7 +290,10 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 }
             });
     connect(ai_worker_, &NativeAiWorker::becameIdle, this, [this] {
-        if (!ai_thinking_ && proposal_action_ < 0 && !isGameOver() && isCurrentPlayerAi())
+        if (!ai_restart_when_idle_) return;
+        ai_restart_when_idle_ = false;
+        if (!ai_failure_latched_ && !ai_thinking_ && proposal_action_ < 0 &&
+            !isGameOver() && isCurrentPlayerAi())
             QTimer::singleShot(0, this, &NativeController::startAiTurn);
     });
     match_.count = 2;
@@ -308,6 +317,7 @@ NativeController::~NativeController() { shutdown(); }
 
 void NativeController::cancelSearch() {
     ++generation_;
+    ai_restart_when_idle_ = false;
     if (ai_worker_) ai_worker_->cancel();
     ai_thinking_ = false;
 }
@@ -445,6 +455,7 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
         }
     }
     cancelSearch();
+    ai_failure_latched_ = false;
     match_ = {};
     match_.count = static_cast<uint8_t>(order.size());
     geometry_->setPlayerCount(match_.count);
@@ -850,6 +861,12 @@ void NativeController::commitAction(int32_t action) {
     const QString path_text = proposalPath();
     QVariantList path_ids;
     for (int position : path) path_ids.push_back(position);
+    std::vector<uint8_t> canonical_path;
+    uint8_t move_kind = soo::kStep;
+    if (!soo::canonical_move_path(state_, source, destination, canonical_path, &move_kind)) {
+        fail(QStringLiteral("Cannot commit an invalid move path."));
+        return;
+    }
     const int piece_row = piece_model_->rowWithValue(QByteArrayLiteral("positionId"), source);
     state_history_.push_back(state_);
     state_ = soo::apply_action(state_, match_, action);
@@ -859,8 +876,9 @@ void NativeController::commitAction(int32_t action) {
         {"playerColor", playerColor(player)}, {"isAi", was_ai},
         {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
         {"pathText", path_text}, {"pathIds", path_ids}, {"source", source},
-        {"destination", destination}, {"kind", path.size() > 2 ? QStringLiteral("jump")
-                                                                  : QStringLiteral("step")},
+        {"destination", destination}, {"kind", move_kind == soo::kJump
+                                                       ? QStringLiteral("jump")
+                                                       : QStringLiteral("step")},
         {"hopCount", std::max(1, static_cast<int>(path.size()) - 1)}});
     last_action_ = action;
     status_message_ = QStringLiteral("Move committed.");
@@ -923,6 +941,7 @@ void NativeController::finishMove() {
     }
     if (ai_seats_.contains(state_.current_player)) {
         ai_rejected_.clear();
+        ai_failure_latched_ = false;
         startAiTurn();
         return;
     }
@@ -947,7 +966,12 @@ void NativeController::fail(const QString& message) {
 }
 
 void NativeController::startAiTurn() {
-    if (isGameOver() || !ai_seats_.contains(state_.current_player) || ai_worker_->isRunning()) return;
+    if (isGameOver() || !ai_seats_.contains(state_.current_player) || ai_failure_latched_) return;
+    if (ai_worker_->isRunning()) {
+        ai_restart_when_idle_ = true;
+        return;
+    }
+    ai_restart_when_idle_ = false;
 
     std::vector<int32_t> legal;
     soo::legal_action_ids(state_, legal);
@@ -977,6 +1001,7 @@ void NativeController::startAiTurn() {
     Q_EMIT changed();
 
     const quint64 request_generation = ++generation_;
+    ++ai_search_start_count_;
     ai_worker_->start(request_generation, [search_state, search_match, rejected, legal, simulations]() -> int {
         auto is_rejected = [&rejected](int32_t action) {
             return std::find(rejected.cbegin(), rejected.cend(), action) != rejected.cend();
@@ -984,12 +1009,13 @@ void NativeController::startAiTurn() {
 #ifdef DIAMOND_QT_HAS_SOO
         if (search_match.count == 2) {
             configure_torch_cpu();
-            diamond_model::SooModel model(128, 6);
             QString root = QDir(QCoreApplication::applicationDirPath())
                                .filePath(QStringLiteral("artifacts/soo-spike"));
             if (!QDir(root).exists())
                 root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-            model->load_weights(root.toStdString() + "/weights");
+            const auto artifact = diamond_model::validate_soo_deployment_artifact(root.toStdString());
+            diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
+            model->load_weights(artifact.weights);
             diamond_model::SooEvaluator evaluator(model);
             soo::MCTSConfig config;
             config.simulations = simulations;
@@ -1072,6 +1098,7 @@ void NativeController::thinkAgain() {
     if (!proposal_is_ai_ || proposal_action_ < 0 || ai_thinking_) return;
     ai_rejected_.push_back(proposal_action_);
     clearProposal();
+    ai_failure_latched_ = false;
     status_message_ = QStringLiteral("Asking the AI for another move…");
     refreshModels();
     startAiTurn();
@@ -1083,6 +1110,7 @@ void NativeController::undoLastMove() {
         return;
     }
     cancelSearch();
+    ai_failure_latched_ = false;
     stopAnimation();
     state_ = state_history_.takeLast(); if (!history_.isEmpty()) history_.removeLast();
     ai_rejected_.clear();
@@ -1099,7 +1127,10 @@ void NativeController::undoLastMove() {
 }
 
 void NativeController::requestAiMove() {
-    if (!ai_thinking_ && proposal_action_ < 0 && isCurrentPlayerAi()) startAiTurn();
+    if (!ai_thinking_ && proposal_action_ < 0 && isCurrentPlayerAi()) {
+        ai_failure_latched_ = false;
+        startAiTurn();
+    }
 }
 
 void NativeController::shutdown() {
@@ -1146,14 +1177,30 @@ bool NativeController::workerSmoke() {
     return !ai_worker_->isRunning();
 }
 
+bool NativeController::failureSmoke() {
+    if (ai_worker_->isRunning()) return false;
+    if (!ai_seats_.contains(state_.current_player)) ai_seats_.push_back(state_.current_player);
+    ai_failure_latched_ = false;
+    ai_restart_when_idle_ = false;
+    ai_thinking_ = true;
+    ai_status_ = QStringLiteral("Thinking…");
+    const quint64 request_generation = ++generation_;
+    ++ai_search_start_count_;
+    ai_worker_->start(request_generation, []() -> int {
+        throw std::runtime_error("intentional worker failure smoke");
+    });
+    return true;
+}
+
 bool NativeController::sooSmoke() {
 #ifdef DIAMOND_QT_HAS_SOO
     if (!nativeRulesReady()) return false;
     try {
         configure_torch_cpu();
-        diamond_model::SooModel model(128, 6);
         const QString root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-        model->load_weights(root.toStdString() + "/weights");
+        const auto artifact = diamond_model::validate_soo_deployment_artifact(root.toStdString());
+        diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
+        model->load_weights(artifact.weights);
         diamond_model::SooEvaluator evaluator(model);
         soo::MCTSConfig config;
         config.simulations = 2;

@@ -25,7 +25,7 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAd
 from diamond.alphazero.native.topology import player_table, topology_tables
 from diamond.game.state import build_players
 
-ARTIFACT_FORMAT_VERSION = 1
+ARTIFACT_FORMAT_VERSION = 2
 MODEL_VERSION = "0.1.0"
 CORPUS_SEED = 20260823
 CORPUS_BATCH = 2
@@ -73,6 +73,24 @@ def _export_mcts_fixture(output: Path) -> None:
     _write_i32(output / "mcts_players.i32", [value for row in player_table(players) for value in row])
     (output / "mcts_current_player.u8").write_bytes(bytes([state.current_player_id]))
     _write_i32(output / "mcts_legal_actions.i32", adapter.legal_action_ids(state))
+
+
+def _runtime_sha256(output: Path) -> str:
+    runtime_files = [
+        output / "topology_neighbour.i8",
+        output / "topology_camp_positions.i32",
+        output / "topology_pairwise_distance.i32",
+        output / "topology_physical_to_canonical.i32",
+        output / "topology_canonical_to_physical.i32",
+        *sorted((output / "weights").glob("*.f32")),
+    ]
+    digest = hashlib.sha256()
+    for path in sorted(runtime_files, key=lambda item: item.relative_to(output).as_posix()):
+        relative = path.relative_to(output).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def export(output: Path, checkpoint: Path | None = None) -> None:
@@ -126,6 +144,7 @@ def export(output: Path, checkpoint: Path | None = None) -> None:
         "action_space_version": "diamond73-srcdst-v1",
         "corpus_seed": CORPUS_SEED,
         "model_sha256": model_sha256,
+        "runtime_sha256": _runtime_sha256(output),
         "checkpoint_sha256": checkpoint_sha256,
     }
     validate_metadata(metadata)

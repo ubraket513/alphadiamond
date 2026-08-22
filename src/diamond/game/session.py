@@ -1,9 +1,8 @@
 """Headless authoritative game: state + history + commit/undo + save/load.
 
-This is the whole game as far as correctness is concerned.  It imports nothing
-from PySide6 or QML, so the entire rule set is unit-testable without a display.
-:class:`diamond.app.controller.GameController` is a thin Qt wrapper
-around this class.
+This is the Python reference game used by training and native parity checks. It
+imports no UI toolkit, so the entire rule set is testable without a display.
+The production native controller implements the matching contract in C++.
 """
 
 from __future__ import annotations

@@ -148,13 +148,40 @@ int main(int argc, char* argv[]) {
         });
     }
     for (int i = 1; i < argc; ++i) {
-        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--game-smoke"))
+        const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (argument == QStringLiteral("--sound-smoke")) {
+            QObject::connect(&controller, &NativeController::changed, &app, [&controller, &app] {
+                if (controller.soundLoaded()) app.exit(0);
+                else if (!controller.soundStatus().isEmpty()) app.exit(1);
+            });
+            QTimer::singleShot(5000, &app, [&app] { app.exit(1); });
+            controller.previewSound();
+            if (controller.soundLoaded()) return 0;
+            if (!controller.soundStatus().isEmpty()) return 1;
+            return app.exec();
+        }
+        if (argument == QStringLiteral("--failure-smoke")) {
+            const int starts_before = controller.aiSearchStartCount();
+            QObject::connect(&controller, &NativeController::changed, &app,
+                [&controller, &app, starts_before] {
+                    if (controller.aiStatus() != QStringLiteral("Error")) return;
+                    QTimer::singleShot(250, &app, [&controller, &app, starts_before] {
+                        app.exit(!controller.aiThinking() &&
+                                 controller.aiStatus() == QStringLiteral("Error") &&
+                                 controller.aiSearchStartCount() == starts_before + 1 ? 0 : 1);
+                    });
+                });
+            if (!controller.failureSmoke()) return 1;
+            QTimer::singleShot(5000, &app, [&app] { app.exit(1); });
+            return app.exec();
+        }
+        if (argument == QStringLiteral("--game-smoke"))
             return controller.gameSmoke() ? 0 : 1;
-        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--worker-smoke"))
+        if (argument == QStringLiteral("--worker-smoke"))
             return controller.workerSmoke() ? 0 : 1;
-        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--soo-smoke"))
+        if (argument == QStringLiteral("--soo-smoke"))
             return controller.sooSmoke() ? 0 : 1;
-        if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--smoke")) std::_Exit(0);
+        if (argument == QStringLiteral("--smoke")) std::_Exit(0);
     }
     return app.exec();
 }

@@ -1,7 +1,7 @@
 """Pure game engine: board topology, rules, state and history.
 
-This package must stay free of PySide6/QML imports so it can be unit-tested
-headlessly and reused by a future AlphaZero training pipeline.
+This package stays independent of any GUI toolkit so it can be tested
+headlessly and used by the AlphaZero training and native-parity pipelines.
 """
 
 from .board import Board, BoardPosition, Camp, standard_board

@@ -1,14 +1,8 @@
-"""Diamond 3-player controller console.
+"""Diamond training, export, and Python reference-game package.
 
-Layers, strictly one-directional::
-
-    QML  ->  app (GameController, Qt models, AI worker)  ->  game (rules)
-                                   ^
-                                   |
-                               agents (Agent protocol)
-
-``game`` and ``agents`` never import PySide6, so the whole engine is headless
-and unit-testable.
+The production Windows GUI is the native C++/Qt application under ``native``.
+This package supplies the Python/PyTorch training pipeline, deployment export,
+and headless reference rules used for native parity tests.
 """
 
 __version__ = "0.1.0"

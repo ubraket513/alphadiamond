@@ -8,6 +8,7 @@
 #include <torch/torch.h>
 
 #include "diamond_model/soo_model.hpp"
+#include "diamond_model/deployment_artifact.hpp"
 
 namespace {
 
@@ -34,13 +35,14 @@ int main(int argc, char** argv) {
     }
     try {
         const std::filesystem::path root(argv[1]);
+        const auto artifact = diamond_model::validate_soo_deployment_artifact(root);
         auto input_data = read_f32(root / "inputs.f32");
         const auto expected_policy = read_f32(root / "expected_policy.f32");
         const auto expected_value = read_f32(root / "expected_value.f32");
         auto input = torch::from_blob(input_data.data(), {2, 73, 4}, torch::kFloat32).clone();
 
-        diamond_model::SooModel model(128, 6);
-        model->load_weights(root / "weights");
+        diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
+        model->load_weights(artifact.weights);
         model->eval();
         const auto [policy, value] = model->forward(input);
         const auto policy_flat = policy.contiguous().view(-1);

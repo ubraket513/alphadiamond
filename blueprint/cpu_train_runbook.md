@@ -100,7 +100,7 @@ export PYTHONPATH=src
 ### 0. Preflight (once)
 
 ```
-$PY -m pytest tests/alphazero tests/agents tests/tools -m "not gui" -o addopts=""
+$PY -m pytest tests/alphazero tests/agents tests/tools -o addopts=""
 $PY tools/cpu_make_configs.py
 ```
 

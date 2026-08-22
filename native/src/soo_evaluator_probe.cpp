@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "diamond_model/soo_evaluator.hpp"
+#include "diamond_model/deployment_artifact.hpp"
 
 namespace {
 
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     try {
         const std::filesystem::path root(argv[1]);
+        const auto artifact = diamond_model::validate_soo_deployment_artifact(root);
         const auto input = read_f32(root / "inputs.f32");
         const auto expected = read_f32(root / "expected_legal_priors.f32");
         const auto actions = read_i32(root / "legal_actions.i32");
@@ -45,8 +47,8 @@ int main(int argc, char** argv) {
         encoded.node_features.assign(input.begin(), input.begin() + 73 * 4);
         encoded.feature_count = 4;
 
-        diamond_model::SooModel model(128, 6);
-        model->load_weights(root / "weights");
+        diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
+        model->load_weights(artifact.weights);
         diamond_model::SooEvaluator evaluator(model);
         const auto result = evaluator.evaluate(encoded, actions);
         if (result.priors.size() != actions.size()) throw std::runtime_error("prior count mismatch");

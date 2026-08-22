@@ -8,7 +8,7 @@ from diamond.alphazero.deployment import DeploymentArtifactError, load_metadata,
 
 def _metadata() -> dict:
     return {
-        "format_version": 1,
+        "format_version": 2,
         "model_name": "Soo",
         "model_version": "0.1.0",
         "input_shape": [2, 73, 4],
@@ -22,6 +22,7 @@ def _metadata() -> dict:
         "action_space_version": "diamond73-srcdst-v1",
         "corpus_seed": 20260823,
         "model_sha256": "a" * 64,
+        "runtime_sha256": "b" * 64,
         "checkpoint_sha256": None,
     }
 
@@ -50,3 +51,11 @@ def test_missing_and_unknown_fields_are_rejected():
     extra["unexpected_tensor"] = "tensor.bin"
     with pytest.raises(DeploymentArtifactError, match="unknown fields"):
         validate_metadata(extra)
+
+
+@pytest.mark.parametrize("field", ["model_sha256", "runtime_sha256", "checkpoint_sha256"])
+def test_non_hex_digest_is_rejected(field: str):
+    payload = _metadata()
+    payload[field] = "z" * 64
+    with pytest.raises(DeploymentArtifactError, match="SHA-256"):
+        validate_metadata(payload)

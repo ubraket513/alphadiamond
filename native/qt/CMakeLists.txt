@@ -108,9 +108,13 @@ if(BUILD_TESTING)
         target_compile_options(diamond_qt_controller_contract PRIVATE /W4)
     endif()
     add_test(NAME diamond_qt_controller_contract COMMAND diamond_qt_controller_contract)
+    get_filename_component(DIAMOND_QT_ENV_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
     set_tests_properties(diamond_qt_controller_contract PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        ENVIRONMENT
+            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins"
+        ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/bin;PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/lib/qt6/bin"
     )
 endif()
 

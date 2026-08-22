@@ -9,10 +9,12 @@
 #include <QTemporaryDir>
 
 #include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <functional>
 
 #include "native_controller.hpp"
+#include "soo/rules.hpp"
 
 namespace {
 
@@ -53,6 +55,11 @@ bool pump_until(QGuiApplication& app, const std::function<bool()>& done, int tim
 }  // namespace
 
 int main(int argc, char** argv) {
+    qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString& message) {
+        const QByteArray local = message.toLocal8Bit();
+        std::fprintf(stderr, "%s\n", local.constData());
+        std::fflush(stderr);
+    });
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
     qputenv("DIAMOND_MCTS_SIMULATIONS", QByteArrayLiteral("1"));
 #ifdef Q_OS_WIN
@@ -72,7 +79,8 @@ int main(int argc, char** argv) {
     for (const char* signal : {"errorRaised(QString)", "gameFinished(int)", "playerFinished(int,int)"}) {
         if (!require(meta->indexOfSignal(signal) >= 0, "Python controller signal is missing")) return 1;
     }
-    for (const char* method : {"newGame()", "requestAiMove()", "shutdown()"}) {
+    for (const char* method : {"newGame()", "requestAiMove()", "shutdown()",
+             "failureSmoke()"}) {
         if (!require(meta->indexOfMethod(method) >= 0, "Python controller method is missing")) return 1;
     }
     if (!require(controller.soundAvailable(), "native move sound is unavailable")) return 1;
@@ -205,6 +213,68 @@ int main(int argc, char** argv) {
                  "new game did not reset and increment the game label")) return 1;
     qInfo("controller contract: human controller");
 
+    soo::State jump_state;
+    jump_state.current_player = 1;
+    int jump_source = -1;
+    int jump_over = -1;
+    int jump_destination = -1;
+    for (int candidate = 0; candidate < soo::kBoardSize && jump_source < 0; ++candidate) {
+        for (int direction = 0; direction < soo::kDirections; ++direction) {
+            const int over = soo::topology().neighbour[candidate][direction];
+            if (over < 0) continue;
+            const int landing = soo::topology().neighbour[over][direction];
+            if (landing < 0) continue;
+            jump_state = {};
+            jump_state.current_player = 1;
+            jump_state.occupancy[candidate] = 1;
+            jump_state.occupancy[over] = 2;
+            std::vector<int32_t> legal;
+            soo::legal_action_ids(jump_state, legal);
+            const int32_t action = candidate * soo::kBoardSize + landing;
+            if (std::find(legal.begin(), legal.end(), action) != legal.end()) {
+                jump_source = candidate;
+                jump_over = over;
+                jump_destination = landing;
+                break;
+            }
+        }
+    }
+    if (!require(jump_source >= 0, "could not construct a legal single-jump fixture")) return 1;
+    QJsonArray jump_occupancy;
+    for (int position = 0; position < soo::kBoardSize; ++position)
+        jump_occupancy.push_back(position == jump_source ? 1 : position == jump_over ? 2 : 0);
+    QTemporaryDir jump_dir;
+    const QString jump_fixture_path = jump_dir.filePath(QStringLiteral("single-jump-v1.json"));
+    QFile jump_fixture(jump_fixture_path);
+    if (!jump_fixture.open(QIODevice::WriteOnly)) return 1;
+    jump_fixture.write(QJsonDocument(QJsonObject{{"version", 1},
+        {"order", QJsonArray{1, 2}}, {"aiSeats", QJsonArray{}},
+        {"occupancy", jump_occupancy}, {"currentPlayer", 1},
+        {"turnNumber", 1}}).toJson());
+    jump_fixture.close();
+    NativeController jump_controller;
+    if (!require(jump_controller.loadGame(QUrl::fromLocalFile(jump_fixture_path)),
+                 "single-jump fixture did not load")) return 1;
+    jump_controller.selectPosition(jump_source);
+    jump_controller.selectPosition(jump_destination);
+    if (!require(jump_controller.hasProposal() &&
+                 jump_controller.proposalPathIds().size() == 2,
+                 "single jump did not produce a two-node proposal")) return 1;
+    jump_controller.confirmProposal();
+    if (!require(pump_until(app, [&jump_controller] { return jump_controller.canSelect(); }),
+                 "single-jump animation did not finish")) return 1;
+    const QString jump_save_path = jump_dir.filePath(QStringLiteral("single-jump-v2.json"));
+    if (!require(jump_controller.saveGame(QUrl::fromLocalFile(jump_save_path)),
+                 "single-jump history save failed")) return 1;
+    QFile jump_save(jump_save_path);
+    if (!jump_save.open(QIODevice::ReadOnly)) return 1;
+    const QJsonObject jump_root = QJsonDocument::fromJson(jump_save.readAll()).object();
+    const QString jump_kind = jump_root.value("history").toArray().at(0).toObject()
+                                  .value("move").toObject().value("kind").toString();
+    if (!require(jump_kind == QStringLiteral("jump"),
+                 "single jump was mislabeled as a step in history")) return 1;
+    qInfo("controller contract: single-jump history");
+
     NativeController ai_controller;
     ai_controller.startMatch(QVariantList{1, 2}, QVariantList{2});
     auto* ai_board = qobject_cast<QAbstractItemModel*>(ai_controller.boardModel());
@@ -251,6 +321,23 @@ int main(int argc, char** argv) {
             return ai_controller.turnNumber() == ai_turn + 1 && ai_controller.canSelect();
         }, 5000), "confirming the AI proposal did not finish its move")) return 1;
     qInfo("controller contract: AI controller");
+
+    NativeController failure_controller;
+    const int failure_starts = failure_controller.aiSearchStartCount();
+    if (!require(failure_controller.failureSmoke(), "worker failure smoke did not start")) return 1;
+    if (!require(pump_until(app, [&failure_controller] {
+            return failure_controller.aiStatus() == QStringLiteral("Error");
+        }), "worker failure was not published")) return 1;
+    QElapsedTimer failure_grace;
+    failure_grace.start();
+    while (failure_grace.elapsed() < 300) {
+        app.processEvents();
+        QThread::msleep(5);
+    }
+    if (!require(!failure_controller.aiThinking() &&
+                 failure_controller.aiSearchStartCount() == failure_starts + 1,
+                 "failed AI search relaunched without an explicit retry")) return 1;
+    qInfo("controller contract: failure lifecycle");
 
     NativeController terminal_controller;
     terminal_controller.startMatch(QVariantList{1, 2}, QVariantList{});

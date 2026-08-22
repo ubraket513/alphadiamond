@@ -27,12 +27,22 @@ if (-not (Test-Path -LiteralPath $qtBin)) { throw "Qt runtime directory not foun
 $env:PATH = "$qtBin;$envBin;$env:PATH"
 
 $repoPath = [IO.Path]::GetFullPath($repo.Path)
-$repoPrefix = $repoPath.TrimEnd('\') + '\'
+$deployRoot = [IO.Path]::GetFullPath((Join-Path $repoPath "dist"))
+New-Item -ItemType Directory -Force -Path $deployRoot | Out-Null
+$deployRootItem = Get-Item -LiteralPath $deployRoot -Force
+if (($deployRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Deployment root must not be a reparse point: $deployRoot"
+}
 $destination = [IO.Path]::GetFullPath((Join-Path $repoPath $OutputDir))
-if (-not $destination.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "OutputDir must resolve inside the repository: $destination"
+if (-not [IO.Path]::GetDirectoryName($destination).Equals(
+        $deployRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputDir must be a direct child of the repository dist directory: $destination"
 }
 if (Test-Path -LiteralPath $destination) {
+    $destinationItem = Get-Item -LiteralPath $destination -Force
+    if (($destinationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to replace a deployment reparse point: $destination"
+    }
     Remove-Item -LiteralPath $destination -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
@@ -47,7 +57,17 @@ Copy-Item -LiteralPath $soundSource -Destination (Join-Path $soundDestination "m
 Copy-Item -Path (Join-Path $qtBin "Qt6*.dll") -Destination $destination -Force
 $pluginsDestination = Join-Path $destination "plugins"
 New-Item -ItemType Directory -Force -Path $pluginsDestination | Out-Null
-Copy-Item -Path (Join-Path $qtRoot "plugins\*") -Destination $pluginsDestination -Recurse -Force
+# Copy runtime plugin families only. The conda Qt prefix also contains Designer,
+# qmllint/qmlls, and debugger plugins; copying the entire tree leaked the
+# development-only PySidePlugin.dll into an otherwise native package.
+foreach ($pluginType in @(
+        "generic", "iconengines", "imageformats", "multimedia",
+        "networkinformation", "platforms", "styles", "tls")) {
+    $pluginSource = Join-Path $qtRoot "plugins\$pluginType"
+    if (Test-Path -LiteralPath $pluginSource) {
+        Copy-Item -LiteralPath $pluginSource -Destination $pluginsDestination -Recurse -Force
+    }
+}
 $qmlDestination = Join-Path $destination "qml"
 Copy-Item -LiteralPath (Join-Path $qtRoot "qml") -Destination $qmlDestination -Recurse -Force
 
@@ -75,7 +95,21 @@ $artifactSource = Join-Path $repo "artifacts\soo-spike"
 if (-not (Test-Path -LiteralPath $artifactSource)) { throw "Soo artifacts not found: $artifactSource" }
 $artifactDestination = Join-Path $destination "artifacts"
 New-Item -ItemType Directory -Force -Path $artifactDestination | Out-Null
-Copy-Item -LiteralPath $artifactSource -Destination $artifactDestination -Recurse -Force
+if ($WithSoo) {
+    Copy-Item -LiteralPath $artifactSource -Destination $artifactDestination -Recurse -Force
+} else {
+    $shellArtifact = Join-Path $artifactDestination "soo-spike"
+    New-Item -ItemType Directory -Force -Path $shellArtifact | Out-Null
+    foreach ($topologyFile in @(
+        "topology_neighbour.i8",
+        "topology_camp_positions.i32",
+        "topology_pairwise_distance.i32",
+        "topology_physical_to_canonical.i32",
+        "topology_canonical_to_physical.i32")) {
+        Copy-Item -LiteralPath (Join-Path $artifactSource $topologyFile) `
+            -Destination (Join-Path $shellArtifact $topologyFile) -Force
+    }
+}
 
 if ($WithSoo) {
     $patterns = @("torch*.dll", "c10*.dll", "fbgemm*.dll", "asmjit*.dll", "mkl*.dll",
@@ -87,16 +121,37 @@ if ($WithSoo) {
     }
 }
 
+$forbiddenRuntimeFiles = Get-ChildItem -LiteralPath $destination -Recurse -File |
+    Where-Object {
+        $_.Name -match '^(python.*\.dll|PySide.*|qtawesome.*)$' -or
+        $_.FullName -match '[\\/]site-packages[\\/]'
+    }
+if ($forbiddenRuntimeFiles) {
+    $paths = ($forbiddenRuntimeFiles.FullName -join [Environment]::NewLine)
+    throw "Python/PySide runtime files leaked into native deployment:`n$paths"
+}
+
 function Invoke-PackagedSmoke([string]$Argument) {
+    $cleanPath = "$destination;$env:SystemRoot\System32;$env:SystemRoot"
+    $cleanEnvironment = @{
+        "PATH" = $cleanPath
+        "QT_PLUGIN_PATH" = $null
+        "QT_QPA_PLATFORM_PLUGIN_PATH" = $null
+        "QML2_IMPORT_PATH" = $null
+        "QML_IMPORT_PATH" = $null
+        "CONDA_PREFIX" = $null
+        "PYTHONPATH" = $null
+    }
     $process = Start-Process -FilePath (Join-Path $destination "diamond_qt.exe") `
         -ArgumentList $Argument -WorkingDirectory $destination -WindowStyle Hidden `
-        -PassThru -Wait
+        -Environment $cleanEnvironment -PassThru -Wait
     if ($process.ExitCode -ne 0) {
         throw "Packaged runtime smoke failed ($Argument), exit code $($process.ExitCode)."
     }
 }
 
-foreach ($argument in @("--smoke", "--game-smoke", "--worker-smoke")) {
+foreach ($argument in @("--smoke", "--game-smoke", "--worker-smoke",
+        "--failure-smoke", "--sound-smoke")) {
     Invoke-PackagedSmoke $argument
 }
 if ($WithSoo) { Invoke-PackagedSmoke "--soo-smoke" }

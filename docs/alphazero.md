@@ -115,10 +115,11 @@ C:\ProgramData\miniforge3\envs\alphadiamond\python.exe -m pytest tests\alphazero
 C:\ProgramData\miniforge3\envs\alphadiamond\python.exe -m diamond.alphazero.milestone2_smoke
 ```
 
-On this Windows host, Qt tests use the system Python with PySide6 instead:
+The retired Python GUI no longer has a separate Qt test environment. Run the
+remaining headless Python reference/training suite in the AlphaZero environment:
 
 ```powershell
-C:\Python314\python.exe -m pytest tests --ignore=tests/alphazero -o addopts= -q
+C:\ProgramData\miniforge3\envs\alphadiamond\python.exe -m pytest
 ```
 
 The headless CLI emits one JSON object and an exit status. Its commands are

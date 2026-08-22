@@ -10,6 +10,8 @@
 
 #include <torch/script.h>
 
+#include "diamond_model/deployment_artifact.hpp"
+
 namespace {
 
 std::vector<float> read_f32(const std::filesystem::path& path) {
@@ -49,8 +51,9 @@ int main(int argc, char** argv) {
 
     try {
         const std::filesystem::path root(argv[1]);
+        (void)diamond_model::validate_soo_deployment_artifact(root);
         const auto metadata = read_text(root / "metadata.json");
-        require_metadata(metadata, "format_version", "1");
+        require_metadata(metadata, "format_version", "2");
         require_metadata(metadata, "model_name", "\"Soo\"");
         require_metadata(metadata, "dtype", "\"float32\"");
         require_metadata(metadata, "width", "128");

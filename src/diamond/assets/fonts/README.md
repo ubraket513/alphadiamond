@@ -10,7 +10,7 @@
 
 Bundled rather than assumed installed: the font ships with no desktop OS, and a
 missing family would silently fall back to a system default, changing every
-metric in the layout. `diamond.app.fonts.load_bundled_fonts()` registers these
+metric in the layout. The native Qt resource setup registers these
 files with Qt at startup and returns the resolved family name, so QML asks for a
 family that is guaranteed to exist.
 

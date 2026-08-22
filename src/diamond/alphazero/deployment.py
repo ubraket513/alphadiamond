@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-ARTIFACT_FORMAT_VERSION = 1
+ARTIFACT_FORMAT_VERSION = 2
 EXPECTED_METADATA_KEYS = frozenset(
     {
         "format_version",
@@ -23,6 +23,7 @@ EXPECTED_METADATA_KEYS = frozenset(
         "action_space_version",
         "corpus_seed",
         "model_sha256",
+        "runtime_sha256",
         "checkpoint_sha256",
     }
 )
@@ -30,6 +31,14 @@ EXPECTED_METADATA_KEYS = frozenset(
 
 class DeploymentArtifactError(ValueError):
     """The deployment artifact is malformed or incompatible."""
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
 
 
 def validate_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -68,12 +77,12 @@ def validate_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
             )
     if not isinstance(metadata["corpus_seed"], int) or isinstance(metadata["corpus_seed"], bool):
         raise DeploymentArtifactError("metadata corpus_seed must be an integer")
-    if not isinstance(metadata["model_sha256"], str) or len(metadata["model_sha256"]) != 64:
+    if not _is_sha256(metadata["model_sha256"]):
         raise DeploymentArtifactError("metadata model_sha256 must be a SHA-256 hex digest")
+    if not _is_sha256(metadata["runtime_sha256"]):
+        raise DeploymentArtifactError("metadata runtime_sha256 must be a SHA-256 hex digest")
     checkpoint_sha256 = metadata["checkpoint_sha256"]
-    if checkpoint_sha256 is not None and (
-        not isinstance(checkpoint_sha256, str) or len(checkpoint_sha256) != 64
-    ):
+    if checkpoint_sha256 is not None and not _is_sha256(checkpoint_sha256):
         raise DeploymentArtifactError("metadata checkpoint_sha256 must be null or a SHA-256 digest")
     return dict(metadata)
 

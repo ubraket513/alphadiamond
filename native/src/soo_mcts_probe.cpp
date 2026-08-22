@@ -16,6 +16,7 @@
 #endif
 
 #include "diamond_model/soo_evaluator.hpp"
+#include "diamond_model/deployment_artifact.hpp"
 #include "soo/board.hpp"
 #include "soo/encoder.hpp"
 #include "soo/mcts.hpp"
@@ -90,6 +91,21 @@ double process_cpu_seconds() {
 #endif
 }
 
+void validate_result(const soo::SearchResult& result,
+                     const std::vector<int32_t>& expected_actions) {
+    if (result.root_actions != expected_actions) {
+        throw std::runtime_error("native MCTS root legal-action order differs from Python");
+    }
+    if (result.evaluator_calls == 0 || result.root_priors.size() != expected_actions.size()) {
+        throw std::runtime_error("native MCTS did not receive root evaluator priors");
+    }
+    double prior_sum = 0.0;
+    for (double prior : result.root_priors) prior_sum += prior;
+    if (std::abs(prior_sum - 1.0) > 1e-6) {
+        throw std::runtime_error("native MCTS root priors are not normalized");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -103,6 +119,7 @@ int main(int argc, char** argv) {
         torch::set_num_threads(threads);
         torch::set_num_interop_threads(1);
         const std::filesystem::path root(argv[1]);
+        const auto artifact = diamond_model::validate_soo_deployment_artifact(root);
         configure_topology(root);
         const auto occupancy = read_values<uint8_t>(root / "mcts_occupancy.u8");
         const auto players = read_values<int32_t>(root / "mcts_players.i32");
@@ -124,46 +141,54 @@ int main(int argc, char** argv) {
         std::copy(occupancy.begin(), occupancy.end(), state.occupancy.begin());
         state.current_player = current[0];
 
-        diamond_model::SooModel model(128, 6);
-        model->load_weights(root / "weights");
+        diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
+        model->load_weights(artifact.weights);
         diamond_model::SooEvaluator evaluator(model);
 
         const auto encoded = soo::encode(state, match);
+        torch::NoGradGuard no_grad;
+        auto features = torch::from_blob(
+            const_cast<float*>(encoded.node_features.data()), {1, 73, 4}, torch::kFloat32).clone();
+        model->eval();
+        (void)model->forward(features);
+        constexpr int kInferenceSamples = 50;
+        std::vector<double> raw_forward_ms;
+        raw_forward_ms.reserve(kInferenceSamples);
+        for (int iteration = 0; iteration < kInferenceSamples; ++iteration) {
+            const auto started = std::chrono::steady_clock::now();
+            (void)model->forward(features);
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            raw_forward_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
+        }
+
         (void)evaluator.evaluate(encoded, expected_actions);
-        std::vector<double> forward_ms;
-        forward_ms.reserve(20);
-        for (int iteration = 0; iteration < 20; ++iteration) {
+        std::vector<double> evaluator_ms;
+        evaluator_ms.reserve(kInferenceSamples);
+        for (int iteration = 0; iteration < kInferenceSamples; ++iteration) {
             const auto started = std::chrono::steady_clock::now();
             (void)evaluator.evaluate(encoded, expected_actions);
             const auto elapsed = std::chrono::steady_clock::now() - started;
-            forward_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
+            evaluator_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
         }
 
         soo::MCTSConfig config;
         config.simulations = simulations;
         config.seed = 17;
-        std::vector<double> move_ms;
-        move_ms.reserve(static_cast<size_t>(repeats));
+        soo::MCTS2P correctness_search(match, evaluator, config);
+        soo::SearchResult result = correctness_search.run(state, 0.0, true);
+        validate_result(result, expected_actions);
+
+        std::vector<double> mcts_ms;
+        mcts_ms.reserve(static_cast<size_t>(repeats));
         const double cpu_started = process_cpu_seconds();
         const auto wall_started = std::chrono::steady_clock::now();
-        soo::SearchResult result;
         for (int iteration = 0; iteration < repeats; ++iteration) {
             soo::MCTS2P search(match, evaluator, config);
             const auto started = std::chrono::steady_clock::now();
-            result = search.run(state, 0.0, iteration == 0);
+            result = search.run(state, 0.0, false);
             const auto elapsed = std::chrono::steady_clock::now() - started;
-            move_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
-            if (result.root_actions != expected_actions) {
-                throw std::runtime_error("native MCTS root legal-action order differs from Python");
-            }
-            if (result.evaluator_calls == 0 || result.root_priors.size() != expected_actions.size()) {
-                throw std::runtime_error("native MCTS did not receive root evaluator priors");
-            }
-            double prior_sum = 0.0;
-            for (double prior : result.root_priors) prior_sum += prior;
-            if (std::abs(prior_sum - 1.0) > 1e-6) {
-                throw std::runtime_error("native MCTS root priors are not normalized");
-            }
+            mcts_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
+            validate_result(result, expected_actions);
         }
         const double wall_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - wall_started).count();
@@ -172,15 +197,39 @@ int main(int argc, char** argv) {
         const double normalized_cpu = wall_seconds > 0.0
             ? 100.0 * cpu_seconds / wall_seconds / static_cast<double>(logical_cpus)
             : 0.0;
+
+        // The GUI currently validates the artifact and constructs/loads the native
+        // model for each proposal. Measure that complete warm-cache path separately.
+        std::vector<double> gui_proposal_ms;
+        gui_proposal_ms.reserve(static_cast<size_t>(repeats));
+        for (int iteration = 0; iteration < repeats; ++iteration) {
+            const auto started = std::chrono::steady_clock::now();
+            const auto runtime_artifact =
+                diamond_model::validate_soo_deployment_artifact(root);
+            diamond_model::SooModel runtime_model(
+                runtime_artifact.width, runtime_artifact.residual_blocks);
+            runtime_model->load_weights(runtime_artifact.weights);
+            diamond_model::SooEvaluator runtime_evaluator(runtime_model);
+            soo::MCTS2P runtime_search(match, runtime_evaluator, config);
+            const auto runtime_result = runtime_search.run(state, 0.0, false);
+            validate_result(runtime_result, expected_actions);
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            gui_proposal_ms.push_back(
+                std::chrono::duration<double, std::milli>(elapsed).count());
+        }
         std::cout << "Soo native MCTS evaluator integration passed; root_actions="
                   << result.root_actions.size() << ", evaluator_calls="
                   << result.evaluator_calls << ", simulations=" << simulations
                   << ", repeats=" << repeats << ", threads=" << threads
-                  << ", forward_p50_ms=" << percentile(forward_ms, 0.50)
-                  << ", forward_p95_ms=" << percentile(forward_ms, 0.95)
-                  << ", move_p50_ms=" << percentile(move_ms, 0.50)
-                  << ", move_p95_ms=" << percentile(move_ms, 0.95)
-                  << ", normalized_cpu_percent=" << normalized_cpu << "\n";
+                  << ", raw_forward_p50_ms=" << percentile(raw_forward_ms, 0.50)
+                  << ", raw_forward_p95_ms=" << percentile(raw_forward_ms, 0.95)
+                  << ", evaluator_p50_ms=" << percentile(evaluator_ms, 0.50)
+                  << ", evaluator_p95_ms=" << percentile(evaluator_ms, 0.95)
+                  << ", mcts_p50_ms=" << percentile(mcts_ms, 0.50)
+                  << ", mcts_p95_ms=" << percentile(mcts_ms, 0.95)
+                  << ", gui_proposal_p50_ms=" << percentile(gui_proposal_ms, 0.50)
+                  << ", gui_proposal_p95_ms=" << percentile(gui_proposal_ms, 0.95)
+                  << ", mcts_normalized_cpu_percent=" << normalized_cpu << "\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "probe error: " << error.what() << "\n";

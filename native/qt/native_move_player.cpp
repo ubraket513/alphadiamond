@@ -52,6 +52,7 @@ bool NativeMovePlayer::available() const {
 void NativeMovePlayer::setMuted(bool muted) {
     if (muted_ == muted) return;
     muted_ = muted;
+    if (output_) output_->setMuted(muted_);
     Q_EMIT changed();
 }
 
@@ -62,7 +63,10 @@ void NativeMovePlayer::setVolume(double volume) {
     if (volume_ == volume && !should_unmute) return;
     volume_ = volume;
     if (output_) output_->setVolume(static_cast<float>(volume_));
-    if (should_unmute) muted_ = false;
+    if (should_unmute) {
+        muted_ = false;
+        if (output_) output_->setMuted(false);
+    }
     Q_EMIT changed();
 }
 

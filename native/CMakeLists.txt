@@ -66,7 +66,11 @@ endif()
 
 if(DIAMOND_BUILD_LIBTORCH_PROBE)
     find_package(Torch REQUIRED)
-    add_library(diamond_model STATIC src/soo_model.cpp src/soo_evaluator.cpp)
+    add_library(diamond_model STATIC
+        src/deployment_artifact.cpp
+        src/soo_model.cpp
+        src/soo_evaluator.cpp
+    )
     add_library(alphadiamond::diamond_model ALIAS diamond_model)
     target_link_libraries(diamond_model PUBLIC alphadiamond::soo_core ${TORCH_LIBRARIES})
     target_include_directories(diamond_model
@@ -81,7 +85,7 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
     endif()
 
     add_executable(soo_libtorch_probe src/soo_libtorch_probe.cpp)
-    target_link_libraries(soo_libtorch_probe PRIVATE alphadiamond::soo_search ${TORCH_LIBRARIES})
+    target_link_libraries(soo_libtorch_probe PRIVATE alphadiamond::diamond_model alphadiamond::soo_search ${TORCH_LIBRARIES})
     target_compile_features(soo_libtorch_probe PRIVATE cxx_std_20)
     target_include_directories(soo_libtorch_probe PRIVATE ${TORCH_INCLUDE_DIRS})
     target_compile_definitions(soo_libtorch_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
@@ -111,6 +115,14 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
     target_compile_definitions(soo_mcts_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
     if(MSVC)
         target_compile_options(soo_mcts_probe PRIVATE /bigobj)
+    endif()
+
+    if(BUILD_TESTING)
+        add_executable(soo_artifact_contract tests/artifact_contract.cpp)
+        target_link_libraries(soo_artifact_contract PRIVATE alphadiamond::diamond_model)
+        target_compile_features(soo_artifact_contract PRIVATE cxx_std_20)
+        add_test(NAME soo_artifact_contract
+                 COMMAND soo_artifact_contract "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")
     endif()
 endif()
 

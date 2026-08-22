@@ -70,8 +70,8 @@ Nothing reaches the authoritative game state until the Controller confirms.
 
 **Dependency rule:** QML never computes legality. All authoritative rule
 decisions and AI proposal validation happen in the native C++ engine. The
-Python GUI is retained only as the explicit `legacy-gui` oracle during the
-migration tail; it is not a dependency of the native application.
+retired Python/PySide GUI is no longer shipped; Python is used only for
+training, deployment export, and headless parity/reference tests.
 
 ### Layout
 
@@ -83,7 +83,7 @@ native/
 └── qt/                  NativeController, worker, audio, native chrome, host
 src/diamond/
 ├── alphazero/           authoritative Python training/export pipeline
-├── app/ + game/         legacy Python GUI oracle (optional)
+├── game/ + agents/      headless training/parity reference implementation
 ├── assets/              bundled fonts and move sound
 └── qml/                 shared visual source used unchanged by native Qt
     ├── Main.qml  Board.qml  Hole.qml  Piece.qml
@@ -663,8 +663,7 @@ For the primary Windows GUI:
 
 This checkout uses the mamba environment at
 `C:\ProgramData\miniforge3\envs\alphadiamond`. Python 3.11+ is still required
-for training/export and for the optional legacy GUI oracle, but not by the
-packaged native executable.
+for training and deployment export, but not by the packaged native executable.
 
 ## Installation
 
@@ -695,22 +694,17 @@ rescales with the window.
 
 The native executable can also be launched directly from
 `dist\diamond-qt-soo\diamond_qt.exe`. The deployment script verifies its DLL,
-Qt plugin, QML, sound, engine, worker, and Soo model closure before reporting
-success.
-
-The old PySide6 application remains an explicit development oracle only:
-
-```powershell
-python -m pip install -e ".[legacy-gui]"
-diamond-legacy
-```
+Qt plugin, QML, real sound decoding, engine, worker failure lifecycle, and
+strict Soo artifact/model closure before reporting success.
+Those smokes run without conda, Python, or external Qt/QML paths in the child
+environment, so development-machine DLLs cannot mask an incomplete package.
 
 ## How to run tests
 
 ```powershell
 $env:QT_QPA_PLATFORM = "offscreen"
 ctest --test-dir build-qt-soo-clean --output-on-failure
-python -m pytest -m "not gui"
+python -m pytest
 ```
 
 See [docs/native_windows_runtime.md](docs/native_windows_runtime.md) for the
@@ -722,8 +716,9 @@ tests need no Qt at all; controller contracts use an offscreen
 `QGuiApplication` and do not create the main window.
 
 The suite covers board topology, native move generation, proposal/confirmation,
-per-landing animation and sound requests, history, undo, schema-v2 save/load,
-terminal state, QML-visible model roles, stale AI results, Think Again, and
+per-landing animation and sound requests, single-jump history classification,
+undo, schema-v2 save/load, terminal state, QML-visible model roles, failed and
+stale AI results, Think Again, strict artifact corruption rejection, and
 canonical-to-physical Soo actions for the second seat.
 
 ---

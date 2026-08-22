@@ -164,6 +164,7 @@ class NativeController final : public QObject {
     QVariantList aiSeats() const;
     bool nativeRulesReady() const { return soo::mutable_topology().configured; }
     bool aiThinking() const { return ai_thinking_; }
+    int aiSearchStartCount() const { return ai_search_start_count_; }
 
     Q_INVOKABLE QVariantList seatColorsFor(int count) const;
     Q_INVOKABLE void selectPosition(int position);
@@ -182,6 +183,7 @@ class NativeController final : public QObject {
     Q_INVOKABLE void shutdown();
     Q_INVOKABLE bool gameSmoke();
     Q_INVOKABLE bool workerSmoke();
+    Q_INVOKABLE bool failureSmoke();
     Q_INVOKABLE bool sooSmoke();
 
   Q_SIGNALS:
@@ -235,6 +237,9 @@ class NativeController final : public QObject {
     qint64 ai_started_at_ms_ = 0;
     int selected_position_ = -1;
     bool ai_thinking_ = false;
+    bool ai_restart_when_idle_ = false;
+    bool ai_failure_latched_ = false;
+    int ai_search_start_count_ = 0;
     quint64 generation_ = 0;
     NativeAiWorker* ai_worker_;
     NativeMovePlayer* sound_player_;

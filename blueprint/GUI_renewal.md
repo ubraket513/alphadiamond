@@ -8,9 +8,13 @@ This is an architectural migration. Do not perform a one-shot rewrite. Inspect t
 
 > **Implementation status (2026-08-23):** Gates Q0–Q6 are complete for the
 > blueprint's initial two-player human-vs-Soo release target. The final gate
-> record, QML contract manifest, build/package commands, measured CPU latency,
-> and compatibility notes are in
+> record, QML contract manifest, strict deployment-artifact checks,
+> build/package commands, 30-run CPU latency measurements, and compatibility notes are in
 > [`docs/native_windows_runtime.md`](../docs/native_windows_runtime.md).
+> After parity verification, the legacy PySide6 host, dependencies, entry point,
+> and GUI-only tests were removed. Python remains for training/export and
+> headless native-parity checks, while the existing QML/assets remain shared
+> source inputs to the native build.
 
 ## End goal
 
