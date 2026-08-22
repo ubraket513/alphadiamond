@@ -12,7 +12,7 @@
     "opening_suite_version": "production-openings-v1"
   },
   "inference": {
-    "max_batch_size": 64,
+    "max_batch_size": 128,
     "max_wait_ms": 2,
     "request_queue_capacity": 1024,
     "response_timeout_s": 600.0
@@ -52,9 +52,9 @@
     "weight_decay": 0.0001
   },
   "workers": {
-    "games_per_iteration": 384,
+    "games_per_iteration": 768,
     "retry_id": "attempt-0",
     "selfplay_backend": "native",
-    "worker_count": 12
+    "worker_count": 16
   }
 }

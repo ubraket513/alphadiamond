@@ -7,7 +7,7 @@ import json
 import os
 import random
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -221,6 +221,128 @@ class PersistentReplayStore:
         self._write_manifest(next_manifest)
         self._manifest = next_manifest
         return True
+
+    def ingest_episodes(self, episodes: Iterable[EpisodeResult]) -> int:
+        """Ingest many episodes with **one** manifest write.
+
+        ``ingest_episode`` rewrites the whole manifest per call, which is fine
+        for tens of games and quadratic for a real training iteration: at 768
+        games against a manifest that had grown to 1.4 MB, one iteration wrote
+        about a gigabyte of manifest to say what a single write says.
+
+        Semantics are otherwise identical, including the duplicate and conflict
+        rules, and the return value counts newly ingested episodes.  Failure is
+        still all-or-nothing at the manifest: chunks written before an error
+        stay as uningested orphans, exactly as the single-episode path leaves
+        them, and the manifest remains the only authority for what is ingested.
+        """
+        manifest = self._manifest
+        chunk_index = {row.game_id: row for row in manifest.chunks}
+        aborted_index = {row.game_id: row for row in manifest.aborted}
+        new_game_ids: list[str] = []
+        new_chunks: list[ReplayChunk] = []
+        new_aborted: list[AbortedEpisode] = []
+        ingested = 0
+
+        for episode in episodes:
+            self._validate_episode(episode)
+            if episode.completed:
+                body = self._completed_chunk_body(episode)
+                content_hash = _digest(body)
+                existing = chunk_index.get(episode.game_id)
+                if existing is not None:
+                    if existing.sha256 != content_hash:
+                        raise ReplayStoreError(
+                            f"conflicting duplicate game_id: {episode.game_id}"
+                        )
+                    continue
+                if episode.game_id in aborted_index:
+                    raise ReplayStoreError(f"conflicting duplicate game_id: {episode.game_id}")
+                self._write_chunk(episode.game_id, body, content_hash)
+                chunk = ReplayChunk(episode.game_id, content_hash, len(episode.samples))
+                chunk_index[episode.game_id] = chunk
+                new_chunks.append(chunk)
+                new_game_ids.append(episode.game_id)
+                ingested += 1
+                continue
+
+            abort = self._aborted_record(episode)
+            existing_abort = aborted_index.get(episode.game_id)
+            if existing_abort is not None:
+                if existing_abort.sha256 != abort.sha256:
+                    raise ReplayStoreError(f"conflicting duplicate game_id: {episode.game_id}")
+                continue
+            if episode.game_id in chunk_index:
+                raise ReplayStoreError(f"conflicting duplicate game_id: {episode.game_id}")
+            aborted_index[episode.game_id] = abort
+            new_aborted.append(abort)
+            ingested += 1
+
+        if not ingested:
+            return 0
+
+        next_manifest = replace(
+            manifest,
+            game_ids=(*manifest.game_ids, *new_game_ids),
+            chunks=(*manifest.chunks, *new_chunks),
+            aborted=(*manifest.aborted, *new_aborted),
+        )
+        self._write_manifest(next_manifest)
+        self._manifest = next_manifest
+        if new_chunks:
+            self._buffer = None
+        return ingested
+
+    def prune_to_capacity(self) -> int:
+        """Drop chunks that ``load_buffer`` provably cannot reach, and their files.
+
+        The store is append-only, but the buffer it rebuilds is **bounded**:
+        ``load_buffer`` extends a ``ReplayBuffer(capacity=self.capacity)`` in
+        manifest order, so only the newest ``capacity`` samples survive.  Every
+        chunk older than that window is read from disk and immediately evicted,
+        on every iteration.
+
+        Left alone that is unbounded disk and quadratic time -- measured on the
+        from-scratch run at ~79 MB and ~5,000 chunks per iteration, which fills
+        a 13 GB disk in about two and a half hours and re-reads the whole
+        history to build each buffer.
+
+        Pruning is **explicit rather than automatic**: it deletes durable
+        evidence, so a caller asks for it.
+
+        ``game_ids`` is pruned in lockstep because the manifest loader requires
+        exactly that -- it is the ordered chunk identity list, not a record of
+        every game ever seen.  ``aborted`` is left intact: it is one small row
+        per aborted game and it carries the only record that those games
+        happened. The production coordinator reads ``game_ids`` to assert that
+        the episodes it just ingested are present, which pruning cannot disturb
+        because the newest chunks are exactly the ones kept.
+
+        Returns the number of chunks removed.
+        """
+        chunks = self._manifest.chunks
+        kept = 0
+        total = 0
+        for chunk in reversed(chunks):
+            kept += 1
+            total += chunk.sample_count
+            if total >= self.capacity:
+                break
+        if kept >= len(chunks):
+            return 0
+
+        keep = chunks[len(chunks) - kept :]
+        dropped = chunks[: len(chunks) - kept]
+        keep_ids = tuple(chunk.game_id for chunk in keep)
+        # Manifest first: a chunk file removed before the manifest stops
+        # referencing it is a corrupt store, while a file left behind after the
+        # manifest drops it is only an orphan, which the store already tolerates.
+        next_manifest = replace(self._manifest, chunks=keep, game_ids=keep_ids)
+        self._write_manifest(next_manifest)
+        self._manifest = next_manifest
+        for chunk in dropped:
+            self.chunk_path(chunk.game_id).unlink(missing_ok=True)
+        return len(dropped)
 
     def load_buffer(self) -> ReplayBuffer:
         """Rebuild a normal bounded ReplayBuffer from manifest-referenced JSON chunks."""
