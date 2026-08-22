@@ -16,7 +16,7 @@ it was gated.
 | | |
 |---|---|
 | run id | `soo-scratch-20260822` |
-| phase | **B0** — heuristics on (A0 attempted at step 14,250 and reverted; §5.4) |
+| phase | **B0** — heuristics on. A0 attempted twice (steps 14,250 and 22,350) and reverted both times; §5.4 and §5.8 |
 | backend | `native` |
 | host | RTX 5090 / Ryzen 9 9950X3D (16 physical cores) |
 | run root | `/workspace/alphadiamond-training/runs/soo/soo-scratch-20260822` |
@@ -357,7 +357,77 @@ The cap is therefore **not too tight**, and raising it would buy a percentage
 point by paying 949 moves of pathological trajectory into replay, at 60 % more
 wall-clock for the same forty games. `max_moves = 500` stays.
 
-### 5.8 The replay store had to be bounded first
+### 5.8 A0 attempt 2 — the gate was right, and A0 still failed
+
+The gate passed three times running (92 %, 92 %, 95 %; per-seed 95/90), the
+transition checkpoint was published, and the run switched again.
+
+| iteration | completed | % | median | loss |
+|---|---|---|---|---|
+| 77 | 709/768 | **92.3 %** | 74 | 2.94 |
+| 78 | 685/768 | 89.2 % | 78 | 2.72 |
+| 79 | 606/768 | **78.9 %** | 95 | 2.27 |
+| 80 | 612/768 | 79.7 % | 91 | 2.18 |
+
+Rolled back at iteration 79 on the < 85 % rule. Post-A0 gate: **80 %, FAIL**.
+
+Two trials, side by side:
+
+| trial | pre-switch gate | production trajectory | post-A0 gate |
+|---|---|---|---|
+| 1 | 88 % | 90.5 → 84.9 → 64.5 → 64.2 | 55 % |
+| 2 | **92 %** | 92.3 → 89.2 → 78.9 → 79.7 | 80 % |
+
+**The gate is accurate.** It predicted the first production iteration to within a
+point both times — 88 → 90.5 and 92 → 92.3. The stricter threshold also did real
+work: trial 2 degraded at half the rate and ended 25 points healthier.
+
+But it did not prevent the failure, and that falsifies the hypothesis the whole
+approach rested on. This is **not** "the network is not yet strong enough". At
+92 % the network *plays* fine. What fails is **training on its own A0 data**.
+
+### 5.9 The mechanism: a censoring spiral
+
+1. Under production exploration ~8 % of games wander past the move cap.
+2. An aborted game contributes **zero** samples.
+3. Replay therefore holds only completed games — the network never sees the
+   states in which it wandered, nor any recovery from them.
+4. Trained on that censored set it drifts, and more games wander.
+5. Return to 1.
+
+B0 does not have this problem because the heuristic prior keeps the **search** on
+track regardless of what the policy believes, so games complete and the replay is
+not censored.
+
+That has an uncomfortable corollary: **waiting longer in B0 cannot fix it**, because
+B0 never produces the training signal A0 needs. The gate can go on rising and the
+switch will still fail, because the failure is in the feedback loop rather than
+in the network.
+
+It also explains §5.7. Raising `max_moves` did not help because the wanderers are
+not near-misses — they are the tail that censoring is systematically deleting
+from the dataset.
+
+**How much is deleted.** An aborted game runs the full 500-move cap and then
+contributes nothing, so the discarded volume is exactly `aborted × 500` moves:
+
+| iteration | phase | completed | moves kept | moves discarded | **% thrown away** | median | p90 |
+|---|---|---|---|---|---|---|---|
+| 75 | B0 | 767/768 | 57,575 | 500 | **1 %** | 73 | 86 |
+| 76 | B0 | 768/768 | 59,009 | 0 | **0 %** | 75 | 89 |
+| 77 | A0 | 709/768 | 63,578 | 29,500 | 32 % | 74 | 125 |
+| 78 | A0 | 685/768 | 65,274 | 41,500 | 39 % | 78 | 144 |
+| 79 | A0 | 606/768 | 68,797 | 81,000 | **54 %** | 95 | 187 |
+| 80 | A0 | 612/768 | 69,132 | 78,000 | **53 %** | 91 | 193 |
+
+Trial 1 went further, reaching **74 %** discarded by its sixth A0 iteration.
+
+So this is not a dataset missing a few games. Within four iterations **more than
+half of every move played is thrown away**, and it is the long half — selected,
+precisely, for being the experience the network most needs in order to stop
+producing it. B0 discards 0–2 % by comparison.
+
+### 5.10 The replay store had to be bounded first
 
 The run could not have finished a six-hour block. `PersistentReplayStore` is
 append-only, and two costs compound:
