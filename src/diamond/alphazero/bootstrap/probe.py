@@ -54,6 +54,16 @@ class ProbeReport:
         return self.samples / self.episodes if self.episodes else 0.0
 
 
+def _unless_none(**values: object) -> dict[str, object]:
+    """Keep a dataclass default rather than overriding it with a stand-in.
+
+    Passing an explicit 0.0 for "unset" would have silently turned Dirichlet
+    noise off for every existing caller, because ``MCTSConfig.dirichlet_epsilon``
+    defaults to 0.25 and not to zero.
+    """
+    return {name: value for name, value in values.items() if value is not None}
+
+
 def run_probe(
     *,
     model_name: str = SOO_MODEL_NAME,
@@ -63,8 +73,30 @@ def run_probe(
     max_moves: int = 2000,
     base_seed: int = 0,
     base_evaluator: Evaluator | None = None,
+    dirichlet_epsilon: float | None = None,
+    dirichlet_alpha: float | None = None,
+    temperature: float | None = None,
+    temperature_moves: int = 0,
 ) -> ProbeReport:
-    """Run ``episodes`` fixed-seed self-play games under one prior."""
+    """Run ``episodes`` fixed-seed self-play games under one prior.
+
+    **The exploration settings decide what this measures, and the historical
+    default measures an easier question than production asks.**  ``None`` leaves
+    a setting at its dataclass default, which is what every existing caller got:
+    Dirichlet noise *on* at ``epsilon = 0.25``, but ``temperature_moves = 0``, so
+    no temperature sampling.  Production self-play samples its first 20 moves
+    from the visit distribution instead of taking the argmax.
+
+    That difference is not academic.  Measured on the from-scratch Soo run at
+    step 13,650: the probe without temperature sampling reported **100 %
+    completion** and the gate passed, while production self-play on the same
+    checkpoint completed only **64 %** and fell to ~64 % over four iterations.
+    Sampling the opening from a distribution -- rather than perturbing it and
+    then taking the best move -- is what sends games wandering past the move cap.
+
+    A gate for "is this network ready for production self-play" therefore has to
+    pass production's *whole* exploration configuration in, not just part of it.
+    """
     if episodes <= 0:
         raise ValueError("episodes must be positive")
 
@@ -94,12 +126,19 @@ def run_probe(
         episode = runner_cls(
             DiamondSearchAdapter(AlphaZeroGameAdapter(build_players(player_count))),
             bootstrap_evaluator(base, bootstrap_prior),
-            MCTSConfig(simulations=simulations, seed=seed),
+            MCTSConfig(
+                simulations=simulations,
+                seed=seed,
+                **_unless_none(
+                    dirichlet_alpha=dirichlet_alpha, dirichlet_epsilon=dirichlet_epsilon
+                ),
+            ),
             SelfPlayConfig(
                 max_moves=max_moves,
-                temperature_moves=0,
+                temperature_moves=temperature_moves,
                 seed=seed,
                 bootstrap_prior=bootstrap_prior,
+                **_unless_none(temperature=temperature),
             ),
             compatibility,
         ).run()

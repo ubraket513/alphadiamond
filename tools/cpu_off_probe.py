@@ -49,6 +49,18 @@ def main() -> int:
     parser.add_argument("--base-seed", type=int, default=9000)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--prior", default=BOOTSTRAP_PRIOR_NONE)
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help=(
+            "Probe with no Dirichlet noise and no temperature sampling: can the "
+            "network finish a game playing its best move every time? That is a "
+            "materially easier question than production asks. The default is the "
+            "configuration's own exploration, in full -- on the Soo from-scratch "
+            "run a probe missing only the temperature sampling read 100%% where "
+            "production self-play completed 64%%."
+        ),
+    )
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -93,9 +105,22 @@ def main() -> int:
         else [config["mcts"]["simulations"]]
     )
 
+    # The gate exists to answer "is this network ready for production
+    # self-play", so unless asked otherwise it probes under production's own
+    # exploration rather than under greedy play.
+    if args.deterministic:
+        epsilon = alpha = temperature = 0.0
+        temperature_moves = 0
+    else:  # production's own exploration, in full
+        epsilon = config["mcts"]["dirichlet_epsilon"]
+        alpha = config["mcts"]["dirichlet_alpha"]
+        temperature = config["self_play"]["temperature"]
+        temperature_moves = config["self_play"]["temperature_moves"]
+
     print(
         f"[probe] {model_name} checkpoint={args.checkpoint} "
-        f"training_step={trainer.training_step} prior={args.prior}",
+        f"training_step={trainer.training_step} prior={args.prior} "
+        f"exploration={'off (greedy)' if args.deterministic else f'eps={epsilon} T={temperature}/{temperature_moves}'}",
         flush=True,
     )
     rows = []
@@ -109,6 +134,10 @@ def main() -> int:
             max_moves=args.max_moves,
             base_seed=args.base_seed,
             base_evaluator=evaluator,
+            dirichlet_epsilon=epsilon,
+            dirichlet_alpha=alpha,
+            temperature=temperature,
+            temperature_moves=temperature_moves,
         )
         elapsed = time.perf_counter() - start
         verdict = (

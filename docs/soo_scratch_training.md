@@ -16,7 +16,7 @@ it was gated.
 | | |
 |---|---|
 | run id | `soo-scratch-20260822` |
-| phase | **B0** — heuristics on |
+| phase | **B0** — heuristics on (A0 attempted at step 14,250 and reverted; §5.4) |
 | backend | `native` |
 | host | RTX 5090 / Ryzen 9 9950X3D (16 physical cores) |
 | run root | `/workspace/alphadiamond-training/runs/soo/soo-scratch-20260822` |
@@ -240,7 +240,69 @@ Live effect at iteration 18:
 | samples/s | 685 | **1,444** |
 | vs the Python backend | 12.3x | **25.9x** |
 
-### 5.4 The replay store had to be bounded first
+### 5.4 The heuristics-off switch, and the gate that got it wrong
+
+At step 13,650 the off-probe passed convincingly and the switch looked overdue:
+
+| | OFF (`prior=none`) | ON (heuristic) |
+|---|---|---|
+| completion | 20/20 (100 %) | 20/20 (100 %) |
+| median moves | **63.5** | 71.5 |
+| p90 moves | **73** | 113 |
+
+Thirty games across two seeds, and the learned policy was beating the heuristic
+at the heuristic's own job — shorter games, tighter tail. The B0-final
+checkpoint was published as a release and the run switched to A0.
+
+**Production self-play then fell apart over four iterations:**
+
+| iteration | completed | median moves | self-play |
+|---|---|---|---|
+| 50 | 695/768 (90.5 %) | 80 | 83 s |
+| 51 | 652/768 (84.9 %) | 77 | 91 s |
+| 52 | 495/768 (64.5 %) | 105 | 142 s |
+| 53 | 493/768 (64.2 %) | 117 | 147 s |
+
+Loss kept falling — 3.06 → 2.40 — which is exactly why loss is the wrong thing
+to watch here. The policy head was fitting its own visit distributions
+beautifully while the games those distributions produced got longer and more
+often hit the move cap. And an aborted game contributes **zero** samples, so
+replay was filling only from games that happened to finish: survivorship bias on
+top of a third of the compute being wasted.
+
+Reverted to B0 within four iterations. The checkpoint and replay carry over, so
+the cost was the four iterations.
+
+### 5.5 What the gate was actually measuring
+
+The first diagnosis was wrong and worth recording as wrong: *"the probe is
+deterministic and production has Dirichlet noise."*
+
+`MCTSConfig.dirichlet_epsilon` defaults to **0.25**, not to zero. The probe
+always had Dirichlet noise. What it did not have was **temperature sampling** —
+it ran `temperature_moves=0`, so every move was the argmax of the visit counts,
+while production samples its first 20 moves *from* the visit distribution.
+
+Perturbing a prior and then taking the best move is a mild thing. Sampling the
+opening from a distribution is not: it is what sends games wandering past the
+cap. Confirmed by re-probing the same checkpoint with production's full
+exploration:
+
+| gate variant | reading | verdict |
+|---|---|---|
+| without temperature sampling | 100 % | PASS — and wrong |
+| **with production exploration** | **55 %** | **FAIL — matches the observed 64 %** |
+
+The fixed gate predicts production. It also nearly shipped a second bug: writing
+"unset" as an explicit `0.0` would have turned Dirichlet noise *off* for every
+existing caller, because the dataclass default is 0.25. The sentinel is `None`,
+and a test pins it.
+
+**The lesson generalises past this gate.** A readiness check has to run the
+configuration it is clearing you for. Any part of production's behaviour the
+check omits is a part it silently assumes is harmless.
+
+### 5.6 The replay store had to be bounded first
 
 The run could not have finished a six-hour block. `PersistentReplayStore` is
 append-only, and two costs compound:
