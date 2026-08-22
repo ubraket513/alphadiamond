@@ -45,8 +45,9 @@ exec python "$ROOT/tools/az_train.py" \
   --phase "$PHASE" \
   --bootstrap-prior "$PRIOR" \
   --hours "$HOURS" \
-  --workers 16 \
+  --workers 12 \
   --native-lanes 256 \
   --train-steps-per-iteration 300 \
+  --native-max-wait-us "${NATIVE_MAX_WAIT_US:-50}" \
   --archive-every 25 \
   --keep-archives 20

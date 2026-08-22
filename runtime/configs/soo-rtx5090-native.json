@@ -53,8 +53,9 @@
   },
   "workers": {
     "games_per_iteration": 768,
+    "native_max_wait_us": 50,
     "retry_id": "attempt-0",
     "selfplay_backend": "native",
-    "worker_count": 16
+    "worker_count": 12
   }
 }

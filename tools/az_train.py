@@ -221,6 +221,7 @@ def run_self_play(
     worker_count: int,
     device: str,
     native_lanes: int,
+    native_max_wait_us: int,
 ):
     """One iteration of self-play, through whichever backend is selected.
 
@@ -245,7 +246,15 @@ def run_self_play(
             lanes=native_lanes,
             threads=worker_count,
             max_batch=inference_config.max_batch_size,
-            max_wait_us=int(inference_config.max_wait_ms * 1000),
+            # NOT inference_config.max_wait_ms.  That knob belongs to the Python
+            # coordinator, where a batch takes milliseconds to assemble and
+            # milliseconds are the right unit.  The native batcher faces a
+            # ~0.9 ms GPU forward against lanes that can only supply ~50 requests
+            # per cycle, so the batch never fills and the wait is spent in full,
+            # every cycle.  Measured on the training checkpoint: 2000 us gives
+            # 355 samples/s at 39 % evaluator occupancy, 50 us gives 1,077 at
+            # 88 %.  Lane count and thread count change neither.
+            max_wait_us=native_max_wait_us,
         )
         return pool.run(jobs), None, pool.metrics
 
@@ -303,6 +312,18 @@ def main() -> int:
         help=(
             "Concurrent games for the native backend; 0 derives 2 x max_batch_size. "
             "Jobs beyond this are queued, so a long game costs its own lane only."
+        ),
+    )
+    parser.add_argument(
+        "--native-max-wait-us",
+        type=int,
+        default=None,
+        help=(
+            "How long the native batcher waits for a batch to fill, in "
+            "microseconds. Deliberately separate from inference.max_wait_ms, "
+            "which is the Python coordinator's knob: the native batch does not "
+            "fill, so this is spent in full every cycle and dominates lane and "
+            "thread count. Default 500; 50 measured best on the RTX 5090."
         ),
     )
     parser.add_argument(
@@ -377,6 +398,13 @@ def main() -> int:
     if selfplay_backend not in SELFPLAY_BACKENDS:
         raise SystemExit(f"unknown selfplay_backend: {selfplay_backend}")
     native_lanes = args.native_lanes
+    native_max_wait_us = (
+        args.native_max_wait_us
+        if args.native_max_wait_us is not None
+        else int(workers.get("native_max_wait_us", 500))
+    )
+    if native_max_wait_us < 1:
+        raise SystemExit("native_max_wait_us must be positive")
     if selfplay_backend == "native":
         # Fail at startup rather than after the first iteration's self-play.
         from diamond.alphazero.native import require_native
@@ -449,6 +477,9 @@ def main() -> int:
             "worker_count": worker_count,
             "selfplay_backend": selfplay_backend,
             "native_lanes": native_lanes if selfplay_backend == "native" else None,
+            "native_max_wait_us": (
+                native_max_wait_us if selfplay_backend == "native" else None
+            ),
             "games_per_iteration": workers["games_per_iteration"],
             "batch_size": training_config.batch_size,
             "train_steps_per_iteration": args.train_steps_per_iteration,
@@ -518,6 +549,7 @@ def main() -> int:
                 worker_count=worker_count,
                 device=training_config.device,
                 native_lanes=native_lanes,
+                native_max_wait_us=native_max_wait_us,
             )
         except RuntimeError as error:
             # A stop signal terminates the worker children mid-episode.  That is
