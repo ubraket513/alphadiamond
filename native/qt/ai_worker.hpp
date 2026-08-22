@@ -19,6 +19,7 @@ class NativeAiWorker final : public QObject {
     void resultReady(quint64 generation, int action);
     void failed(quint64 generation, QString message);
     void cancelled(quint64 generation);
+    void becameIdle();
 
   private:
     std::atomic_bool cancel_requested_{false};

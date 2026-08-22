@@ -3,23 +3,28 @@
 #include <QDir>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDateTime>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointF>
+#include <QSet>
+#include <QTimer>
 
 #include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <mutex>
+#include <numeric>
 #include <map>
 #include <tuple>
 #include <vector>
 
 #include "soo/board.hpp"
 #include "soo/rules.hpp"
+#include "native_move_player.hpp"
 
 #ifdef DIAMOND_QT_HAS_SOO
 #include "diamond_model/soo_evaluator.hpp"
@@ -42,15 +47,6 @@ void configure_torch_cpu() {
 namespace {
 struct BoardPoint { int x; int y; int z; };
 
-void controller_startup_trace(const char* marker) {
-    QFile file(QCoreApplication::applicationDirPath() + QStringLiteral("/diamond_qt_startup.log"));
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) return;
-    file.write("controller-");
-    file.write(marker);
-    file.write("\n");
-    file.close();
-}
-
 std::vector<BoardPoint> board_points() {
     std::vector<BoardPoint> points;
     for (int x = -13; x <= 13; ++x) for (int z = -13; z <= 13; ++z) {
@@ -67,6 +63,21 @@ std::vector<BoardPoint> board_points() {
 
 QPointF unit_xy(const BoardPoint& point) {
     return {point.x + point.z / 2.0, point.z * std::sqrt(3.0) / 2.0};
+}
+
+bool point_in_camp(const BoardPoint& point, int camp) {
+    const int values[3] = {point.x, point.y, point.z};
+    const bool triangle_up = point.x >= -3 && point.y >= -3 && point.z >= -3;
+    const bool triangle_down = point.x <= 3 && point.y <= 3 && point.z <= 3;
+    return camp < 3 ? values[camp] >= 3 && triangle_up
+                    : values[camp - 3] <= -3 && triangle_down;
+}
+
+QString camp_key(int camp) {
+    static const QStringList keys = {QStringLiteral("x+"), QStringLiteral("y+"),
+        QStringLiteral("z+"), QStringLiteral("x-"), QStringLiteral("y-"),
+        QStringLiteral("z-")};
+    return camp >= 0 && camp < keys.size() ? keys[camp] : QString();
 }
 }
 
@@ -118,16 +129,13 @@ QVariantList GeometryModel::edges() const {
 QVariantList GeometryModel::camps() const {
     QVariantList result;
     const auto points = board_points();
-    const int axes[6][2] = {{0,3},{1,3},{2,3},{0,-3},{1,-3},{2,-3}};
     for (int camp = 0; camp < 6; ++camp) {
         std::vector<std::pair<int, QPointF>> camp_candidates;
-        for (const auto& point : points) {
-            const int value = camp == 0 || camp == 3 ? point.x : camp == 1 || camp == 4 ? point.y : point.z;
-            const bool triangle = camp < 3 ? point.x >= -3 && point.y >= -3 && point.z >= -3
-                                           : point.x <= 3 && point.y <= 3 && point.z <= 3;
-            if (value != axes[camp][1] || !triangle) continue;
+        for (int position = 0; position < static_cast<int>(points.size()); ++position) {
+            const auto& point = points[position];
+            if (!point_in_camp(point, camp)) continue;
             const auto xy = unit_xy(point);
-            camp_candidates.push_back({static_cast<int>(camp_candidates.size()), xy});
+            camp_candidates.push_back({position, xy});
         }
         double centre_x = 0.0, centre_y = 0.0;
         for (const auto& candidate : camp_candidates) { centre_x += candidate.second.x(); centre_y += candidate.second.y(); }
@@ -140,10 +148,14 @@ QVariantList GeometryModel::camps() const {
         QVariantList camp_points;
         for (int i = 0; i < std::min(3, static_cast<int>(camp_candidates.size())); ++i)
             camp_points.push_back(QVariantMap{{"x", camp_candidates[i].second.x()}, {"y", camp_candidates[i].second.y()}});
+        QVariantList camp_holes;
+        for (const auto& candidate : camp_candidates)
+            camp_holes.push_back(QVariantMap{{"x", candidate.second.x()}, {"y", candidate.second.y()}});
         result.push_back(QVariantMap{
+            {"key", camp_key(camp)},
             {"inPlay", camp != 1 && camp != 4 || player_count_ == 3},
             {"color", camp == 0 || camp == 3 ? "#34C759" : camp == 1 || camp == 4 ? "#FFCC00" : "#FF3B30"},
-            {"points", camp_points}});
+            {"points", camp_points}, {"holes", camp_holes}});
     }
     return result;
 }
@@ -167,6 +179,13 @@ ContractListModel::ContractListModel(QString kind, QObject* parent)
         roles_.insert(TurnNumberRole, "turnNumber"); roles_.insert(PlayerLabelRole, "playerLabel");
         roles_.insert(PlayerColorRole, "playerColor"); roles_.insert(MoveTextRole, "moveText");
         roles_.insert(PathTextRole, "pathText"); roles_.insert(HopCountRole, "hopCount");
+        roles_.insert(IsAiRole, "isAi");
+    } else if (kind_ == "players") {
+        roles_.insert(NameRole, "name"); roles_.insert(KindLabelRole, "kindLabel");
+        roles_.insert(IsCurrentRole, "isCurrent"); roles_.insert(IsAiRole, "isAi");
+        roles_.insert(HomeCountRole, "homeCount"); roles_.insert(CampSizeRole, "campSize");
+        roles_.insert(HasFinishedRole, "hasFinished"); roles_.insert(TurnIndexRole, "turnIndex");
+        roles_.insert(PlaceRole, "place"); roles_.insert(PlaceLabelRole, "placeLabel");
     }
 }
 
@@ -192,20 +211,35 @@ void ContractListModel::setRows(QVariantList rows) {
     endResetModel();
 }
 
+int ContractListModel::rowWithValue(const QByteArray& roleName, const QVariant& value) const {
+    const QString key = QString::fromUtf8(roleName);
+    for (int row = 0; row < rows_.size(); ++row) {
+        if (rows_.at(row).toMap().value(key) == value) return row;
+    }
+    return -1;
+}
+
+void ContractListModel::updateRow(int row, const QVariantMap& values) {
+    if (row < 0 || row >= rows_.size()) return;
+    QVariantMap current = rows_.at(row).toMap();
+    for (auto it = values.cbegin(); it != values.cend(); ++it) current.insert(it.key(), it.value());
+    rows_[row] = current;
+    const QModelIndex changed_index = index(row, 0);
+    Q_EMIT dataChanged(changed_index, changed_index);
+}
+
 NativeController::NativeController(QObject* parent) : QObject(parent) {
-    controller_startup_trace("ctor-start");
     geometry_ = new GeometryModel(this);
-    controller_startup_trace("geometry");
     board_model_ = new ContractListModel("board", this);
-    controller_startup_trace("board-model");
     piece_model_ = new ContractListModel("piece", this);
-    controller_startup_trace("piece-model");
     history_model_ = new ContractListModel("history", this);
-    controller_startup_trace("history-model");
     player_model_ = new ContractListModel("players", this);
-    controller_startup_trace("player-model");
     ai_worker_ = new NativeAiWorker(this);
-    controller_startup_trace("worker");
+    sound_player_ = new NativeMovePlayer(this);
+    connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
+    animation_timer_ = new QTimer(this);
+    animation_timer_->setInterval(140);
+    connect(animation_timer_, &QTimer::timeout, this, &NativeController::animationTick);
     connect(ai_worker_, &NativeAiWorker::resultReady, this,
             [this](quint64 generation, int action) {
                 if (generation != generation_ || !ai_thinking_) return;
@@ -213,43 +247,44 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 soo::legal_action_ids(state_, legal);
                 if (std::find(legal.begin(), legal.end(), action) == legal.end()) {
                     ai_thinking_ = false;
+                    ai_status_ = QStringLiteral("Invalid proposal");
                     qWarning() << "native AI returned an illegal action" << action;
-                    Q_EMIT changed();
+                    fail(QStringLiteral("Agent proposed an illegal move."));
                     return;
                 }
                 ai_thinking_ = false;
                 selected_position_ = -1;
                 legal_actions_.clear();
-                const int source = action / soo::kBoardSize;
-                const int destination = action % soo::kBoardSize;
-                state_history_.push_back(state_);
-                state_ = soo::apply_action(state_, match_, action);
-                history_.push_back(QVariantMap{{"turnNumber", state_.turn_number - 1},
-                    {"playerLabel", playerName(2)}, {"playerColor", playerColor(2)},
-                    {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
-                    {"pathText", QStringLiteral("%1 → %2").arg(source).arg(destination)}, {"hopCount", 1}});
-                refreshModels(); Q_EMIT changed();
+                ai_status_ = QStringLiteral("Proposal ready");
+                proposeAction(action, true);
             });
     connect(ai_worker_, &NativeAiWorker::failed, this,
             [this](quint64 generation, const QString& message) {
                 if (generation != generation_) return;
                 ai_thinking_ = false;
+                ai_status_ = QStringLiteral("Error");
                 qWarning() << "native AI worker:" << message;
-                Q_EMIT changed();
+                fail(QStringLiteral("Agent failed: %1").arg(message));
             });
     connect(ai_worker_, &NativeAiWorker::cancelled, this,
             [this](quint64 generation) {
-                if (generation == generation_) { ai_thinking_ = false; Q_EMIT changed(); }
+                if (generation == generation_) {
+                    ai_thinking_ = false;
+                    ai_status_ = QStringLiteral("Ready");
+                    Q_EMIT changed();
+                }
             });
+    connect(ai_worker_, &NativeAiWorker::becameIdle, this, [this] {
+        if (!ai_thinking_ && proposal_action_ < 0 && !isGameOver() && isCurrentPlayerAi())
+            QTimer::singleShot(0, this, &NativeController::startAiTurn);
+    });
     match_.count = 2;
     match_.players[0] = soo::PlayerSpec{1, 2, 5};
     match_.players[1] = soo::PlayerSpec{2, 0, 3};
     ai_seats_ = {2};
     geometry_->setPlayerCount(match_.count);
-    controller_startup_trace("match-configured");
     state_.current_player = 1;
     loadTopology();
-    controller_startup_trace("topology-loaded");
     if (soo::mutable_topology().configured) {
         for (int camp = 0; camp < match_.count; ++camp) {
             const auto& spec = match_.players[camp];
@@ -257,12 +292,10 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 state_.occupancy[position] = spec.id;
         }
     }
-    controller_startup_trace("before-refresh");
     refreshModels();
-    controller_startup_trace("after-refresh");
 }
 
-NativeController::~NativeController() { cancelSearch(); }
+NativeController::~NativeController() { shutdown(); }
 
 void NativeController::cancelSearch() {
     ++generation_;
@@ -270,24 +303,64 @@ void NativeController::cancelSearch() {
     ai_thinking_ = false;
 }
 
+QString NativeController::aiAgentName() const {
+#ifdef DIAMOND_QT_HAS_SOO
+    return match_.count == 2 ? QStringLiteral("Soo AlphaZero")
+                             : QStringLiteral("Native fallback");
+#else
+    return QStringLiteral("Native deterministic");
+#endif
+}
+
+QString NativeController::phase() const {
+    if (isGameOver()) return QStringLiteral("GAME_OVER");
+    if (animating_) return QStringLiteral("ANIMATING_MOVE");
+    if (ai_thinking_) return QStringLiteral("AI_THINKING");
+    if (proposal_is_ai_) return QStringLiteral("AI_MOVE_PROPOSED");
+    if (proposal_action_ >= 0) return QStringLiteral("HUMAN_MOVE_PROPOSED");
+    return QStringLiteral("WAITING_FOR_HUMAN_INPUT");
+}
+
 QUrl NativeController::defaultSaveDir() const {
     return QUrl::fromLocalFile(QDir::homePath() + QStringLiteral("/.alphadiamond/saves"));
 }
 
+bool NativeController::soundAvailable() const { return sound_player_->available(); }
+bool NativeController::soundEnabled() const { return sound_player_->enabled(); }
+QString NativeController::soundStatus() const { return sound_player_->status(); }
+double NativeController::soundVolume() const { return sound_player_->volume(); }
+int NativeController::soundPlayRequestCount() const { return sound_player_->playRequestCount(); }
+
+void NativeController::previewSound() { sound_player_->play(); }
+void NativeController::setSoundEnabled(bool enabled) { sound_player_->setMuted(!enabled); }
+void NativeController::setSoundVolume(double volume) { sound_player_->setVolume(volume); }
+
 QVariantList NativeController::standings() const {
     QVariantList result;
-    for (int seat = 0; seat < match_.count; ++seat) {
-        const auto id = match_.players[seat].id;
-        int place = 0;
-        for (int i = 0; i < state_.finished_count; ++i)
-            if (state_.finish_order[i] == id) place = i + 1;
+    for (int index = 0; index < state_.finished_count; ++index) {
+        const auto id = state_.finish_order[index];
+        const int place = index + 1;
         const QString place_label = place == 1 ? QStringLiteral("1st")
             : place == 2 ? QStringLiteral("2nd") : place == 3 ? QStringLiteral("3rd") : QString();
-        result.push_back(QVariantMap{{"place", place}, {"placeLabel", place_label},
+        result.push_back(QVariantMap{{"place", place}, {"placeLabel", place_label}, {"playerId", id},
             {"name", playerName(id)}, {"color", playerColor(id)},
             {"isAi", ai_seats_.contains(id)}});
     }
     return result;
+}
+
+QString NativeController::resultSummary() const {
+    if (!state_.finished_count) return {};
+    if (!isGameOver())
+        return QStringLiteral("%1 is home in 1st place. Play continues for 2nd.")
+            .arg(playerName(state_.finish_order[0]));
+    QStringList parts;
+    for (int index = 0; index < state_.finished_count; ++index) {
+        const QString place = index == 0 ? QStringLiteral("1st")
+            : index == 1 ? QStringLiteral("2nd") : QStringLiteral("3rd");
+        parts.push_back(QStringLiteral("%1 %2").arg(place, playerName(state_.finish_order[index])));
+    }
+    return parts.join(QStringLiteral(" · "));
 }
 
 QVariantList NativeController::seatColorsFor(int count) const {
@@ -314,8 +387,53 @@ QVariantList NativeController::turnOrder() const {
 
 QVariantList NativeController::aiSeats() const { return ai_seats_; }
 
-void NativeController::startMatch(const QVariantList& order, const QVariantList& aiSeats) {
-    if (order.size() < 2 || order.size() > 3) return;
+QVariantList NativeController::proposalPathIds() const {
+    QVariantList result;
+    for (int position : proposal_path_) result.push_back(position);
+    return result;
+}
+
+QString NativeController::proposalSummary() const {
+    if (proposal_path_.size() < 2) return {};
+    return QStringLiteral("%1 → %2").arg(proposal_path_.front()).arg(proposal_path_.back());
+}
+
+QString NativeController::proposalPath() const {
+    QStringList positions;
+    for (int position : proposal_path_) positions.push_back(QString::number(position));
+    return positions.join(QStringLiteral(" → "));
+}
+
+QString NativeController::lastMoveText() const {
+    if (history_.isEmpty()) return QStringLiteral("—");
+    const QVariantMap row = history_.constLast().toMap();
+    return QStringLiteral("%1  %2").arg(row.value("playerLabel").toString(),
+                                        row.value("moveText").toString());
+}
+
+bool NativeController::startMatch(const QVariantList& order, const QVariantList& aiSeats) {
+    if (order.size() < 2 || order.size() > 3) {
+        fail(QStringLiteral("Cannot start match: unsupported player count."));
+        return false;
+    }
+    QSet<int> seat_ids;
+    for (const QVariant& value : order) seat_ids.insert(value.toInt());
+    for (int id = 1; id <= order.size(); ++id) {
+        if (!seat_ids.contains(id)) {
+            fail(QStringLiteral("Cannot start match: turn order must be a seat permutation."));
+            return false;
+        }
+    }
+    if (seat_ids.size() != order.size()) {
+        fail(QStringLiteral("Cannot start match: duplicate seat in turn order."));
+        return false;
+    }
+    for (const QVariant& value : aiSeats) {
+        if (!seat_ids.contains(value.toInt())) {
+            fail(QStringLiteral("Cannot start match: AI seat is not in this match."));
+            return false;
+        }
+    }
     cancelSearch();
     match_ = {};
     match_.count = static_cast<uint8_t>(order.size());
@@ -326,8 +444,8 @@ void NativeController::startMatch(const QVariantList& order, const QVariantList&
     const int targets3[3] = {5, 4, 3};
     for (int i = 0; i < match_.count; ++i) {
         const int id = order.at(i).toInt();
-        const int camp = match_.count == 2 ? camps2[i] : camps3[i];
-        const int target = match_.count == 2 ? targets2[i] : targets3[i];
+        const int camp = match_.count == 2 ? camps2[id - 1] : camps3[id - 1];
+        const int target = match_.count == 2 ? targets2[id - 1] : targets3[id - 1];
         match_.players[i] = soo::PlayerSpec{static_cast<uint8_t>(id),
                                              static_cast<uint8_t>(camp),
                                              static_cast<uint8_t>(target)};
@@ -335,67 +453,218 @@ void NativeController::startMatch(const QVariantList& order, const QVariantList&
     ai_seats_ = aiSeats;
     state_ = {};
     state_.current_player = static_cast<uint8_t>(order.at(0).toInt());
+    stopAnimation();
     state_history_.clear(); history_.clear(); selected_position_ = -1; legal_actions_.clear();
+    clearProposal();
+    piece_model_->setRows({});
+    next_piece_id_ = 0;
+    ai_rejected_.clear();
+    ai_details_.clear();
+    ai_status_ = QStringLiteral("Ready");
+    announced_finishers_.clear();
+    last_action_ = -1;
+    ++game_number_;
+    error_message_.clear();
+    status_message_ = QStringLiteral("New %1-player match started.").arg(match_.count);
     for (int i = 0; i < match_.count; ++i)
         for (const auto position : soo::topology().camp_positions[match_.players[i].camp])
             state_.occupancy[position] = match_.players[i].id;
     refreshModels(); Q_EMIT changed();
+    if (ai_seats_.contains(state_.current_player)) startAiTurn();
+    return true;
 }
 
-void NativeController::saveGame(const QUrl& path) {
-    if (!path.isLocalFile()) return;
-    QJsonObject root;
-    root["version"] = 1;
-    root["playerCount"] = match_.count;
-    root["currentPlayer"] = state_.current_player;
-    root["turnNumber"] = state_.turn_number;
-    QJsonArray order, ai, occupancy;
-    for (const auto& p : match_.players) if (p.id != 0) order.push_back(p.id);
-    for (const auto& seat : ai_seats_) ai.push_back(seat.toInt());
-    for (const auto piece : state_.occupancy) occupancy.push_back(piece);
-    root["order"] = order; root["aiSeats"] = ai; root["occupancy"] = occupancy;
-    QFile file(path.toLocalFile());
-    if (file.open(QIODevice::WriteOnly)) file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-}
-
-void NativeController::loadGame(const QUrl& path) {
-    if (!path.isLocalFile()) return;
-    QFile file(path.toLocalFile());
-    if (!file.open(QIODevice::ReadOnly)) return;
-    const auto root = QJsonDocument::fromJson(file.readAll()).object();
-    const auto orderJson = root.value("order").toArray();
-    const auto aiJson = root.value("aiSeats").toArray();
-    QVariantList order, ai;
-    for (const auto value : orderJson) order.push_back(value.toInt());
-    for (const auto value : aiJson) ai.push_back(value.toInt());
-    if (order.size() < 2 || order.size() > 3) return;
+void NativeController::newGame() {
+    const QVariantList order = turnOrder();
+    const QVariantList ai = aiSeats();
     startMatch(order, ai);
-    const auto occupancy = root.value("occupancy").toArray();
-    if (occupancy.size() == soo::kBoardSize) {
-        for (int i = 0; i < soo::kBoardSize; ++i) state_.occupancy[i] = static_cast<uint8_t>(occupancy.at(i).toInt());
-        state_.current_player = static_cast<uint8_t>(root.value("currentPlayer").toInt(state_.current_player));
-        state_.turn_number = root.value("turnNumber").toInt(0);
-        refreshModels(); Q_EMIT changed();
+    status_message_ = QStringLiteral("New game started.");
+    Q_EMIT changed();
+}
+
+bool NativeController::saveGame(const QUrl& path) {
+    if (!path.isLocalFile()) {
+        fail(QStringLiteral("Save failed: destination is not a local file."));
+        return false;
     }
+    QJsonObject root;
+    root["schema_version"] = 2;
+    QJsonArray players;
+    for (int index = 0; index < match_.count; ++index) {
+        const auto& player = match_.players[index];
+        players.push_back(QJsonObject{{"id", player.id}, {"name", playerName(player.id)},
+            {"kind", ai_seats_.contains(player.id) ? QStringLiteral("ai") : QStringLiteral("human")},
+            {"camp", camp_key(player.camp)}, {"target_camp", camp_key(player.target_camp)},
+            {"color", playerColor(player.id)}});
+    }
+    root["players"] = players;
+    QJsonArray occupancy;
+    for (const auto piece : state_.occupancy) occupancy.push_back(piece);
+    root["occupancy"] = occupancy;
+    root["current_player_id"] = state_.current_player;
+    root["turn_number"] = state_.turn_number;
+    root["status"] = isGameOver() ? QStringLiteral("finished") : QStringLiteral("in_progress");
+    QJsonArray finish_order;
+    for (int index = 0; index < state_.finished_count; ++index)
+        finish_order.push_back(state_.finish_order[index]);
+    root["finish_order"] = finish_order;
+
+    QJsonArray records;
+    for (const QVariant& value : history_) {
+        const QVariantMap row = value.toMap();
+        QJsonArray move_path;
+        for (const QVariant& position : row.value("pathIds").toList())
+            move_path.push_back(position.toInt());
+        QJsonObject move{{"player_id", row.value("playerId").toInt()},
+            {"source", row.value("source").toInt()},
+            {"destination", row.value("destination").toInt()}, {"path", move_path},
+            {"kind", row.value("kind").toString()}};
+        records.push_back(QJsonObject{{"turn_number", row.value("turnNumber").toInt()},
+            {"player_id", row.value("playerId").toInt()}, {"move", move},
+            {"timestamp", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+            {"metadata", QJsonObject{}}});
+    }
+    root["history"] = records;
+
+    const QString local_path = path.toLocalFile();
+    QDir().mkpath(QFileInfo(local_path).absolutePath());
+    QFile file(local_path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        fail(QStringLiteral("Save failed: %1").arg(file.errorString()));
+        return false;
+    }
+    if (file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0) {
+        fail(QStringLiteral("Save failed: %1").arg(file.errorString()));
+        return false;
+    }
+    status_message_ = QStringLiteral("Saved to %1").arg(local_path);
+    error_message_.clear();
+    Q_EMIT changed();
+    return true;
+}
+
+bool NativeController::loadGame(const QUrl& path) {
+    if (!path.isLocalFile()) {
+        fail(QStringLiteral("Load failed: source is not a local file."));
+        return false;
+    }
+    QFile file(path.toLocalFile());
+    if (!file.open(QIODevice::ReadOnly)) {
+        fail(QStringLiteral("Load failed: %1").arg(file.errorString()));
+        return false;
+    }
+    QJsonParseError parse_error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !document.isObject()) {
+        fail(QStringLiteral("Load failed: invalid JSON (%1).").arg(parse_error.errorString()));
+        return false;
+    }
+    const QJsonObject root = document.object();
+    QVariantList order, ai;
+    const int schema = root.value("schema_version").toInt(0);
+    if (schema == 2) {
+        for (const QJsonValue& value : root.value("players").toArray()) {
+            const QJsonObject player = value.toObject();
+            order.push_back(player.value("id").toInt());
+            if (player.value("kind").toString() == QStringLiteral("ai")) ai.push_back(player.value("id").toInt());
+        }
+    } else if (root.value("version").toInt() == 1) {
+        for (const QJsonValue& value : root.value("order").toArray()) order.push_back(value.toInt());
+        for (const QJsonValue& value : root.value("aiSeats").toArray()) ai.push_back(value.toInt());
+    } else {
+        fail(QStringLiteral("Load failed: unsupported save schema version."));
+        return false;
+    }
+    if (!startMatch(order, ai)) return false;
+    cancelSearch();
+
+    const auto occupancy = root.value("occupancy").toArray();
+    if (occupancy.size() != soo::kBoardSize) {
+        fail(QStringLiteral("Load failed: occupancy must contain 73 holes."));
+        return false;
+    }
+
+    if (schema == 2) {
+        history_.clear();
+        state_history_.clear();
+        for (const QJsonValue& value : root.value("history").toArray()) {
+            const QJsonObject entry = value.toObject();
+            const QJsonObject move = entry.value("move").toObject();
+            const int source = move.value("source").toInt(-1);
+            const int destination = move.value("destination").toInt(-1);
+            const int32_t action = source * soo::kBoardSize + destination;
+            std::vector<int32_t> legal;
+            soo::legal_action_ids(state_, legal);
+            if (move.value("player_id").toInt() != state_.current_player ||
+                std::find(legal.begin(), legal.end(), action) == legal.end()) {
+                fail(QStringLiteral("Load failed: saved history contains an illegal move."));
+                return false;
+            }
+            std::vector<uint8_t> canonical;
+            uint8_t kind = soo::kStep;
+            soo::canonical_move_path(state_, source, destination, canonical, &kind);
+            QVariantList path_ids;
+            for (uint8_t position : canonical) path_ids.push_back(position);
+            const uint8_t player = state_.current_player;
+            state_history_.push_back(state_);
+            state_ = soo::apply_action(state_, match_, action);
+            const bool is_ai = ai_seats_.contains(player);
+            QStringList path_parts;
+            for (uint8_t position : canonical) path_parts.push_back(QString::number(position));
+            history_.push_back(QVariantMap{{"turnNumber", entry.value("turn_number").toInt()},
+                {"playerId", player}, {"playerLabel", is_ai ? QStringLiteral("AI")
+                                                              : QStringLiteral("P%1").arg(player)},
+                {"playerColor", playerColor(player)}, {"isAi", is_ai},
+                {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
+                {"pathText", path_parts.join(QStringLiteral(" → "))}, {"pathIds", path_ids},
+                {"source", source}, {"destination", destination},
+                {"kind", kind == soo::kJump ? QStringLiteral("jump") : QStringLiteral("step")},
+                {"hopCount", std::max(1, static_cast<int>(canonical.size()) - 1)}});
+            last_action_ = action;
+        }
+        for (int index = 0; index < soo::kBoardSize; ++index) {
+            if (state_.occupancy[index] != occupancy.at(index).toInt()) {
+                fail(QStringLiteral("Load failed: saved board does not match move history."));
+                return false;
+            }
+        }
+        if (state_.current_player != root.value("current_player_id").toInt() ||
+            state_.turn_number != root.value("turn_number").toInt()) {
+            fail(QStringLiteral("Load failed: saved turn does not match move history."));
+            return false;
+        }
+    } else {
+        for (int index = 0; index < soo::kBoardSize; ++index)
+            state_.occupancy[index] = static_cast<uint8_t>(occupancy.at(index).toInt());
+        state_.current_player = static_cast<uint8_t>(root.value("currentPlayer").toInt(state_.current_player));
+        state_.turn_number = static_cast<uint16_t>(root.value("turnNumber").toInt(1));
+    }
+    selected_position_ = -1;
+    legal_actions_.clear();
+    clearProposal();
+    announced_finishers_.clear();
+    for (int index = 0; index < state_.finished_count; ++index)
+        announced_finishers_.push_back(state_.finish_order[index]);
+    status_message_ = QStringLiteral("Game loaded.");
+    error_message_.clear();
+    refreshModels();
+    Q_EMIT changed();
+    if (!isGameOver() && ai_seats_.contains(state_.current_player)) startAiTurn();
+    return true;
 }
 
 void NativeController::loadTopology() {
-    controller_startup_trace("load-topology-start");
-    const QString root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-    controller_startup_trace("load-topology-root");
+    QString root = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("artifacts/soo-spike"));
+    if (!QDir(root).exists()) root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
     auto& topo = soo::mutable_topology();
-    controller_startup_trace("load-topology-state");
     {
         std::ifstream file(root.toStdString() + "/topology_neighbour.i8", std::ios::binary);
-        controller_startup_trace("load-topology-neighbour-open");
         if (!file) return;
         file.read(reinterpret_cast<char*>(topo.neighbour.data()), sizeof(topo.neighbour));
-        controller_startup_trace("load-topology-neighbour-read");
         if (file.gcount() != static_cast<std::streamsize>(sizeof(topo.neighbour))) return;
     }
     std::vector<int32_t> camps(60), pairwise(5329), physical(438), canonical(438);
     auto read_vector = [&](const char* name, std::vector<int32_t>& values) {
-        controller_startup_trace(name);
         std::ifstream file(root.toStdString() + "/" + name, std::ios::binary);
         if (!file) return false;
         file.read(reinterpret_cast<char*>(values.data()), values.size() * sizeof(int32_t));
@@ -416,71 +685,347 @@ void NativeController::loadTopology() {
     topo.configured = true;
 }
 
-void NativeController::refreshModels() {
-    QVariantList board, pieces;
+void NativeController::rebuildPieceModel() {
     const auto geo = geometry_->holes();
+    QVariantList rows = piece_model_->rows();
+    QSet<int> occupied_positions;
+    for (int position = 0; position < soo::kBoardSize; ++position) {
+        if (state_.occupancy[position] != soo::kEmpty) occupied_positions.insert(position);
+    }
+
+    QSet<int> consumed;
+    for (int row = 0; row < rows.size(); ++row) {
+        QVariantMap piece = rows[row].toMap();
+        const int position = piece.value("positionId").toInt();
+        const int player = piece.value("playerId").toInt();
+        if (position >= 0 && position < soo::kBoardSize && state_.occupancy[position] == player) {
+            piece["isMoving"] = false;
+            rows[row] = piece;
+            consumed.insert(position);
+            next_piece_id_ = std::max(next_piece_id_, piece.value("pieceId").toInt() + 1);
+        }
+    }
+
+    for (int row = 0; row < rows.size(); ++row) {
+        QVariantMap piece = rows[row].toMap();
+        const int old_position = piece.value("positionId").toInt();
+        const int player = piece.value("playerId").toInt();
+        if (consumed.contains(old_position) && state_.occupancy[old_position] == player) continue;
+        int target = -1;
+        for (int position = 0; position < soo::kBoardSize; ++position) {
+            if (!consumed.contains(position) && state_.occupancy[position] == player) {
+                target = position;
+                break;
+            }
+        }
+        if (target < 0) {
+            piece["positionId"] = -1;
+            rows[row] = piece;
+            continue;
+        }
+        const QVariantMap point = geo[target].toMap();
+        piece["positionId"] = target;
+        piece["unitX"] = point.value("x");
+        piece["unitY"] = point.value("y");
+        piece["color"] = playerColor(static_cast<uint8_t>(player));
+        piece["isMoving"] = false;
+        rows[row] = piece;
+        consumed.insert(target);
+    }
+
+    QVariantList compact;
+    for (const QVariant& value : rows) {
+        if (value.toMap().value("positionId").toInt() >= 0) compact.push_back(value);
+    }
+    for (int position = 0; position < soo::kBoardSize; ++position) {
+        if (!occupied_positions.contains(position) || consumed.contains(position)) continue;
+        const int player = state_.occupancy[position];
+        const QVariantMap point = geo[position].toMap();
+        compact.push_back(QVariantMap{{"pieceId", next_piece_id_++}, {"playerId", player},
+            {"positionId", position}, {"unitX", point.value("x")},
+            {"unitY", point.value("y")}, {"color", playerColor(static_cast<uint8_t>(player))},
+            {"isMoving", false}});
+    }
+    piece_model_->setRows(compact);
+}
+
+void NativeController::refreshModels(bool rebuildPieces) {
+    QVariantList board;
+    const auto geo = geometry_->holes();
+    const auto points = board_points();
+    const int last_source = last_action_ >= 0 ? last_action_ / soo::kBoardSize : -1;
+    const int last_destination = last_action_ >= 0 ? last_action_ % soo::kBoardSize : -1;
     for (int p = 0; p < soo::kBoardSize; ++p) {
+        QString key;
+        for (int camp = 0; camp < 6; ++camp) {
+            if (point_in_camp(points[p], camp)) { key = camp_key(camp); break; }
+        }
         QVariantMap row{{"positionId", p}, {"unitX", geo[p].toMap().value("x")},
-                        {"unitY", geo[p].toMap().value("y")}, {"campKey", "neutral"},
+                        {"unitY", geo[p].toMap().value("y")}, {"campKey", key},
                         {"occupant", state_.occupancy[p]}, {"isSelected", p == selected_position_},
                         {"isLegalStep", false}, {"isLegalJump", false}, {"isPathNode", false},
-                        {"pathIndex", -1}, {"isLastMoveSource", false}, {"isLastMoveDest", false},
+                        {"pathIndex", -1}, {"isLastMoveSource", p == last_source},
+                        {"isLastMoveDest", p == last_destination},
                         {"isProposalSource", false}, {"isProposalDest", false}};
-        for (int32_t action : legal_actions_) if (action % soo::kBoardSize == p) row["isLegalStep"] = true;
+        for (int32_t action : legal_actions_) if (action % soo::kBoardSize == p) {
+            std::vector<uint8_t> path;
+            uint8_t kind = soo::kStep;
+            if (soo::canonical_move_path(state_, action / soo::kBoardSize, p, path, &kind))
+                row[kind == soo::kJump ? "isLegalJump" : "isLegalStep"] = true;
+        }
+        for (int index = 0; index < proposal_path_.size(); ++index) {
+            if (proposal_path_[index] != p) continue;
+            row["isPathNode"] = true;
+            row["pathIndex"] = index;
+        }
+        if (!proposal_path_.isEmpty()) {
+            row["isProposalSource"] = proposal_path_.front() == p;
+            row["isProposalDest"] = proposal_path_.back() == p;
+        }
         board.push_back(row);
-        if (state_.occupancy[p] != soo::kEmpty)
-            pieces.push_back(QVariantMap{{"pieceId", p}, {"playerId", state_.occupancy[p]},
-                {"positionId", p}, {"unitX", geo[p].toMap().value("x")},
-                {"unitY", geo[p].toMap().value("y")}, {"color", playerColor(state_.occupancy[p])},
-                {"isMoving", false}});
     }
-    board_model_->setRows(board); piece_model_->setRows(pieces); history_model_->setRows(history_);
+    board_model_->setRows(board);
+    if (rebuildPieces) rebuildPieceModel();
+    history_model_->setRows(history_);
+
+    QVariantList players;
+    for (int seat = 0; seat < match_.count; ++seat) {
+        const auto& spec = match_.players[seat];
+        int home_count = 0;
+        for (uint8_t position : soo::topology().camp_positions[spec.target_camp])
+            if (state_.occupancy[position] == spec.id) ++home_count;
+        int place = 0;
+        for (int index = 0; index < state_.finished_count; ++index)
+            if (state_.finish_order[index] == spec.id) place = index + 1;
+        const QString place_label = place == 1 ? QStringLiteral("1st")
+            : place == 2 ? QStringLiteral("2nd") : place == 3 ? QStringLiteral("3rd") : QString();
+        const bool is_ai = ai_seats_.contains(spec.id);
+        players.push_back(QVariantMap{{"playerId", spec.id}, {"name", playerName(spec.id)},
+            {"kindLabel", is_ai ? aiAgentName() : QStringLiteral("Human")},
+            {"color", playerColor(spec.id)}, {"isCurrent", state_.current_player == spec.id},
+            {"isAi", is_ai}, {"homeCount", home_count}, {"campSize", soo::kCampSize},
+            {"hasFinished", home_count == soo::kCampSize}, {"turnIndex", seat + 1},
+            {"place", place}, {"placeLabel", place_label}});
+    }
+    player_model_->setRows(players);
+}
+
+void NativeController::clearProposal() {
+    proposal_action_ = -1;
+    proposal_path_.clear();
+    proposal_is_ai_ = false;
+}
+
+void NativeController::proposeAction(int32_t action, bool isAi) {
+    std::vector<uint8_t> path;
+    if (!soo::canonical_move_path(state_, action / soo::kBoardSize,
+                                  action % soo::kBoardSize, path)) return;
+    proposal_action_ = action;
+    proposal_path_.clear();
+    for (uint8_t position : path) proposal_path_.push_back(position);
+    proposal_is_ai_ = isAi;
+    status_message_ = isAi ? QStringLiteral("AI move proposed.")
+                           : QStringLiteral("Move proposed. Confirm or cancel.");
+    if (!isAi) ai_details_.clear();
+    refreshModels();
+    Q_EMIT changed();
+}
+
+void NativeController::commitAction(int32_t action) {
+    const int source = action / soo::kBoardSize;
+    const int destination = action % soo::kBoardSize;
+    const uint8_t player = state_.current_player;
+    const QVector<int> path = proposal_path_;
+    const bool was_ai = proposal_is_ai_;
+    const QString path_text = proposalPath();
+    QVariantList path_ids;
+    for (int position : path) path_ids.push_back(position);
+    const int piece_row = piece_model_->rowWithValue(QByteArrayLiteral("positionId"), source);
+    state_history_.push_back(state_);
+    state_ = soo::apply_action(state_, match_, action);
+    history_.push_back(QVariantMap{{"turnNumber", state_.turn_number - 1},
+        {"playerId", player}, {"playerLabel", was_ai ? QStringLiteral("AI")
+                                                       : QStringLiteral("P%1").arg(player)},
+        {"playerColor", playerColor(player)}, {"isAi", was_ai},
+        {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
+        {"pathText", path_text}, {"pathIds", path_ids}, {"source", source},
+        {"destination", destination}, {"kind", path.size() > 2 ? QStringLiteral("jump")
+                                                                  : QStringLiteral("step")},
+        {"hopCount", std::max(1, static_cast<int>(path.size()) - 1)}});
+    last_action_ = action;
+    status_message_ = QStringLiteral("Move committed.");
+    selected_position_ = -1;
+    legal_actions_.clear();
+    clearProposal();
+    refreshModels(false);
+    startAnimation(piece_row, path);
+}
+
+void NativeController::startAnimation(int pieceRow, const QVector<int>& path) {
+    if (pieceRow < 0 || path.size() < 2) {
+        sound_player_->play();
+        rebuildPieceModel();
+        finishMove();
+        return;
+    }
+    animation_row_ = pieceRow;
+    animation_path_ = path;
+    animation_index_ = 0;
+    animating_ = true;
+    status_message_ = QStringLiteral("Animating move…");
+    Q_EMIT changed();
+    animation_timer_->start();
+}
+
+void NativeController::animationTick() {
+    ++animation_index_;
+    if (animation_index_ >= animation_path_.size()) {
+        stopAnimation();
+        rebuildPieceModel();
+        finishMove();
+        return;
+    }
+    const int position = animation_path_[animation_index_];
+    const QVariantMap point = geometry_->holes().at(position).toMap();
+    const bool last_hop = animation_index_ == animation_path_.size() - 1;
+    piece_model_->updateRow(animation_row_, QVariantMap{{"positionId", position},
+        {"unitX", point.value("x")}, {"unitY", point.value("y")},
+        {"isMoving", !last_hop}});
+    sound_player_->play();
+}
+
+void NativeController::stopAnimation() {
+    animation_timer_->stop();
+    animation_row_ = -1;
+    animation_path_.clear();
+    animation_index_ = 0;
+    animating_ = false;
+}
+
+void NativeController::finishMove() {
+    announceFinishers();
+    if (isGameOver()) {
+        ai_status_ = QStringLiteral("Idle");
+        status_message_ = QStringLiteral("Game over — %1").arg(resultSummary());
+        Q_EMIT changed();
+        Q_EMIT gameFinished(winnerId());
+        return;
+    }
+    if (ai_seats_.contains(state_.current_player)) {
+        ai_rejected_.clear();
+        startAiTurn();
+        return;
+    }
+    ai_status_ = QStringLiteral("Ready");
+    status_message_ = QStringLiteral("%1 to move.").arg(currentPlayerName());
+    Q_EMIT changed();
+}
+
+void NativeController::announceFinishers() {
+    for (int index = 0; index < state_.finished_count; ++index) {
+        const int player = state_.finish_order[index];
+        if (announced_finishers_.contains(player)) continue;
+        announced_finishers_.push_back(player);
+        Q_EMIT playerFinished(player, index + 1);
+    }
+}
+
+void NativeController::fail(const QString& message) {
+    error_message_ = message;
+    Q_EMIT errorRaised(message);
+    Q_EMIT changed();
+}
+
+void NativeController::startAiTurn() {
+    if (isGameOver() || !ai_seats_.contains(state_.current_player) || ai_worker_->isRunning()) return;
+
+    std::vector<int32_t> legal;
+    soo::legal_action_ids(state_, legal);
+    if (legal.empty()) {
+        ai_status_ = QStringLiteral("No legal move");
+        ai_thinking_ = false;
+        Q_EMIT changed();
+        return;
+    }
+
+    const soo::State search_state = state_;
+    const soo::Match search_match = match_;
+    const QVector<int32_t> rejected = ai_rejected_;
+    ai_thinking_ = true;
+    ai_status_ = QStringLiteral("Thinking…");
+    status_message_ = QStringLiteral("%1 is thinking…").arg(currentPlayerName());
+    ai_details_ = {QVariantMap{{"label", QStringLiteral("Agent")}, {"value", aiAgentName()}},
+        QVariantMap{{"label", QStringLiteral("Legal moves")},
+                    {"value", QString::number(static_cast<int>(legal.size()))}}};
+    Q_EMIT changed();
+
+    const quint64 request_generation = ++generation_;
+    ai_worker_->start(request_generation, [search_state, search_match, rejected, legal]() -> int {
+        auto is_rejected = [&rejected](int32_t action) {
+            return std::find(rejected.cbegin(), rejected.cend(), action) != rejected.cend();
+        };
+#ifdef DIAMOND_QT_HAS_SOO
+        if (search_match.count == 2) {
+            configure_torch_cpu();
+            diamond_model::SooModel model(128, 6);
+            QString root = QDir(QCoreApplication::applicationDirPath())
+                               .filePath(QStringLiteral("artifacts/soo-spike"));
+            if (!QDir(root).exists())
+                root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
+            model->load_weights(root.toStdString() + "/weights");
+            diamond_model::SooEvaluator evaluator(model);
+            soo::MCTSConfig config;
+            config.simulations = 128;
+            config.c_puct = 1.5;
+            config.dirichlet_epsilon = 0.0;
+            soo::MCTS2P search(search_match, evaluator, config);
+            const auto result = search.run(search_state, 0.0, false);
+
+            std::vector<size_t> ranked(result.root_actions.size());
+            std::iota(ranked.begin(), ranked.end(), size_t{0});
+            std::sort(ranked.begin(), ranked.end(), [&result](size_t left, size_t right) {
+                if (result.visit_counts[left] != result.visit_counts[right])
+                    return result.visit_counts[left] > result.visit_counts[right];
+                return result.root_actions[left] < result.root_actions[right];
+            });
+            for (size_t index : ranked)
+                if (!is_rejected(result.root_actions[index])) return result.root_actions[index];
+            return result.selected_action;
+        }
+#endif
+        for (int32_t action : legal) if (!is_rejected(action)) return action;
+        return legal.front();
+    });
 }
 
 void NativeController::selectPosition(int position) {
-    if (ai_thinking_) return;
+    if (!canSelect()) {
+        fail(QStringLiteral("The board is locked right now."));
+        return;
+    }
     if (!soo::mutable_topology().configured || position < 0 || position >= soo::kBoardSize) return;
+    if (proposal_action_ >= 0) {
+        const int32_t action = selected_position_ * soo::kBoardSize + position;
+        if (std::find(legal_actions_.begin(), legal_actions_.end(), action) != legal_actions_.end()) {
+            proposeAction(action, false);
+            return;
+        }
+        if (state_.occupancy[position] == state_.current_player) {
+            clearProposal();
+            selected_position_ = position;
+        } else {
+            return;
+        }
+    }
     if (selected_position_ < 0) {
         if (state_.occupancy[position] == state_.current_player) selected_position_ = position;
     } else {
         const int32_t action = selected_position_ * soo::kBoardSize + position;
         if (std::find(legal_actions_.begin(), legal_actions_.end(), action) != legal_actions_.end()) {
-            state_history_.push_back(state_);
-            state_ = soo::apply_action(state_, match_, action);
-            history_.push_back(QVariantMap{{"turnNumber", state_.turn_number - 1},
-                {"playerLabel", playerName(state_history_.back().current_player)},
-                {"playerColor", playerColor(state_history_.back().current_player)},
-                {"moveText", QStringLiteral("%1 → %2").arg(selected_position_).arg(position)},
-                {"pathText", QStringLiteral("%1 → %2").arg(selected_position_).arg(position)}, {"hopCount", 1}});
-            selected_position_ = -1;
-            if (match_.count == 2 && ai_seats_.contains(state_.current_player) && !isGameOver()) {
-                ai_thinking_ = true;
-                const quint64 generation = ++generation_;
-                const soo::State search_state = state_;
-                const soo::Match search_match = match_;
-                const QString model_root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-                ai_worker_->start(generation, [search_state, search_match, model_root] {
-#ifdef DIAMOND_QT_HAS_SOO
-                    configure_torch_cpu();
-                    diamond_model::SooModel model(128, 6);
-                    model->load_weights(model_root.toStdString() + "/weights");
-                    diamond_model::SooEvaluator evaluator(model);
-                    soo::MCTSConfig config;
-                    config.simulations = 32;
-                    config.c_puct = 1.5;
-                    config.dirichlet_epsilon = 0.0;
-                    soo::MCTS2P search(search_match, evaluator, config);
-                    return search.run(search_state, 0.0, false).selected_action;
-#else
-                    std::vector<int32_t> actions;
-                    soo::legal_action_ids(search_state, actions);
-                    if (actions.empty()) throw std::runtime_error("native AI has no legal action");
-                    return actions.front();
-#endif
-                });
-            }
+            proposeAction(action, false);
+            return;
         } else if (state_.occupancy[position] == state_.current_player) selected_position_ = position;
-        else selected_position_ = -1;
+        else return;
     }
     legal_actions_.clear();
     if (selected_position_ >= 0) {
@@ -490,12 +1035,55 @@ void NativeController::selectPosition(int position) {
     refreshModels(); Q_EMIT changed();
 }
 
-void NativeController::cancelProposal() { selected_position_ = -1; legal_actions_.clear(); refreshModels(); Q_EMIT changed(); }
+void NativeController::confirmProposal() {
+    if (proposal_action_ < 0) return;
+    commitAction(proposal_action_);
+}
+
+void NativeController::cancelProposal() {
+    if (proposal_is_ai_) return;
+    clearProposal(); selected_position_ = -1; legal_actions_.clear();
+    status_message_ = QStringLiteral("Proposal cancelled.");
+    refreshModels(); Q_EMIT changed();
+}
+
+void NativeController::thinkAgain() {
+    if (!proposal_is_ai_ || proposal_action_ < 0 || ai_thinking_) return;
+    ai_rejected_.push_back(proposal_action_);
+    clearProposal();
+    status_message_ = QStringLiteral("Asking the AI for another move…");
+    refreshModels();
+    startAiTurn();
+}
 
 void NativeController::undoLastMove() {
-    if (state_history_.isEmpty()) return;
+    if (state_history_.isEmpty()) {
+        fail(QStringLiteral("Nothing to undo."));
+        return;
+    }
+    cancelSearch();
+    stopAnimation();
     state_ = state_history_.takeLast(); if (!history_.isEmpty()) history_.removeLast();
-    selected_position_ = -1; legal_actions_.clear(); refreshModels(); Q_EMIT changed();
+    ai_rejected_.clear();
+    last_action_ = history_.isEmpty() ? -1
+        : history_.constLast().toMap().value("source").toInt() * soo::kBoardSize
+          + history_.constLast().toMap().value("destination").toInt();
+    announced_finishers_.clear();
+    for (int index = 0; index < state_.finished_count; ++index)
+        announced_finishers_.push_back(state_.finish_order[index]);
+    selected_position_ = -1; legal_actions_.clear(); clearProposal();
+    status_message_ = QStringLiteral("Last move undone.");
+    refreshModels(); Q_EMIT changed();
+    if (ai_seats_.contains(state_.current_player)) QTimer::singleShot(0, this, &NativeController::startAiTurn);
+}
+
+void NativeController::requestAiMove() {
+    if (!ai_thinking_ && proposal_action_ < 0 && isCurrentPlayerAi()) startAiTurn();
+}
+
+void NativeController::shutdown() {
+    stopAnimation();
+    cancelSearch();
 }
 
 bool NativeController::gameSmoke() {

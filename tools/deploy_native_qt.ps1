@@ -29,6 +29,10 @@ $env:PATH = "$qtBin;$envBin;$env:PATH"
 $destination = Join-Path $repo $OutputDir
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Copy-Item -LiteralPath $exe -Destination (Join-Path $destination "diamond_qt.exe") -Force
+$soundSource = Join-Path $repo "src\diamond\assets\sounds\move.m4a"
+$soundDestination = Join-Path $destination "assets\sounds"
+New-Item -ItemType Directory -Force -Path $soundDestination | Out-Null
+Copy-Item -LiteralPath $soundSource -Destination (Join-Path $soundDestination "move.m4a") -Force
 
 # conda-forge's windeployqt currently resolves its Qt prefix incorrectly on
 # Windows. Copy the same runtime pieces explicitly instead.
@@ -57,6 +61,14 @@ Plugins = plugins
 Qml2Imports = qml
 "@ | Set-Content -LiteralPath (Join-Path $destination "qt.conf") -Encoding ASCII
 
+# The native rules need the generated board topology in both the shell and
+# LibTorch packages. Model weights are only used by the -WithSoo package.
+$artifactSource = Join-Path $repo "artifacts\soo-spike"
+if (-not (Test-Path -LiteralPath $artifactSource)) { throw "Soo artifacts not found: $artifactSource" }
+$artifactDestination = Join-Path $destination "artifacts"
+New-Item -ItemType Directory -Force -Path $artifactDestination | Out-Null
+Copy-Item -LiteralPath $artifactSource -Destination $artifactDestination -Recurse -Force
+
 if ($WithSoo) {
     $patterns = @("torch*.dll", "c10*.dll", "fbgemm*.dll", "asmjit*.dll", "mkl*.dll",
         "libiomp*.dll", "vcomp*.dll", "tbb*.dll", "sleef*.dll", "zlib*.dll", "uv*.dll", "libomp*.dll")
@@ -64,11 +76,6 @@ if ($WithSoo) {
         Get-ChildItem -LiteralPath $envBin -Filter $pattern -File -ErrorAction SilentlyContinue |
             Copy-Item -Destination $destination -Force
     }
-    $artifactSource = Join-Path $repo "artifacts\soo-spike"
-    if (-not (Test-Path -LiteralPath $artifactSource)) { throw "Soo artifacts not found: $artifactSource" }
-    $artifactDestination = Join-Path $destination "artifacts"
-    New-Item -ItemType Directory -Force -Path $artifactDestination | Out-Null
-    Copy-Item -LiteralPath $artifactSource -Destination $artifactDestination -Recurse -Force
 }
 
 Write-Host "Native Qt deployment created at: $destination"

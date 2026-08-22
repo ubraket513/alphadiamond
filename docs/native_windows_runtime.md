@@ -432,10 +432,9 @@ avoid Qt's `slots` macro colliding with LibTorch's `IValue::slots()` API.
 
 The implementation remains Python-free at runtime. The shell-only build works
 without LibTorch; the Soo-enabled build requires the exported
-`artifacts/soo-spike` weights/topology and the CPU LibTorch package. The app
-expects to be launched from the repository/artifact root at present, because
-the native controller resolves `artifacts/soo-spike` from the current working
-directory.
+`artifacts/soo-spike` weights/topology and the CPU LibTorch package. The native
+controller resolves `artifacts/soo-spike` beside the executable first, then
+falls back to the current working directory for developer builds.
 
 Known non-blocking environment diagnostics are the missing optional Vulkan
 headers, the Torch CMake warning about the optional `kineto` library, and MSVC

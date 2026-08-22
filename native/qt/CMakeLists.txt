@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia)
 
 if(DIAMOND_BUILD_QT_SOO)
     find_package(Torch REQUIRED)
@@ -13,9 +13,14 @@ qt_add_executable(diamond_qt
     ai_worker.hpp
     native_controller.cpp
     native_controller.hpp
+    native_move_player.cpp
+    native_move_player.hpp
+    native_chrome.cpp
+    native_chrome.hpp
 )
 
 set(QML_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../src/diamond/qml")
+set(ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../src/diamond/assets")
 
 qt_add_resources(diamond_qt qml_resources
     PREFIX "/qml"
@@ -46,8 +51,17 @@ qt_add_resources(diamond_qt qml_resources
         "${QML_ROOT}/Style/qmldir"
 )
 
+qt_add_resources(diamond_qt font_resources
+    PREFIX "/fonts"
+    BASE "${ASSET_ROOT}/fonts"
+    FILES
+        "${ASSET_ROOT}/fonts/GoogleSansFlex-Regular.ttf"
+        "${ASSET_ROOT}/fonts/GoogleSansFlex-Medium.ttf"
+        "${ASSET_ROOT}/fonts/GoogleSansFlex-Bold.ttf"
+)
+
 target_link_libraries(diamond_qt PRIVATE
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Multimedia
     alphadiamond::soo_core alphadiamond::soo_search
 )
 if(DIAMOND_BUILD_QT_SOO)
@@ -61,3 +75,46 @@ set_target_properties(diamond_qt PROPERTIES AUTOMOC ON WIN32_EXECUTABLE TRUE)
 if(MSVC)
     target_compile_options(diamond_qt PRIVATE /W4)
 endif()
+if(WIN32)
+    target_link_libraries(diamond_qt PRIVATE dwmapi shell32 user32)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(diamond_qt_controller_contract
+        tests/controller_contract.cpp
+        ai_worker.cpp
+        ai_worker.hpp
+        native_controller.cpp
+        native_controller.hpp
+        native_move_player.cpp
+        native_move_player.hpp
+    )
+    target_link_libraries(diamond_qt_controller_contract PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Multimedia
+        alphadiamond::soo_core alphadiamond::soo_search
+    )
+    target_include_directories(diamond_qt_controller_contract PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_compile_features(diamond_qt_controller_contract PRIVATE cxx_std_20)
+    set_target_properties(diamond_qt_controller_contract PROPERTIES AUTOMOC ON)
+    if(MSVC)
+        target_compile_options(diamond_qt_controller_contract PRIVATE /W4)
+    endif()
+    add_test(NAME diamond_qt_controller_contract COMMAND diamond_qt_controller_contract)
+    set_tests_properties(diamond_qt_controller_contract PROPERTIES
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+endif()
+
+set(MOVE_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/../../src/diamond/assets/sounds/move.m4a")
+foreach(sound_target diamond_qt diamond_qt_controller_contract)
+    if(TARGET ${sound_target})
+        add_custom_command(TARGET ${sound_target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${sound_target}>/assets/sounds"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${MOVE_SOUND}" "$<TARGET_FILE_DIR:${sound_target}>/assets/sounds/move.m4a"
+            VERBATIM)
+    endif()
+endforeach()

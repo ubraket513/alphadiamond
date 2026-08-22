@@ -17,6 +17,13 @@ inline constexpr uint8_t kJump = 1;
 // discovery order.  ``kind_out`` may be null.  Returns the destination count.
 int moves_from(const State& state, int source, uint8_t* dest_out, uint8_t* kind_out);
 
+// Canonical shortest path for one legal source/destination pair.  The result
+// includes both endpoints and uses the same BFS direction-order tie-break as
+// ``moves_from`` and the Python rules oracle.  Returns false for an illegal
+// move. ``kind_out`` may be null.
+bool canonical_move_path(const State& state, int source, int destination,
+                         std::vector<uint8_t>& path_out, uint8_t* kind_out = nullptr);
+
 // Physical action ids for the player to act, in Python's ``legal_moves`` order
 // (ascending source, then ``moves_from`` order).  Appends to ``out``.
 void legal_action_ids(const State& state, std::vector<int32_t>& out);

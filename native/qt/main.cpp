@@ -1,4 +1,8 @@
 #include <QGuiApplication>
+#include <QFont>
+#include <QFontDatabase>
+#include <QIcon>
+#include <QPixmap>
 #include <QImage>
 #include <QQuickImageProvider>
 #include <QQuickWindow>
@@ -7,13 +11,12 @@
 #include <QQuickStyle>
 #include <QPainter>
 #include <QPen>
-#include <QFile>
-#include <QTextStream>
 #include <QTimer>
 
 #include <cstdlib>
 
 #include "native_controller.hpp"
+#include "native_chrome.hpp"
 
 class PlaceholderIconProvider final : public QQuickImageProvider {
   public:
@@ -68,44 +71,58 @@ int main(int argc, char* argv[]) {
     bool smoke_mode = false;
     for (int i = 1; i < argc; ++i) smoke_mode = smoke_mode ||
         QString::fromLocal8Bit(argv[i]) == QStringLiteral("--smoke");
-    if (!smoke_mode) qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("windows"));
+    qputenv("QT_QPA_PLATFORM", smoke_mode ? QByteArrayLiteral("offscreen")
+                                           : QByteArrayLiteral("windows"));
+#ifdef Q_OS_WIN
+    if (qEnvironmentVariableIsEmpty("QT_MEDIA_BACKEND"))
+        qputenv("QT_MEDIA_BACKEND", QByteArrayLiteral("windows"));
+#endif
+    NativeChrome::setAppUserModelId();
     QGuiApplication app(argc, argv);
-    app.setQuitOnLastWindowClosed(false);
-    QFile startupLog(QCoreApplication::applicationDirPath() + QStringLiteral("/diamond_qt_startup.log"));
-    startupLog.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
-    QTextStream startup(&startupLog);
-    startup << "application-start\n";
-    startup.flush();
-    app.setApplicationName(QStringLiteral("Diamond"));
-    startup << "after-application-name\n";
-    startup.flush();
+    app.setQuitOnLastWindowClosed(true);
+    app.setApplicationName(QStringLiteral("Diamond Controller"));
     app.setOrganizationName(QStringLiteral("alphadiamond"));
-    startup << "after-organization-name\n";
-    startup.flush();
     QQuickStyle::setStyle(QStringLiteral("Basic"));
-    startup << "after-quick-style\n";
-    startup.flush();
+
+    QStringList font_families;
+    for (const QString& resource : {QStringLiteral(":/fonts/GoogleSansFlex-Regular.ttf"),
+                                    QStringLiteral(":/fonts/GoogleSansFlex-Medium.ttf"),
+                                    QStringLiteral(":/fonts/GoogleSansFlex-Bold.ttf")}) {
+        const int id = QFontDatabase::addApplicationFont(resource);
+        if (id >= 0) font_families.append(QFontDatabase::applicationFontFamilies(id));
+    }
+    const QString app_font = font_families.contains(QStringLiteral("Google Sans Flex"))
+        ? QStringLiteral("Google Sans Flex")
+        : font_families.value(0, QStringLiteral("Segoe UI"));
+    app.setFont(QFont(app_font));
+
+    QPixmap app_icon_pixmap(256, 256);
+    app_icon_pixmap.fill(Qt::transparent);
+    {
+        QPainter painter(&app_icon_pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(QStringLiteral("#FF3B30")));
+        QPolygon diamond;
+        diamond << QPoint(128, 16) << QPoint(240, 128) << QPoint(128, 240) << QPoint(16, 128);
+        painter.drawPolygon(diamond);
+    }
+    app.setWindowIcon(QIcon(app_icon_pixmap));
 
     NativeController controller;
-    startup << "after-controller\n";
-    startup.flush();
+    NativeChrome native_chrome;
+    app.installNativeEventFilter(&native_chrome);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &controller, &NativeController::shutdown);
     QQmlApplicationEngine engine;
-    startup << "after-engine\n";
-    startup.flush();
     engine.addImportPath(QStringLiteral("qrc:/qml"));
     engine.addImageProvider(QStringLiteral("qta"), new PlaceholderIconProvider);
     engine.rootContext()->setContextProperty(QStringLiteral("controller"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("appFontFamily"),
-                                              QStringLiteral("Segoe UI"));
-    startup << "before-qml-load\n";
-    startup.flush();
+                                              app_font);
+    engine.rootContext()->setContextProperty(QStringLiteral("nativeChrome"), &native_chrome);
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
-    startup << "after-qml-load roots=" << engine.rootObjects().size() << "\n";
-    startup.flush();
     if (engine.rootObjects().isEmpty()) return 1;
     QObject* root = engine.rootObjects().constFirst();
-    startup << "root=" << root->metaObject()->className() << " visibleProperty="
-            << root->property("visible").toString() << "\n";
     root->setProperty("visible", true);
     if (auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().constFirst())) {
         window->setFlags(Qt::Window | Qt::FramelessWindowHint);
@@ -116,6 +133,11 @@ int main(int argc, char* argv[]) {
         window->show();
         window->raise();
         window->requestActivate();
+        if (!smoke_mode) {
+            native_chrome.attach(window);
+            NativeChrome::enableShellIntegration(window);
+            NativeChrome::applyDwmAppearance(window);
+        }
         QTimer::singleShot(100, window, [window] {
             if (!window->isVisible()) {
                 window->setVisibility(QWindow::Windowed);
@@ -124,14 +146,7 @@ int main(int argc, char* argv[]) {
                 window->requestActivate();
             }
         });
-        startup << "window=QQuickWindow visible=" << window->isVisible()
-                << " exposed=" << window->isExposed() << " size=" << window->size().width()
-                << "x" << window->size().height() << "\n";
-    } else {
-        startup << "window=QQuickWindow cast failed\n";
     }
-    startup.flush();
-    startupLog.close();
     for (int i = 1; i < argc; ++i) {
         if (QString::fromLocal8Bit(argv[i]) == QStringLiteral("--game-smoke"))
             return controller.gameSmoke() ? 0 : 1;

@@ -1,5 +1,6 @@
 #include "soo/rules.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bitset>
 #include <stdexcept>
@@ -63,6 +64,60 @@ int moves_from(const State& state, int source, uint8_t* dest_out, uint8_t* kind_
         }
     }
     return count;
+}
+
+bool canonical_move_path(const State& state, int source, int destination,
+                         std::vector<uint8_t>& path_out, uint8_t* kind_out) {
+    path_out.clear();
+    if (source < 0 || source >= kBoardSize || destination < 0 || destination >= kBoardSize) {
+        return false;
+    }
+    const Topology& topo = topology();
+    if (state.occupancy[source] == kEmpty || state.occupancy[destination] != kEmpty) return false;
+
+    for (int direction = 0; direction < kDirections; ++direction) {
+        if (topo.neighbour[source][direction] == destination) {
+            path_out = {static_cast<uint8_t>(source), static_cast<uint8_t>(destination)};
+            if (kind_out) *kind_out = kStep;
+            return true;
+        }
+    }
+
+    std::array<int8_t, kBoardSize> parent{};
+    parent.fill(-1);
+    std::bitset<kBoardSize> visited;
+    visited.set(source);
+    std::array<uint8_t, kBoardSize> queue{};
+    int head = 0;
+    int tail = 0;
+    queue[tail++] = static_cast<uint8_t>(source);
+
+    while (head < tail) {
+        const int current = queue[head++];
+        for (int direction = 0; direction < kDirections; ++direction) {
+            const int8_t over = topo.neighbour[current][direction];
+            if (over < 0 || over == source || state.occupancy[over] == kEmpty) continue;
+            const int8_t landing = topo.neighbour[over][direction];
+            if (landing < 0 || visited.test(landing) || state.occupancy[landing] != kEmpty) continue;
+            visited.set(landing);
+            parent[landing] = static_cast<int8_t>(current);
+            queue[tail++] = static_cast<uint8_t>(landing);
+            if (landing != destination) continue;
+
+            for (int at = destination; at >= 0; at = parent[at]) {
+                path_out.push_back(static_cast<uint8_t>(at));
+                if (at == source) break;
+            }
+            if (path_out.empty() || path_out.back() != source) {
+                path_out.clear();
+                return false;
+            }
+            std::reverse(path_out.begin(), path_out.end());
+            if (kind_out) *kind_out = kJump;
+            return true;
+        }
+    }
+    return false;
 }
 
 void legal_action_ids(const State& state, std::vector<int32_t>& out) {
