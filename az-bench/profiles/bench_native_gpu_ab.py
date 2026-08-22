@@ -171,15 +171,17 @@ def main() -> None:
                 _calls["n"] += 1
                 return _inner(features, actions, offsets)
 
-        common = dict(
-            games=2 * cap,
-            threads=args.threads,
-            max_batch=cap,
-            max_wait_us=2000,
-            simulations=args.simulations,
-            seconds=args.seconds,
+        common = {
+            "games": 2 * cap,
+            "threads": args.threads,
+            "max_batch": cap,
+            "max_wait_us": 2000,
+            "simulations": args.simulations,
+            "seconds": args.seconds,
+        }
+        real = native.schedule_with_callback(
+            opening, module.SchedulerConfig(**common), wrapped, args.mode
         )
-        real = native.schedule_with_callback(opening, module.SchedulerConfig(**common), wrapped, args.mode)
         real_rate = real["evaluations"] / real["wall_seconds"]
 
         # Same latency, but the salted dummy evaluator, so lanes truly diverge.
