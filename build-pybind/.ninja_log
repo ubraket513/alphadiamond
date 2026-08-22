@@ -1,0 +1,16 @@
+# ninja log v7
+80	2658	8091169872188381	native/CMakeFiles/soo_core.dir/src/encoder.cpp.obj	317f279bc78aeebb
+113	2746	8091169872516554	native/CMakeFiles/soo_core.dir/src/rules.cpp.obj	80692360eafafacc
+64	2761	8091169872024390	native/CMakeFiles/soo_core.dir/src/board.cpp.obj	99c8d31f32ad29f
+96	2792	8091169872347953	native/CMakeFiles/soo_core.dir/src/prior.cpp.obj	50b5ac3220ed05c8
+2793	3213	8091169899304073	native/soo_core.lib	adbea30f0d6cae39
+2747	5189	8091169898853323	native/CMakeFiles/soo_search.dir/src/evaluator.cpp.obj	1a92f3c17609d4bb
+2762	6336	8091169898997047	native/CMakeFiles/soo_search.dir/src/mcts.cpp.obj	2324fd534536bfd6
+2660	10473	8091169898022677	native/CMakeFiles/soo_search.dir/src/batcher.cpp.obj	fbe3710b16b15c32
+3214	10610	8091169903520038	native/CMakeFiles/soo_search.dir/src/profile.cpp.obj	6ec32de6f7b3f8db
+10473	12562	8091169976118831	native/CMakeFiles/soo_native_smoke.dir/tests/smoke.cpp.obj	eac6e66fe6bebaf0
+5190	14639	8091169923295911	native/CMakeFiles/soo_search.dir/src/selfplay.cpp.obj	1ad5675e4a777036
+14640	14822	8091170017790807	native/soo_search.lib	8daaa9da4e1a6aa1
+14822	15798	8091170019616823	native/soo_native_smoke.exe	8f4b2a812bc452cf
+6337	32780	8091169934763452	native/CMakeFiles/diamond_native.dir/bindings.cpp.obj	8e14fe15ac64188
+32784	34954	8091170199208285	native/diamond_native.cp312-win_amd64.pyd	35377d06cd698c66
