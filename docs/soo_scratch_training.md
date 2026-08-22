@@ -726,3 +726,66 @@ is the price of heuristic-free training at this network size, and it is the
 number a larger network would have to beat: the `128×12 @ 64 sims` experiment now
 has a concrete target, which is `128×6 @ 128 sims` at 97.9 % learner stability
 and 247 samples/s.
+
+---
+
+## 7. A0 in production, and the first strength measurement
+
+### 7.1 Rolling A0 at 128 simulations holds
+
+§6.8 said flat 128 was the only configuration with a demonstrated stable loop
+under a *frozen* actor. Rolling A0 — the real thing, learner deployed as the next
+iteration's actor — was then started from the B0 checkpoint at step 34,650:
+
+| iteration | completed | median moves |
+|---|---|---|
+| 118 | 754/768 (98.2 %) | 71 |
+| 121 | 755/768 (98.3 %) | 65 |
+| 125 | 751/768 (97.8 %) | 64 |
+| 130 | 754/768 (98.2 %) | 64 |
+| 135 | 755/768 (98.3 %) | 64 |
+| 137 | 750/768 (97.7 %) | 65 |
+
+**Twenty iterations, no degradation.** Both previous A0 attempts had collapsed by
+iteration three or four. Median game length also fell from 71 to ~64, which is
+the network committing to lines rather than shuffling.
+
+### 7.2 Strength, which health metrics cannot see
+
+A network could hold 98 % completion and play no better than the checkpoint it
+started from. `tools/arena_head_to_head.py` measures the difference: two
+checkpoints under the existing `SooArena`, deterministic (temperature 0, and the
+arena zeroes Dirichlet itself), across its balanced matchup cycle.
+
+Candidate step 38,250 against the A0 starting point, step 34,650:
+
+| search budget | result | win rate | implied Elo | verdict |
+|---|---|---|---|---|
+| 64 simulations | 30W–10L | 75.0 % (CI 60–86 %) | **+191** | **stronger** |
+| 128 simulations | 30W–10L | 75.0 % (CI 60–86 %) | **+191** | **stronger** |
+
+A0 training is producing a genuinely better network, not merely a healthy one.
+
+**The gain is identical at both budgets**, which is worth stating because the
+first, buggy run suggested otherwise — it showed 100 % at 64 and 50 % at 128, and
+I had already written an explanation for that pattern (a better prior helps most
+where search is scarce). With the harness fixed the pattern is not there. The
+improvement is uniform, and the tidy story about it was a story about a bug.
+
+It does still rebut the worry recorded in §6.8, that the network might stay
+permanently search-dependent: it is 191 Elo better at 64 simulations than the
+checkpoint A0 started from.
+
+### 7.3 A harness bug that produced a perfect score
+
+The first run of this arena returned **40W–0L**, which is what prompted checking
+the harness rather than celebrating.
+
+`SooArena` crosses every turn order with every candidate seat to get a four-fold
+balanced cycle, and it hands the turn order to the caller's `game_factory`. My
+factory ignored that argument and always built the default order, collapsing the
+balance to two-fold. Corrected — `build_players(len(order), order=order)`, as
+`orchestration/production.py` does — the same comparison gives **30W–10L**.
+
+Still clearly stronger, and not remotely 100 %. A result that good should be
+treated as evidence about the measurement until the measurement has been checked.
