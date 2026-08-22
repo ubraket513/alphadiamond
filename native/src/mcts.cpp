@@ -27,37 +27,71 @@ double terminal_scalar_value(const State& state, uint8_t player_id, const Match&
 
 }  // namespace
 
-MCTS2P::MCTS2P(const Match& match, Evaluator& evaluator, const MCTSConfig& config)
-    : match_(match), evaluator_(evaluator), config_(config) {
+SearchSession::SearchSession(const Match& match, const MCTSConfig& config)
+    : match_(match), config_(config) {
     if (config.simulations <= 0) throw std::invalid_argument("simulations must be positive");
     if (match.count != 2) throw std::invalid_argument("MCTS2P requires a two-seat match");
 }
 
-double MCTS2P::expand(uint32_t node_index, SearchResult& result, bool trace) {
-    const State state = arena_.node(node_index).state;
-    const Encoded encoded = soo::encode(state, match_);
-    std::vector<int32_t> legal;
-    legal.reserve(64);
-    canonical_legal_action_ids(state, match_, legal);
-
-    const EvalOutcome outcome = evaluator_.evaluate(encoded, legal);
-    ++result.evaluator_calls;
-    if (outcome.priors.size() != legal.size()) {
-        throw std::runtime_error("evaluator priors must match authoritative legal actions");
+void SearchSession::begin(const State& state, double temperature, bool trace) {
+    if (state.status == kFinished) throw std::invalid_argument("cannot search a terminal state");
+    if (config_.dirichlet_epsilon > 0.0 || temperature > 0.0) {
+        throw std::invalid_argument(
+            "native MCTS is deterministic-only for now: "
+            "dirichlet_epsilon and temperature must both be 0");
     }
-    if (trace) {
-        result.trace.push_back(EvalRecord{request_hash(encoded, legal), legal});
-    }
-
-    arena_.open_edges(node_index);
-    for (size_t i = 0; i < legal.size(); ++i) {
-        arena_.push_edge(node_index, legal[i], outcome.priors[i]);
-    }
-    arena_.node(node_index).expanded = true;
-    return outcome.value;
+    arena_.reset(static_cast<size_t>(config_.simulations), 64);
+    result_ = SearchResult{};
+    trace_ = trace;
+    simulation_ = 0;
+    root_state_ = state;
+    path_.clear();
+    path_.reserve(64);
+    root_ = arena_.add_node(state, search_current_player(state, match_), false);
+    node_ = root_;
+    phase_ = Phase::Root;
 }
 
-uint32_t MCTS2P::select(uint32_t node_index) const {
+void SearchSession::prepare_expansion(uint32_t node_index) {
+    const State state = arena_.node(node_index).state;
+    pending_encoded_ = soo::encode(state, match_);
+    pending_actions_.clear();
+    pending_actions_.reserve(64);
+    canonical_legal_action_ids(state, match_, pending_actions_);
+}
+
+double SearchSession::complete_expansion(uint32_t node_index) {
+    ++result_.evaluator_calls;
+    if (pending_outcome_.priors.size() != pending_actions_.size()) {
+        throw std::runtime_error("evaluator priors must match authoritative legal actions");
+    }
+    if (trace_) {
+        result_.trace.push_back(
+            EvalRecord{request_hash(pending_encoded_, pending_actions_), pending_actions_});
+    }
+    arena_.open_edges(node_index);
+    for (size_t i = 0; i < pending_actions_.size(); ++i) {
+        arena_.push_edge(node_index, pending_actions_[i], pending_outcome_.priors[i]);
+    }
+    arena_.node(node_index).expanded = true;
+    return pending_outcome_.value;
+}
+
+void SearchSession::backup(double value) {
+    // The leaf value is from the leaf player-to-act's perspective; each 2P edge
+    // crosses exactly one turn, so the sign flips once per edge.
+    for (size_t i = path_.size(); i-- > 0;) {
+        value = -value;
+        Edge& edge = arena_.edge(path_[i].second);
+        ++edge.visits;
+        edge.value_sum += value;
+        // Python re-sums the children on every selection; the cached aggregate
+        // is an integer sum, so keeping it here is exact.
+        ++arena_.node(path_[i].first).total_visits;
+    }
+}
+
+uint32_t SearchSession::select(uint32_t node_index) const {
     const Node& node = arena_.node(node_index);
     const uint32_t parent_visits = node.total_visits;
 
@@ -72,7 +106,8 @@ uint32_t MCTS2P::select(uint32_t node_index) const {
         const Edge& edge = arena_.edge(index);
         const double score =
             edge.q() + exploration_bonus(edge.prior, parent_visits, edge.visits, config_.c_puct);
-        if (offset == 0 || score > best_score || (score == best_score && edge.action < best_action)) {
+        if (offset == 0 || score > best_score ||
+            (score == best_score && edge.action < best_action)) {
             best = index;
             best_score = score;
             best_action = edge.action;
@@ -81,96 +116,112 @@ uint32_t MCTS2P::select(uint32_t node_index) const {
     return best;
 }
 
-SearchResult MCTS2P::run(const State& state, double temperature, bool trace) {
-    if (state.status == kFinished) throw std::invalid_argument("cannot search a terminal state");
-    if (config_.dirichlet_epsilon > 0.0 || temperature > 0.0) {
-        throw std::invalid_argument(
-            "native MCTS is deterministic-only for now: "
-            "dirichlet_epsilon and temperature must both be 0");
-    }
-
-    arena_.reset(static_cast<size_t>(config_.simulations), 64);
-    SearchResult result;
-    const uint32_t root = arena_.add_node(state, search_current_player(state, match_), false);
-    // Root expansion with epsilon = 0: add_dirichlet_noise returns the priors
-    // unchanged and draws nothing, so there is no RNG to reproduce here.
-    expand(root, result, trace);
-
-    // (owning node, edge) pairs: backup needs the node to keep its cached
-    // visit aggregate in step with the edge it increments.
-    std::vector<std::pair<uint32_t, uint32_t>> path;
-    path.reserve(64);
-
-    for (int simulation = 0; simulation < config_.simulations; ++simulation) {
-        uint32_t node_index = root;
-        path.clear();
-
-        while (arena_.node(node_index).expanded && !arena_.node(node_index).terminal) {
-            const uint32_t edge_index = select(node_index);
-            path.emplace_back(node_index, edge_index);
-            if (arena_.edge(edge_index).child == kNoChild) {
-                const State child_state =
-                    apply_action(arena_.node(node_index).state, match_,
-                                 to_physical_action(arena_.edge(edge_index).action, match_,
-                                                    arena_.node(node_index).state.current_player));
-                const bool child_terminal = child_state.status == kFinished;
-                const uint32_t child = arena_.add_node(
-                    child_state, search_current_player(child_state, match_), child_terminal);
-                // add_node may reallocate, so re-read the edge afterwards.
-                arena_.edge(edge_index).child = static_cast<int32_t>(child);
-            }
-            node_index = static_cast<uint32_t>(arena_.edge(edge_index).child);
-            if (!arena_.node(node_index).expanded) break;
-        }
-
-        double value;
-        if (arena_.node(node_index).terminal) {
-            value = terminal_scalar_value(arena_.node(node_index).state,
-                                          arena_.node(node_index).player_id, match_);
-        } else {
-            value = expand(node_index, result, trace);
-        }
-
-        // The leaf value is from the leaf player-to-act's perspective; each 2P
-        // edge crosses exactly one turn, so the sign flips once per edge.
-        for (size_t i = path.size(); i-- > 0;) {
-            value = -value;
-            Edge& edge = arena_.edge(path[i].second);
-            ++edge.visits;
-            edge.value_sum += value;
-            // Python re-sums the children on every selection; the cached
-            // aggregate is an integer sum, so keeping it here is exact.
-            ++arena_.node(path[i].first).total_visits;
-        }
-        ++result.simulations_run;
-    }
-
-    const Node& root_node = arena_.node(root);
+void SearchSession::finalize() {
+    const Node& root_node = arena_.node(root_);
     uint32_t total = 0;
     for (uint16_t offset = 0; offset < root_node.edge_count; ++offset) {
         const Edge& edge = arena_.edge(root_node.edge_begin + offset);
-        result.root_actions.push_back(edge.action);
-        result.visit_counts.push_back(edge.visits);
-        result.q_values.push_back(edge.q());
+        result_.root_actions.push_back(edge.action);
+        result_.visit_counts.push_back(edge.visits);
+        result_.q_values.push_back(edge.q());
         total += edge.visits;
     }
-    for (const uint32_t visits : result.visit_counts) {
-        result.policy.push_back(static_cast<double>(visits) / static_cast<double>(total));
+    for (const uint32_t visits : result_.visit_counts) {
+        result_.policy.push_back(static_cast<double>(visits) / static_cast<double>(total));
     }
 
     // select_from_visits with temperature <= 0: most visits, ties to the
     // smallest action id.
     size_t best = 0;
-    for (size_t i = 1; i < result.root_actions.size(); ++i) {
-        if (result.visit_counts[i] > result.visit_counts[best] ||
-            (result.visit_counts[i] == result.visit_counts[best] &&
-             result.root_actions[i] < result.root_actions[best])) {
+    for (size_t i = 1; i < result_.root_actions.size(); ++i) {
+        if (result_.visit_counts[i] > result_.visit_counts[best] ||
+            (result_.visit_counts[i] == result_.visit_counts[best] &&
+             result_.root_actions[i] < result_.root_actions[best])) {
             best = i;
         }
     }
-    result.selected_action = result.root_actions[best];
-    result.nodes_created = static_cast<uint32_t>(arena_.node_count());
-    return result;
+    result_.selected_action = result_.root_actions[best];
+    result_.nodes_created = static_cast<uint32_t>(arena_.node_count());
+}
+
+SearchSession::Status SearchSession::advance() {
+    for (;;) {
+        switch (phase_) {
+            case Phase::Root:
+                // Root expansion with epsilon = 0: add_dirichlet_noise returns
+                // the priors unchanged and draws nothing, so there is no RNG to
+                // reproduce here.
+                prepare_expansion(root_);
+                phase_ = Phase::AwaitRoot;
+                return Status::NeedsEvaluation;
+
+            case Phase::AwaitRoot:
+                complete_expansion(root_);
+                simulation_ = 0;
+                phase_ = Phase::Descend;
+                break;
+
+            case Phase::Descend: {
+                if (simulation_ >= config_.simulations) {
+                    finalize();
+                    phase_ = Phase::Done;
+                    break;
+                }
+                node_ = root_;
+                path_.clear();
+                while (arena_.node(node_).expanded && !arena_.node(node_).terminal) {
+                    const uint32_t edge_index = select(node_);
+                    path_.emplace_back(node_, edge_index);
+                    if (arena_.edge(edge_index).child == kNoChild) {
+                        const State child_state = apply_action(
+                            arena_.node(node_).state, match_,
+                            to_physical_action(arena_.edge(edge_index).action, match_,
+                                               arena_.node(node_).state.current_player));
+                        const bool child_terminal = child_state.status == kFinished;
+                        const uint32_t child = arena_.add_node(
+                            child_state, search_current_player(child_state, match_),
+                            child_terminal);
+                        // add_node may reallocate, so re-read the edge afterwards.
+                        arena_.edge(edge_index).child = static_cast<int32_t>(child);
+                    }
+                    node_ = static_cast<uint32_t>(arena_.edge(edge_index).child);
+                    if (!arena_.node(node_).expanded) break;
+                }
+
+                if (arena_.node(node_).terminal) {
+                    backup(terminal_scalar_value(arena_.node(node_).state,
+                                                 arena_.node(node_).player_id, match_));
+                    ++simulation_;
+                    result_.simulations_run = static_cast<uint32_t>(simulation_);
+                    break;
+                }
+                prepare_expansion(node_);
+                phase_ = Phase::AwaitLeaf;
+                return Status::NeedsEvaluation;
+            }
+
+            case Phase::AwaitLeaf:
+                backup(complete_expansion(node_));
+                ++simulation_;
+                result_.simulations_run = static_cast<uint32_t>(simulation_);
+                phase_ = Phase::Descend;
+                break;
+
+            case Phase::Done:
+                return Status::Ready;
+        }
+    }
+}
+
+MCTS2P::MCTS2P(const Match& match, Evaluator& evaluator, const MCTSConfig& config)
+    : evaluator_(evaluator), session_(match, config) {}
+
+SearchResult MCTS2P::run(const State& state, double temperature, bool trace) {
+    session_.begin(state, temperature, trace);
+    while (session_.advance() == SearchSession::Status::NeedsEvaluation) {
+        session_.supply(evaluator_.evaluate(session_.pending_features(), session_.pending_actions()));
+    }
+    return session_.result();
 }
 
 }  // namespace soo

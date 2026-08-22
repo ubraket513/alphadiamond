@@ -16,11 +16,14 @@ EXT_NAME = "diamond.alphazero.native._diamond_native"
 
 SOURCES = [
     "native/bindings.cpp",
+    "native/src/batcher.cpp",
     "native/src/board.cpp",
     "native/src/encoder.cpp",
     "native/src/evaluator.cpp",
     "native/src/mcts.cpp",
     "native/src/prior.cpp",
+    "native/src/profile.cpp",
+    "native/src/selfplay.cpp",
     "native/src/rules.cpp",
 ]
 
