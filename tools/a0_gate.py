@@ -89,7 +89,19 @@ def _report(label: str, episodes) -> dict:
         if not episode.completed:
             reason = episode.aborted_reason or "unknown"
             aborts[reason] = aborts.get(reason, 0) + 1
+
+    # The primary metric, not the completion rate.  Completion counts *games*
+    # while training consumes *positions*, and an aborted game is long by
+    # construction: at 98 % completion with 75-move games and a 500-move cap,
+    # a 2 % abort rate still censors ~12 % of the moves played.  Measured from
+    # the episodes themselves rather than assumed from the cap.
+    kept = sum(e.move_count for e in completed)
+    discarded = sum(e.move_count for e in episodes if not e.completed)
+    played = kept + discarded
     return {
+        "moves_kept": kept,
+        "moves_discarded": discarded,
+        "discarded_fraction": discarded / played if played else 0.0,
         "label": label,
         "games": len(episodes),
         "completed": len(completed),
@@ -109,10 +121,53 @@ def main() -> int:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--games", type=int, default=20, help="games per seed")
     parser.add_argument("--max-moves", type=int, default=None, help="default: the config's")
+    parser.add_argument(
+        "--simulations",
+        type=int,
+        default=None,
+        help=(
+            "Override the search budget. 64 is the project's reference point "
+            "rather than a measured optimum, and few-simulation AlphaZero is "
+            "exactly the regime where root search stops reliably improving on "
+            "the network prior. Sweep this ALONE -- changing epsilon or "
+            "temperature at the same time makes the result uninterpretable."
+        ),
+    )
     parser.add_argument("--prior", default=BOOTSTRAP_PRIOR_NONE)
+    parser.add_argument(
+        "--simulations-late",
+        type=int,
+        default=0,
+        help="Search budget from --late-move-threshold onward; 0 disables adaptive search.",
+    )
+    parser.add_argument("--late-move-threshold", type=int, default=0)
+    parser.add_argument(
+        "--repeat-window",
+        type=int,
+        default=0,
+        help=(
+            "Spend --simulations-late only on moves whose position already "
+            "occurred within this many plies. 0 disables. Targets what the "
+            "abort audit found -- a short-cycle attractor -- rather than "
+            "lateness, which pays for every long game whether stuck or not."
+        ),
+    )
     parser.add_argument("--lanes", type=int, default=64)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--out", type=Path, default=None, help="JSONL time series to append to")
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Override the fixed seed set. The default two exist so successive "
+            "readings form a trajectory; a shadow run wants fresh seeds and a "
+            "large sample instead, because 40 games put a 39/40 reading "
+            "somewhere in a 87-99 % Wilson interval and cannot resolve a 2 % "
+            "abort rate at all."
+        ),
+    )
     args = parser.parse_args()
 
 
@@ -134,7 +189,7 @@ def main() -> int:
     max_moves = args.max_moves if args.max_moves is not None else config["self_play"]["max_moves"]
 
     mcts = MCTSConfig(
-        simulations=config["mcts"]["simulations"],
+        simulations=args.simulations or config["mcts"]["simulations"],
         c_puct=config["mcts"]["c_puct"],
         dirichlet_alpha=config["mcts"]["dirichlet_alpha"],
         dirichlet_epsilon=config["mcts"]["dirichlet_epsilon"],
@@ -147,6 +202,7 @@ def main() -> int:
         seed=0,
         bootstrap_prior=args.prior,
     )
+    seeds = tuple(args.seeds) if args.seeds else SEEDS
     players = build_players(2)
     initial_state = AlphaZeroGameAdapter(players).initial_state()
     model_key = ModelKey(
@@ -157,7 +213,17 @@ def main() -> int:
         f"[gate] step={trainer.training_step} prior={args.prior} "
         f"sims={mcts.simulations} eps={mcts.dirichlet_epsilon} "
         f"T={selfplay.temperature}/{selfplay.temperature_moves} max_moves={max_moves} "
-        f"seeds={SEEDS} games/seed={args.games}",
+        + (
+            (
+                f"adaptive={args.simulations_late}@repeat<={args.repeat_window}ply "
+                if args.repeat_window
+                else f"adaptive={args.simulations_late}@move{args.late_move_threshold} "
+            )
+            if args.simulations_late
+            else ""
+        )
+        + 
+        f"seeds={seeds} games/seed={args.games}",
         flush=True,
     )
 
@@ -168,12 +234,16 @@ def main() -> int:
         threads=args.threads,
         max_batch=config["inference"]["max_batch_size"],
         max_wait_us=int(config["workers"].get("native_max_wait_us", 500)),
+        simulations_late=args.simulations_late,
+        late_move_threshold=args.late_move_threshold,
+        repeat_window=args.repeat_window,
     )
 
     per_seed = []
+    pool_metrics: list[dict] = []
     all_episodes = []
     started = time.perf_counter()
-    for seed in SEEDS:
+    for seed in seeds:
         jobs = tuple(
             SelfPlayJob(
                 run_seed=seed,
@@ -190,6 +260,7 @@ def main() -> int:
             for index in range(args.games)
         )
         episodes = pool.run(jobs)
+        pool_metrics.append(dict(pool.metrics))
         all_episodes.extend(episodes)
         row = _report(f"seed={seed}", episodes)
         per_seed.append(row)
@@ -213,11 +284,32 @@ def main() -> int:
 
     print(
         f"  aggregate: {aggregate['completed']}/{aggregate['games']} "
-        f"({aggregate['completion'] * 100:.0f}%) median={aggregate['median_moves']} "
+        f"({aggregate['completion'] * 100:.1f}%) median={aggregate['median_moves']} "
         f"p90={p90} p99={aggregate['p99_moves']} max={aggregate['max_moves_seen']} "
         f"in {elapsed:.1f}s",
         flush=True,
     )
+    print(
+        f"  censoring: {aggregate['moves_kept']:,} moves kept, "
+        f"{aggregate['moves_discarded']:,} discarded -> "
+        f"**{aggregate['discarded_fraction'] * 100:.1f}% of all moves played thrown away**",
+        flush=True,
+    )
+    # Terminal-labelled throughput: what the run actually gets to train on per
+    # second, which is the quantity a bigger search budget has to justify.
+    print(
+        f"  yield: {aggregate['samples']:,} terminal-labelled samples in "
+        f"{elapsed:.1f}s = {aggregate['samples'] / elapsed:,.0f}/s",
+        flush=True,
+    )
+    boosted = sum(m.get("boosted_moves", 0) for m in pool_metrics)
+    total_moves = sum(m.get("moves", 0) for m in pool_metrics)
+    if args.simulations_late:
+        print(
+            f"  trigger: {boosted:,} of {total_moves:,} moves boosted to "
+            f"{args.simulations_late} sims = {boosted / max(1, total_moves) * 100:.1f}%",
+            flush=True,
+        )
     for name, ok in checks.items():
         print(f"    {'ok  ' if ok else 'FAIL'} {name}")
     print(f"[gate] {'PASS' if passed else 'FAIL'}", flush=True)
@@ -236,7 +328,7 @@ def main() -> int:
                         "dirichlet_epsilon": mcts.dirichlet_epsilon,
                         "temperature": selfplay.temperature,
                         "temperature_moves": selfplay.temperature_moves,
-                        "seeds": list(SEEDS),
+                        "seeds": list(seeds),
                         "games_per_seed": args.games,
                         "per_seed": per_seed,
                         "aggregate": aggregate,

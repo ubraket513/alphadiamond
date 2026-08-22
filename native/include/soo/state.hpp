@@ -45,6 +45,36 @@ struct State {
     }
 };
 
+// Identity for *repetition*, which is not the same thing as equality.
+//
+// ``operator==`` includes ``turn_number``, so by that test a position can never
+// repeat -- the ply counter always differs.  Repetition is about the dynamics:
+// two positions are the same if every legal continuation from them is the same,
+// which means occupancy, the side to move, and who has already finished.
+// ``turn_number`` is bookkeeping and is deliberately excluded.
+//
+// Deliberately NOT the encoded features either.  The encoder canonicalises --
+// it rotates the acting player's camp to a fixed orientation and reorders the
+// player channels -- so symmetric images collide and the same position with the
+// other side to move does not.  That is a reasonable notion for asking "did the
+// network see this input before" and the wrong one for changing search
+// behaviour.
+inline uint64_t dynamics_key(const State& state) {
+    // FNV-1a: no dependencies, and collisions here would only mis-trigger a
+    // search-budget change rather than corrupt a game.
+    uint64_t hash = 1469598103934665603ULL;
+    const auto mix = [&hash](uint8_t byte) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    };
+    for (const uint8_t cell : state.occupancy) mix(cell);
+    mix(state.current_player);
+    mix(state.status);
+    mix(state.finished_count);
+    for (uint8_t i = 0; i < state.finished_count; ++i) mix(state.finish_order[i]);
+    return hash;
+}
+
 // One seat: mirrors diamond.game.state.PlayerSpec, reduced to what rules need.
 struct PlayerSpec {
     uint8_t id = 0;

@@ -141,12 +141,40 @@ struct EpisodeConfig {
     int temperature_moves = 20;
     double dirichlet_alpha = 0.3;
     double dirichlet_epsilon = 0.25;
+
+    // Adaptive search: spend more only where games go wrong.
+    //
+    // ``simulations_late`` applies from move ``late_move_threshold`` onward; 0
+    // disables it and every move uses ``simulations``.  The aborted tail is a
+    // short-cycle attractor -- median 31.6 % unique positions, one position
+    // revisited 61 times, 68 % of moves returning within 8 ply -- and deeper
+    // search is what sees past it.  Applying that depth to the 90 % of games
+    // that never get into trouble buys nothing and costs half the throughput.
+    int simulations_late = 0;
+    int late_move_threshold = 0;
+
+    // Repetition trigger: spend ``simulations_late`` on a move only when the
+    // position has already occurred within the last ``repeat_window`` plies of
+    // this game.  0 disables it.
+    //
+    // This targets what the audit actually found.  The aborted tail is a
+    // short-cycle attractor -- median 31.6 % unique positions, one position
+    // revisited 61 times, 68.4 % of moves returning within 8 ply -- so the
+    // signal to spend on is repetition, not lateness.  A move-number threshold
+    // pays for every long game whether or not it is stuck; this pays only where
+    // the game has demonstrably looped.
+    //
+    // Takes precedence over ``late_move_threshold`` when both are set.
+    int repeat_window = 0;
 };
 
 struct EpisodeMetrics {
     uint64_t evaluations = 0;
     uint64_t batches = 0;
     uint64_t moves = 0;
+    // How often the boosted budget fired. The trigger only earns its complexity
+    // if this stays small, so it is reported rather than inferred.
+    uint64_t boosted_moves = 0;
     double wall_seconds = 0.0;
     double evaluator_seconds = 0.0;
     double worker_busy_seconds = 0.0;
