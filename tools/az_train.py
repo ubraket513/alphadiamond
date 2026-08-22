@@ -222,6 +222,8 @@ def run_self_play(
     device: str,
     native_lanes: int,
     native_max_wait_us: int,
+    native_simulations_late: int = 0,
+    native_repeat_window: int = 0,
 ):
     """One iteration of self-play, through whichever backend is selected.
 
@@ -255,6 +257,11 @@ def run_self_play(
             # 355 samples/s at 39 % evaluator occupancy, 50 us gives 1,077 at
             # 88 %.  Lane count and thread count change neither.
             max_wait_us=native_max_wait_us,
+            # Selective deeper search on repeated positions. The aborted tail is
+            # a short-cycle attractor, so spending only there reaches flat-128's
+            # censoring at 1.6x its throughput, on 5 % of moves.
+            simulations_late=native_simulations_late,
+            repeat_window=native_repeat_window,
         )
         return pool.run(jobs), None, pool.metrics
 
@@ -312,6 +319,23 @@ def main() -> int:
         help=(
             "Concurrent games for the native backend; 0 derives 2 x max_batch_size. "
             "Jobs beyond this are queued, so a long game costs its own lane only."
+        ),
+    )
+    parser.add_argument(
+        "--native-simulations-late",
+        type=int,
+        default=0,
+        help="Boosted search budget for triggered moves; 0 disables the trigger.",
+    )
+    parser.add_argument(
+        "--native-repeat-window",
+        type=int,
+        default=0,
+        help=(
+            "Boost a move when its physical position already occurred within "
+            "this many plies of the same game. Keyed on occupancy, side to move "
+            "and finish order -- not on turn_number, which never repeats, and "
+            "not on the canonicalised encoder output."
         ),
     )
     parser.add_argument(
@@ -584,6 +608,8 @@ def main() -> int:
                 device=training_config.device,
                 native_lanes=native_lanes,
                 native_max_wait_us=native_max_wait_us,
+                native_simulations_late=args.native_simulations_late,
+                native_repeat_window=args.native_repeat_window,
             )
         except RuntimeError as error:
             # A stop signal terminates the worker children mid-episode.  That is
@@ -599,6 +625,8 @@ def main() -> int:
                 f"[native] evals={native_metrics['evaluations']:,} "
                 f"batches={native_metrics['batches']:,} "
                 f"mean_batch={_mean_batch(native_metrics):.1f} "
+                f"boosted={native_metrics.get('boosted_moves', 0):,}/"
+                f"{native_metrics.get('moves', 0):,} "
                 f"evaluator={native_metrics['evaluator_seconds'] / max(1e-9, native_metrics['wall_seconds']) * 100:.0f}%",
                 flush=True,
             )

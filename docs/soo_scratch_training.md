@@ -661,3 +661,68 @@ must exceed `native_lanes`**, in measurement harnesses exactly as in production.
 The gate's default of 20 games per seed against 64 lanes has the same flaw, which
 does not matter for the completion rate it exists to report but would matter the
 moment anyone read a timing off it.
+
+### 6.8 Step 3 overturns §6.5: it is target quality, not censoring
+
+The repetition trigger was run as a *generator* for a third frozen-actor arm —
+same pinned actor, same cloned replay, four iterations — and the learner was then
+measured at every budget. Together with the other two arms:
+
+**Actor, step 34,650:** 93.2 % @64 · 97.8 % @128 · 98.0 % @trigger
+
+**Learner after four frozen-actor iterations, by generator:**
+
+| generator | targets from 128-sim search | learner @64 | learner @128 | learner @trigger |
+|---|---|---|---|---|
+| flat 64 | 0 % | 86.3 % | — | — |
+| flat 128 | **100 %** | 86.2 % | **97.9 %** | — |
+| repetition trigger | 5 % | 84.9 % | 94.0 % | 91.5 % |
+
+Judged where it matters — does the learner hold its actor's level on the budget
+it was generated with?
+
+| generator | actor | learner | |
+|---|---|---|---|
+| flat 128 | 97.8 % | **97.9 %** | **holds** |
+| trigger | 98.0 % | 91.5 % | degrades 6.5 pt |
+| flat 64 | 93.2 % | 86.3 % | degrades 6.9 pt |
+
+**This contradicts §6.5.** That section concluded "~12 % censoring is tolerable
+where ~29 % is not". The trigger generator censors **9.6 %** — the lowest of the
+three — and its learner degrades anyway. Censoring is not the operative variable.
+
+What tracks the outcome perfectly is the **fraction of training targets produced
+by a 128-simulation search**: 100 % holds, 5 % degrades, 0 % degrades. And the
+trigger's learner is worse than the flat-128 learner even when both are measured
+at 128 sims (94.0 % against 97.9 %), so this is about the data it was trained on,
+not the budget it is tested with.
+
+The mechanism this points to is the one the few-simulation AlphaZero literature
+warns about: at 64 simulations the root search does not reliably improve on the
+network's own prior, so its visit distribution is not a policy-improvement
+target. Training on it moves the network sideways at best. At 128 the search does
+improve on the prior, and the loop becomes a genuine improvement operator.
+
+It also retro-explains why **B0 was always healthy at 64 simulations**. B0 does
+not use the neural prior at all — the vacancy heuristic replaces it — so the
+search is anchored to an external, informative signal rather than to the
+network's own weak prior. The self-referential loop that fails in A0 does not
+exist in B0.
+
+### 6.9 What the repetition trigger is, and is not, good for
+
+It remains the best *generator* on record: 98.0 % completion, 9.6 % censoring,
+392 samples/s, 5 % of moves boosted — beating flat-128 on all four. If the goal
+were producing terminal-labelled games cheaply, it would be the answer.
+
+But 95 % of its policy targets still come from 64-simulation search, and §6.8
+says that is what decides whether training helps. **A cheap generator does not
+make a cheap teacher.** The extra search has to be in the targets the network
+learns from, not only in the moves that were going wrong.
+
+So the production A0 configuration is **flat 128** — the only one with a
+demonstrated stable loop — at 247 terminal samples/s against B0's ~1,444. That
+is the price of heuristic-free training at this network size, and it is the
+number a larger network would have to beat: the `128×12 @ 64 sims` experiment now
+has a concrete target, which is `128×6 @ 128 sims` at 97.9 % learner stability
+and 247 samples/s.
