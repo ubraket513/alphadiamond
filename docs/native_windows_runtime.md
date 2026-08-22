@@ -356,3 +356,32 @@ Soo native MCTS evaluator integration passed; root_actions=18, evaluator_calls=3
 
 This closes the evaluator/MCTS parity task. The remaining implementation work
 is the native Qt shell and controller/resource parity described in Q3–Q6.
+
+## Q3 native Qt/QML shell status
+
+Implemented the first Q3 slice:
+
+- optional `DIAMOND_BUILD_QT` CMake target `diamond_qt`;
+- existing QML bundled with `qt_add_resources` rather than loaded through
+  Python package resources;
+- native `QGuiApplication`/`QQmlApplicationEngine` entry point;
+- typed C++ placeholder controller, geometry object, and list-model contract
+  sufficient to launch the existing `Main.qml` without Python or PySide6;
+- native `qta` image-provider compatibility shim, so preserved icon URLs no
+  longer produce missing-provider diagnostics while the real icon renderer is
+  ported;
+- offscreen `diamond_qt --smoke` mode for resource/QML loading;
+- Qt remains isolated from the portable `soo_core` and `soo_search` targets.
+
+Verified on Windows with Qt 6 from the `alphadiamond` environment:
+
+```text
+diamond_qt.exe --smoke   # passed with QT_QPA_PLATFORM=offscreen
+```
+
+This is intentionally a shell/contract gate, not controller parity: the
+placeholder owns no game rules or AI yet. Q4 will replace these placeholders
+with native game/controller models while preserving the QML surface. The
+direct smoke executable passes; CTest currently exposes a Qt teardown crash in
+the harness context and is deliberately not registered until that harness
+issue is isolated.
