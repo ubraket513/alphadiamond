@@ -3,9 +3,14 @@
 **Start here** if you are picking this work up in a new session, especially on
 the GPU training host.
 
-Everything below is current as of the Gate D GPU-host pass. All four gates are
-closed, including Gate D's throughput half, which was run on the RTX 5090
-training host — see §10 of the progress document for the A/B table.
+Everything below is current as of the A0 (heuristic-free) investigation. **All
+six gates A–F are closed and the native backend is in production use.** The
+project is no longer a C++ port; it is an AlphaZero training system, and the open
+questions are about training dynamics rather than about the backend.
+
+If you are picking this up cold, read this file, then §6 of
+[soo_scratch_training.md](soo_scratch_training.md) — that section contains the
+result that matters most and is the least obvious.
 
 ---
 
@@ -37,6 +42,11 @@ Read in this order:
 | **E** | stochastic MCTS: Dirichlet + temperature | **pass** — distribution parity with Python, deterministic per seed, 16 lanes → 16 games |
 | **F** | native backend behind the pool contract | **pass** — episode parity with `SooSelfPlayRunner`, 18.5x end to end, trains from scratch |
 
+Beyond the gates, the backend is now in production use: the from-scratch Soo run
+(`docs/soo_scratch_training.md`) has trained tens of thousands of steps on it,
+peaking at **1,444 samples/s — 25.9x the Python backend** in the real training
+loop, which is past Gate D's 18.5x microbenchmark headline.
+
 Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
 ---
@@ -53,6 +63,44 @@ Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
    busy in all 20 configurations measured — but 86 % of that is the forward
    itself and only ~1 % is the boundary. The ceiling is the GPU, which is where
    the design wanted it.
+
+### 3.0.1 The A0 investigation — read this before changing anything
+
+Three attempts to switch off the bootstrap heuristic failed and were rolled
+back. The full account is §5.4–§6.9 of the training document; the conclusion is
+short and it is not what any of the intermediate hypotheses predicted.
+
+**What decides whether A0 training is stable is the fraction of policy targets
+produced by a search strong enough to improve on the network's own prior.**
+
+At 64 simulations the root search does not reliably beat the prior it started
+from, so its visit distribution is not a policy-improvement target and training
+on it degrades the network. At 128 it does, and the loop becomes stable. Three
+frozen-actor arms, each four iterations from the same checkpoint and replay:
+
+| generator | targets from 128-sim search | actor | learner | |
+|---|---|---|---|---|
+| flat 64 | 0 % | 93.2 % | 86.3 % | degrades |
+| flat 128 | **100 %** | 97.8 % | **97.9 %** | **holds** |
+| repetition trigger | 5 % | 98.0 % | 91.5 % | degrades |
+
+Two earlier explanations were wrong and are recorded as wrong, because both are
+plausible enough to be re-invented:
+
+- **It is not the actor-refresh feedback loop.** The learner degrades with the
+  actor completely frozen.
+- **It is not the censored dataset.** The repetition trigger censors the *least*
+  of the three (9.6 % of moves, against flat-128's 11.6 %) and its learner
+  degrades anyway.
+
+It also explains why B0 was always healthy at 64 simulations: B0 does not use the
+neural prior at all — the vacancy heuristic replaces it — so the search is
+anchored externally and the self-referential loop that fails in A0 does not
+exist.
+
+**Production A0 is therefore flat 128 simulations**, at ~247 terminal samples/s
+against B0's ~1,444. That is the price of heuristic-free training at this network
+size, and it is the number any proposed improvement has to beat.
 
 ### 3.1 The actual remaining work, in order
 
@@ -72,7 +120,10 @@ Two rules, both paid for:
    Lanes are a fixed pool and surplus jobs are queued; with one lane per job a
    handful of long games hold the whole run at batch 1 for the second half of
    its dispatches (§12.2 — it cost 3x before it was found).
-2. **Set `native_max_wait_us` from the forward, not from
+2. **A measurement harness needs `games > lanes` too.** The same rule, and it
+   was violated in a benchmark and produced yields wrong by 2.5x (§6.7). Rates
+   are unaffected; anything timing-based is not.
+3. **Set `native_max_wait_us` from the forward, not from
    `inference.max_wait_ms`.** The batch never fills, so the wait is spent in
    full every cycle; 2 ms against a 0.9 ms forward costs **2.6x**. See pitfall
    7.13.
@@ -148,6 +199,26 @@ python az-bench/profiles/bench_native_callback.py --seconds 3
 python az-bench/profiles/bench_native_gpu_ab.py --device cuda:0 \
     --python-seconds 79 --python-samples 4410
 python az-bench/profiles/bench_native_callback.py --seconds 5 --device cuda:0
+```
+
+**The training run and its instruments:**
+
+```bash
+tools/train_soo_scratch.sh 6                     # B0, heuristics on
+tools/train_soo_scratch.sh 6 none A0             # A0 -- but see 3.0.1, use --simulations 128
+
+# A0 readiness, on the production engine and production exploration.
+# 2 fixed seeds x 20 games is a regression probe; use fresh seeds and 768 games
+# for anything you intend to act on (pitfall 7.15).
+python tools/a0_gate.py --checkpoint <ckpt>
+python tools/a0_gate.py --checkpoint <ckpt> --games 192 \
+    --seeds 20260823 20260824 20260825 20260826 --lanes 256 --threads 12
+
+# What the unfinished games are doing.
+python tools/audit_aborted_games.py --checkpoint <ckpt> --games 192
+
+# Durable copy: this host has workspace_is_volume=false.
+python tools/backup_training_run.py --publish
 ```
 
 **GPU-host baseline** (RTX 5090 / Ryzen 9 9950X3D, 16 physical cores), ValueOnly:
@@ -313,6 +384,32 @@ utilisation while the evaluator reads 46 %, so neither number points at the gap
 between them. Lowering the *cap* to meet the lane supply is also worse, not
 better — it shrinks batches without removing the wait. Keep the cap high and the
 wait short. `native_max_wait_us` is a separate knob for this reason.
+
+### 7.14 Loss is not a health metric for a self-play loop
+Both failed A0 switches showed training loss *improving* — 3.06 → 2.40 and
+2.94 → 2.18 — while the thing that mattered collapsed. Loss measures how well the
+policy head reproduces the targets the current search produced; it says nothing
+about whether that search-policy loop generates good games, and since only
+completed games reach replay, the dataset is progressively censored while the
+number improves. Health metrics in priority order: **completion rate**,
+move-count distribution, abort rate and reasons, throughput, external strength,
+and loss last as a training sanity check.
+
+### 7.15 A small fixed gate cannot estimate a population rate
+The 40-game gate exists to compare checkpoints, and it is good at that. It is not
+an estimator: 39/40 carries a Wilson interval of roughly 87–99.6 %, so it cannot
+distinguish 92 % from 98 %. This was over-read twice, in both directions —
+once to conclude B0 had a structural ceiling, once to conclude it had cleared
+one. Use the fixed 40-game set as a **regression probe** and a fresh large
+sample (768 games, SE ~0.7 pt) as a **promotion estimate**, and never mix them
+in one trajectory.
+
+### 7.16 The pinned snapshot goes stale against `tools/`
+`train_soo_scratch.sh` imports `diamond` from a pinned copy of `src/` so repo
+work cannot reach a run in flight — but `tools/az_train.py` is read from the
+working tree. Change a signature in `src/` and the two halves disagree, with a
+`TypeError` at the first self-play call rather than at startup. Re-pin the
+snapshot whenever `src/` changes.
 
 ## 8. Repo conventions
 
