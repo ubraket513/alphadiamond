@@ -8,6 +8,7 @@
 
 #include "soo/encoder.hpp"
 #include "soo/evaluator.hpp"
+#include "soo/random.hpp"
 #include "soo/state.hpp"
 #include "soo/tree.hpp"
 
@@ -35,6 +36,10 @@ struct SearchResult {
     std::vector<uint32_t> visit_counts;   // aligned with root_actions
     std::vector<double> q_values;         // aligned with root_actions
     std::vector<double> policy;           // aligned with root_actions
+    // The root edge priors *after* any Dirichlet mixing, aligned with
+    // root_actions.  Exposed because the mixture is otherwise unobservable
+    // from outside, and an unobservable stochastic path cannot be gated.
+    std::vector<double> root_priors;
     uint32_t simulations_run = 0;
     uint32_t evaluator_calls = 0;
     uint32_t nodes_created = 0;
@@ -62,9 +67,17 @@ class SearchSession {
 
     SearchSession(const Match& match, const MCTSConfig& config);
 
-    // ``temperature`` and ``dirichlet_epsilon`` must both be 0 for now: the
-    // stochastic path needs the RNG policy of section 9 and is not implemented.
+    // ``temperature`` and ``config.dirichlet_epsilon`` may both be positive.
+    // With both at 0 the search draws nothing and Gate B's bit-exact parity
+    // with Python still holds; that is asserted, not assumed.
     void begin(const State& state, double temperature, bool trace);
+
+    // Reseed the sampling stream.  Python builds a fresh ``MCTS2P`` per move
+    // with ``seed = selfplay.seed + move_count``; a native lane reuses one
+    // session across moves, so the per-move reseed has to be explicit.  Without
+    // it every move of a lane would continue one stream -- still deterministic,
+    // but no longer reproducible from a move index alone.
+    void reseed(uint64_t seed) { rng_.reseed(seed); }
 
     Status advance();
     const Encoded& pending_features() const { return pending_encoded_; }
@@ -84,6 +97,7 @@ class SearchSession {
     void prepare_expansion(uint32_t node_index);
     double complete_expansion(uint32_t node_index);
     void backup(double value);
+    void apply_dirichlet_noise(uint32_t node_index);
     void finalize();
     uint32_t select(uint32_t node_index) const;
 
@@ -94,6 +108,12 @@ class SearchSession {
 
     Phase phase_ = Phase::Done;
     bool trace_ = false;
+    double temperature_ = 0.0;
+    Rng rng_;
+    // Scratch for the Dirichlet draws and the temperature weights.  Both are
+    // per-search and short; reusing one buffer keeps them off the allocator on
+    // the search worker, which the scheduler cares about.
+    std::vector<double> noise_;
     int simulation_ = 0;
     uint32_t root_ = 0;
     uint32_t node_ = 0;

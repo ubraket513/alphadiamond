@@ -311,17 +311,48 @@ def test_terminal_leaves_are_reached_and_valued_identically() -> None:
     assert reached >= 10, f"only {reached} corpus positions reached a terminal leaf"
 
 
-def test_stochastic_search_is_refused_rather_than_approximated() -> None:
-    """The RNG policy of section 9 is not implemented, so it must not be faked."""
-    record = SAMPLE[0]
+def test_a_seed_change_cannot_move_the_deterministic_path() -> None:
+    """Gate B's guarantee has to survive the arrival of an RNG.
+
+    With ``epsilon = 0`` and ``temperature = 0`` the search must draw nothing at
+    all, so the seed is dead input.  If a future refactor moves a draw onto the
+    deterministic path this fails immediately -- which is the only cheap way to
+    notice, since the result would still be *a* valid search.
+    """
     module = _harness().module
-    with pytest.raises(Exception, match="deterministic-only"):
-        _harness().native.search(
-            _native_state(record),
-            module.MCTSConfig(simulations=8, dirichlet_epsilon=0.25),
+    baseline = None
+    for seed in (0, 1, 7, 2**63 - 1):
+        result = _harness().native.search(
+            _native_state(SAMPLE[0]),
+            module.MCTSConfig(simulations=32, c_puct=1.5, dirichlet_epsilon=0.0, seed=seed),
             temperature=0.0,
+            trace=True,
         )
-    with pytest.raises(Exception, match="deterministic-only"):
+        snapshot = (
+            result["selected_action"],
+            list(result["visit_counts"]),
+            list(result["q_values"]),
+            list(result["root_priors"]),
+        )
+        if baseline is None:
+            baseline = snapshot
+        else:
+            assert snapshot == baseline, f"seed {seed} moved a deterministic search"
+
+
+def test_invalid_stochastic_parameters_are_refused() -> None:
+    """``puct.add_dirichlet_noise`` raises on these; native must not clamp."""
+    module = _harness().module
+    for alpha, epsilon in ((0.0, 0.25), (-1.0, 0.25), (0.3, 1.5)):
+        with pytest.raises(Exception, match="Dirichlet"):
+            _harness().native.search(
+                _native_state(SAMPLE[0]),
+                module.MCTSConfig(
+                    simulations=4, dirichlet_alpha=alpha, dirichlet_epsilon=epsilon
+                ),
+                temperature=0.0,
+            )
+    with pytest.raises(Exception, match="temperature"):
         _harness().native.search(
-            _native_state(record), module.MCTSConfig(simulations=8), temperature=1.0
+            _native_state(SAMPLE[0]), module.MCTSConfig(simulations=4), temperature=-0.5
         )

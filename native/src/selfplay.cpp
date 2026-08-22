@@ -30,6 +30,10 @@ struct Lane {
     State state;
     int move_count = 0;
     uint64_t salt = 0;
+    // The lane's own game seed.  Python gives each game a derived seed and then
+    // uses ``seed + move_count`` per move; a lane mirrors that, so a lane's
+    // move is reproducible from (game seed, move number) alone.
+    uint64_t game_seed = 0;
     EvalOutcome outcome;
     Clock::time_point submitted_at;
 };
@@ -153,7 +157,14 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
                                const SchedulerConfig& config, BatchEvaluator& batch_evaluator) {
     MCTSConfig search_config;
     search_config.simulations = config.simulations;
-    search_config.dirichlet_epsilon = 0.0;
+    search_config.dirichlet_alpha = config.dirichlet_alpha;
+    search_config.dirichlet_epsilon = config.dirichlet_epsilon;
+
+    // The temperature schedule, exactly SooSelfPlayRunner's: full temperature
+    // for the first ``temperature_moves`` moves of a game, greedy after.
+    const auto temperature_for = [&config](int move_count) {
+        return move_count < config.temperature_moves ? config.temperature : 0.0;
+    };
 
     std::vector<std::unique_ptr<Lane>> lanes;
     lanes.reserve(static_cast<size_t>(config.games));
@@ -161,7 +172,11 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
         auto lane = std::make_unique<Lane>(match, search_config);
         lane->state = opening;
         lane->salt = 0x1000003ULL * static_cast<uint64_t>(i + 1);
-        lane->session.begin(lane->state, 0.0, false);
+        // Consecutive lane indices must not give correlated streams; the
+        // session's RNG runs its seed through splitmix64 for exactly this.
+        lane->game_seed = config.seed + 0x9e3779b97f4a7c15ULL * static_cast<uint64_t>(i + 1);
+        lane->session.reseed(lane->game_seed);
+        lane->session.begin(lane->state, temperature_for(0), false);
         lanes.push_back(std::move(lane));
     }
 
@@ -259,10 +274,15 @@ SchedulerMetrics run_scheduler(const Match& match, const State& opening,
                     lane.state = opening;
                     lane.move_count = 0;
                     // A fresh salt so the replacement game is a new trajectory
-                    // rather than a replay of the one that just ended.
+                    // rather than a replay of the one that just ended.  With a
+                    // real evaluator the salt does nothing (pitfall 7.9) and the
+                    // game seed is what carries the divergence, so advance both.
                     lane.salt = lane.salt * 6364136223846793005ULL + 1442695040888963407ULL;
+                    lane.game_seed =
+                        lane.game_seed * 6364136223846793005ULL + 1442695040888963407ULL;
                 }
-                lane.session.begin(lane.state, 0.0, false);
+                lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
+                lane.session.begin(lane.state, temperature_for(lane.move_count), false);
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);
             }

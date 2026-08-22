@@ -28,18 +28,21 @@ double terminal_scalar_value(const State& state, uint8_t player_id, const Match&
 }  // namespace
 
 SearchSession::SearchSession(const Match& match, const MCTSConfig& config)
-    : match_(match), config_(config) {
+    : match_(match), config_(config), rng_(config.seed) {
     if (config.simulations <= 0) throw std::invalid_argument("simulations must be positive");
     if (match.count != 2) throw std::invalid_argument("MCTS2P requires a two-seat match");
 }
 
 void SearchSession::begin(const State& state, double temperature, bool trace) {
     if (state.status == kFinished) throw std::invalid_argument("cannot search a terminal state");
-    if (config_.dirichlet_epsilon > 0.0 || temperature > 0.0) {
-        throw std::invalid_argument(
-            "native MCTS is deterministic-only for now: "
-            "dirichlet_epsilon and temperature must both be 0");
+    // puct.add_dirichlet_noise raises on these; refusing here rather than
+    // silently clamping keeps a misconfigured run loud.
+    if (config_.dirichlet_epsilon > 0.0 &&
+        (config_.dirichlet_alpha <= 0.0 || config_.dirichlet_epsilon > 1.0)) {
+        throw std::invalid_argument("Dirichlet alpha must be positive and epsilon in [0, 1]");
     }
+    if (temperature < 0.0) throw std::invalid_argument("temperature must not be negative");
+    temperature_ = temperature;
     arena_.reset(static_cast<size_t>(config_.simulations), 64);
     result_ = SearchResult{};
     trace_ = trace;
@@ -75,6 +78,32 @@ double SearchSession::complete_expansion(uint32_t node_index) {
     }
     arena_.node(node_index).expanded = true;
     return pending_outcome_.value;
+}
+
+// puct.add_dirichlet_noise.  One gamma draw per legal action, in the
+// authoritative legal-action order -- which is why Gate A pins that order as a
+// *sequence*: it decides which action each noise component lands on, and a
+// set-based comparison would pass a backend that permutes them.
+void SearchSession::apply_dirichlet_noise(uint32_t node_index) {
+    if (config_.dirichlet_epsilon <= 0.0) return;  // no draws: Gate B is untouched
+    Node& node = arena_.node(node_index);
+    if (node.edge_count == 0) return;
+
+    noise_.clear();
+    noise_.reserve(node.edge_count);
+    double total = 0.0;
+    for (uint16_t offset = 0; offset < node.edge_count; ++offset) {
+        const double sample = rng_.gammavariate(config_.dirichlet_alpha);
+        noise_.push_back(sample);
+        total += sample;
+    }
+    if (!(total > 0.0)) throw std::runtime_error("failed to sample root Dirichlet noise");
+
+    const double epsilon = config_.dirichlet_epsilon;
+    for (uint16_t offset = 0; offset < node.edge_count; ++offset) {
+        Edge& edge = arena_.edge(node.edge_begin + offset);
+        edge.prior = (1.0 - epsilon) * edge.prior + epsilon * (noise_[offset] / total);
+    }
 }
 
 void SearchSession::backup(double value) {
@@ -124,23 +153,41 @@ void SearchSession::finalize() {
         result_.root_actions.push_back(edge.action);
         result_.visit_counts.push_back(edge.visits);
         result_.q_values.push_back(edge.q());
+        result_.root_priors.push_back(edge.prior);
         total += edge.visits;
     }
     for (const uint32_t visits : result_.visit_counts) {
         result_.policy.push_back(static_cast<double>(visits) / static_cast<double>(total));
     }
 
-    // select_from_visits with temperature <= 0: most visits, ties to the
-    // smallest action id.
-    size_t best = 0;
-    for (size_t i = 1; i < result_.root_actions.size(); ++i) {
-        if (result_.visit_counts[i] > result_.visit_counts[best] ||
-            (result_.visit_counts[i] == result_.visit_counts[best] &&
-             result_.root_actions[i] < result_.root_actions[best])) {
-            best = i;
+    // puct.select_from_visits.
+    if (temperature_ > 0.0) {
+        // weights = visits ** (1 / T); an all-zero weight vector falls back to
+        // uniform rather than raising, exactly as Python does.
+        noise_.clear();
+        noise_.reserve(result_.visit_counts.size());
+        double weight_total = 0.0;
+        for (const uint32_t visits : result_.visit_counts) {
+            const double weight = std::pow(static_cast<double>(visits), 1.0 / temperature_);
+            noise_.push_back(weight);
+            weight_total += weight;
         }
+        if (!(weight_total > 0.0)) {
+            for (double& weight : noise_) weight = 1.0;
+        }
+        result_.selected_action = result_.root_actions[rng_.weighted_index(noise_)];
+    } else {
+        // temperature <= 0: most visits, ties to the smallest action id.
+        size_t best = 0;
+        for (size_t i = 1; i < result_.root_actions.size(); ++i) {
+            if (result_.visit_counts[i] > result_.visit_counts[best] ||
+                (result_.visit_counts[i] == result_.visit_counts[best] &&
+                 result_.root_actions[i] < result_.root_actions[best])) {
+                best = i;
+            }
+        }
+        result_.selected_action = result_.root_actions[best];
     }
-    result_.selected_action = result_.root_actions[best];
     result_.nodes_created = static_cast<uint32_t>(arena_.node_count());
 }
 
@@ -157,6 +204,11 @@ SearchSession::Status SearchSession::advance() {
 
             case Phase::AwaitRoot:
                 complete_expansion(root_);
+                // Python mixes the noise into the priors dict before any child
+                // is created, so the very first selection already sees it.
+                // Applying it to the edges immediately after they are pushed is
+                // the same thing: nothing has read a prior yet.
+                apply_dirichlet_noise(root_);
                 simulation_ = 0;
                 phase_ = Phase::Descend;
                 break;

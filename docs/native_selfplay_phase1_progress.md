@@ -870,3 +870,105 @@ production batch cap, on the same machine, same checkpoint, same seeded work,
 against a Python baseline tuned on this host rather than quoted from another.
 The evaluator thread is the ceiling and the ceiling is the GPU forward, which is
 the constraint the design chose to have.
+
+---
+
+## 11. Gate E — stochastic MCTS
+
+§10.5 found that `selfplay_backend = "native"` was blocked by something the
+handoff had filed as wiring: with a real model callback there is no per-lane
+salt, so at `epsilon = 0` and `temperature = 0` every lane plays the same game.
+This gate removes that block.
+
+### 11.1 What "parity" means here, and why it changes the testing
+
+§9 of the design settles the RNG policy: **cross-backend bit-exact parity is not
+required**. CPython's `gammavariate` uses a rejection algorithm whose draw count
+varies per sample, so matching its stream would mean reimplementing that
+algorithm on MT19937 — reproducibility no experiment needs. What is required:
+
+| requirement | how it is gated |
+|---|---|
+| Dirichlet and temperature **distribution and semantics** match Python | moments, CDF against `random.Random`, frequency tests |
+| each backend **deterministic per seed** | same seed reproduces search, lane, and whole scheduled run |
+| legal action **ordering** exact, in every mode | Gate A, unchanged |
+| `epsilon = 0, temperature = 0` still bit-exact | Gate B, plus a new seed-invariance test |
+
+That trade has a sharp consequence which drove the whole test design. **Because
+the streams are allowed to differ, no comparison of sequences can catch a wrong
+sampler.** A boost exponent inverted, weights normalised twice, noise applied
+after the first selection instead of before — each still produces a perfectly
+plausible stream. They are only visible in the *distribution*. So the samplers
+are exposed through the ABI (`sample_gamma`, `sample_weighted`) and gated on
+moments and frequencies rather than on values.
+
+### 11.2 What was implemented
+
+`native/include/soo/random.hpp` — xoshiro256\*\* seeded through splitmix64, with
+`gammavariate` (Marsaglia–Tsang, plus the `alpha < 1` boost that production's
+`alpha = 0.3` actually uses) and a `weighted_index` matching
+`random.choices(population, weights, k=1)`.
+
+`SearchSession` — the refusal is replaced by validation matching
+`puct.add_dirichlet_noise`'s own `ValueError`s. Noise is mixed into the root
+edge priors immediately after they are pushed and before any selection reads
+one, which is where Python applies it. `finalize()` gained the temperature
+branch. `SearchResult` now carries `root_priors`, because **an unobservable
+stochastic path cannot be gated** — the mixture is otherwise invisible from
+outside.
+
+The scheduler gained `temperature`, `temperature_moves`, `dirichlet_alpha`,
+`dirichlet_epsilon` and `seed`. Each lane derives a game seed from the base and
+its index, and reseeds per move with `game_seed + move_count` — mirroring
+Python, where `SooSelfPlayRunner` builds a fresh `MCTS2P` per move with
+`seed = selfplay.seed + move_count`.
+
+### 11.3 Results
+
+19 new tests in `tests/native/test_stochastic_parity.py`, plus three in
+`test_callback.py`. The ones that carry weight:
+
+| property | result |
+|---|---|
+| Gamma(α,1) mean and variance, α ∈ {0.3, 0.9, 1.0, 2.5} | both within 3 %/6 % of α |
+| Gamma CDF vs `random.Random.gammavariate`, α = 0.3 | every decile within 0.01 absolute |
+| consecutive seeds decorrelate | \|r\| < 0.05 over 20,000 pairs |
+| weighted selection frequencies | within 0.01 of the weight share; zero-weight never chosen |
+| mixed priors still sum to 1 | within 1e-9 |
+| E[mixed prior] = (1−ε)·p + ε/n, and ε=1 is pure Dirichlet | within 0.02 over 400 seeds |
+| temperature 1 selection frequency = visits/total | within 0.03 over 3,000 searches |
+| temperature 0.05 | picks the greedy action > 95 % of the time |
+| **16 exploring lanes → 16 distinct games** | was 1 |
+| same seed → identical scheduled run | exact |
+
+### 11.4 Two tests that exist because of earlier bugs
+
+**The seed must be dead input on the deterministic path.** Gate B's bit-exact
+parity now shares a class with an RNG. `test_a_seed_change_cannot_move_the_deterministic_path`
+runs the same search under four seeds and requires identical visits, q values
+and priors. If a future refactor moves a draw onto the deterministic path, the
+result would still be *a* valid search — this is the only cheap way to notice.
+
+**Neighbouring seeds must decorrelate.** Lanes are seeded from consecutive
+integers. A generator that does not avalanche its seed gives them near-identical
+streams, which is precisely how the Gate C salt bug produced 32 lanes playing
+one game while every throughput number looked healthy (§8.6). The seed goes
+through splitmix64 for this reason and the test asserts it worked, over 20,000
+pairs — at the 2,000 pairs first written, an honest generator reads ≈0.022 by
+chance and the test fails on luck alone.
+
+### 11.5 A tolerance that had to be derived rather than guessed
+
+The first CDF test compared sorted samples quantile-for-quantile and failed at
+the 10th percentile: native 3.31e-4 against Python 2.99e-4, an 11 % gap.
+
+That is not a sampler bug. Near zero, Gamma(0.3, 1) has `F(x) ~ x^0.3`, so its
+quantile function goes like `p^(1/0.3)` — a 1 % error in probability becomes a
+3.3 % error in x. At the 10th percentile of 100k draws the sampling noise is
+already ~3 % per sample, ~4.5 % for two independent ones, and the observed gap
+is 2.4σ. **A quantile-for-quantile test at α = 0.3 is either flaky or too loose
+to detect anything.**
+
+Comparing on the CDF scale instead makes it a plain proportion with standard
+error `sqrt(p(1-p)/n) ≈ 0.0016`, so the 0.01 bound is about six sigma. Same
+comparison, stated on the scale where the statistics behave.
