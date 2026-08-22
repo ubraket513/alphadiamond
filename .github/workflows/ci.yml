@@ -102,7 +102,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libpulse0
 
       - name: Install
         run: |
@@ -110,6 +111,18 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install pytest trueskill "PySide6>=6.10" qtawesome
           python -m pip install --no-deps -e .
+
+      # The sound tests skip themselves on a build without QtMultimedia, because
+      # audio is optional by design and the app must run without it. That is the
+      # right behaviour on a user's machine and the wrong behaviour here, where a
+      # skip would quietly retire five tests. So CI asserts the backend is
+      # actually present, and fails with the real ImportError if it is not.
+      - name: Confirm QtMultimedia is available
+        run: |
+          python - <<'PY'
+          from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # noqa: F401
+          print("QtMultimedia imported; the sound tests will run, not skip")
+          PY
 
       - name: Test
         env:
