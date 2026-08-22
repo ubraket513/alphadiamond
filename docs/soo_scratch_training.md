@@ -263,8 +263,15 @@ checkpoint was published as a release and the run switched to A0.
 | 52 | 495/768 (64.5 %) | 105 | 142 s |
 | 53 | 493/768 (64.2 %) | 117 | 147 s |
 
-Loss kept falling — 3.06 → 2.40 — which is exactly why loss is the wrong thing
-to watch here. The policy head was fitting its own visit distributions
+Loss kept falling — 3.06 → 2.40 — which is exactly why **loss is not a
+phase-transition signal**. It measures how well the policy head reproduces the
+targets the current search produced; it says nothing about whether that
+search-policy loop generates good games. And since only completed games reach
+replay, the dataset is progressively censored while the number improves.
+
+Health metrics for this project, in priority order: **completion rate**,
+move-count distribution (median / p90 / p99), abort rate and reasons, self-play
+throughput, external strength — and only then loss, as a training sanity check. The policy head was fitting its own visit distributions
 beautifully while the games those distributions produced got longer and more
 often hit the move cap. And an aborted game contributes **zero** samples, so
 replay was filling only from games that happened to finish: survivorship bias on
@@ -302,7 +309,55 @@ and a test pins it.
 configuration it is clearing you for. Any part of production's behaviour the
 check omits is a part it silently assumes is harmless.
 
-### 5.6 The replay store had to be bounded first
+### 5.6 What the fixed gate says, in retrospect and now
+
+Re-measuring the preserved checkpoints with the fixed gate closes the loop:
+
+| step | context | fixed gate | verdict |
+|---|---|---|---|
+| 13,650 | B0-final, **pre-switch** | **88 %** (90 / 85 per seed) | **FAIL** — narrowly |
+| 16,350 | after 4 A0 iterations | 55 % | FAIL |
+| 19,050 | after ~10 B0 recovery iterations | **95 %** (95 / 90) | PASS |
+
+Three things fall out.
+
+**The strengthened threshold is what does the work.** At the blueprint's original
+80 % the pre-switch checkpoint passes at 88 % — and production then collapsed to
+64 %. At 90 % it fails. The margin is not conservatism for its own sake; 88 % is
+precisely the reading that did not hold up.
+
+**The A0 excursion damaged the network**: 88 % → 55 % in four iterations, and
+reverting to B0 recovered it past where it started. The censored dataset was not
+merely wasteful, it was harmful — replay filled only from games that finished,
+so the network was trained away from exactly the trajectories it was failing.
+
+**The two engines agree.** On one pinned checkpoint the native gate and the
+Python probe both read 19/20 with medians of 75 and 76, so the improvement is
+real and not an artefact of changing measurement tools mid-investigation. Worth
+checking, because the gate switched engines and step at the same time.
+
+### 5.7 Raising `max_moves` would not have helped
+
+Run as a diagnostic on one checkpoint under production exploration:
+
+| `max_moves` | completion | median | p90 | p99 | longest |
+|---|---|---|---|---|---|
+| 500 | 95 % | 72 | 103 | 329 | 329 |
+| 750 | 95 % | 72 | 103 | 329 | 329 |
+| 1000 | 98 % | 73 | 107 | **949** | 949 |
+| 1500 | 98 % | 73 | 107 | 949 | 949 |
+
+500 → 750 changes **nothing at all** — not the completion, not a single
+percentile. So the games aborting at the cap are not games that would have
+finished at 600 or 700; the distribution is bimodal, with a healthy mass under
+~110 moves and a tail that wanders indefinitely. Going to 1000 recovers exactly
+one game in forty, and that game took 949 moves.
+
+The cap is therefore **not too tight**, and raising it would buy a percentage
+point by paying 949 moves of pathological trajectory into replay, at 60 % more
+wall-clock for the same forty games. `max_moves = 500` stays.
+
+### 5.8 The replay store had to be bounded first
 
 The run could not have finished a six-hour block. `PersistentReplayStore` is
 append-only, and two costs compound:
