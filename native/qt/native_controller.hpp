@@ -156,6 +156,7 @@ class NativeController final : public QObject {
     bool soundEnabled() const;
     QString soundStatus() const;
     double soundVolume() const;
+    bool soundLoaded() const;
     int soundPlayRequestCount() const;
     QUrl defaultSaveDir() const;
     QVariantList standings() const;
@@ -230,6 +231,8 @@ class NativeController final : public QObject {
     QVector<int32_t> ai_rejected_;
     QString ai_status_ = QStringLiteral("Ready");
     QVariantList ai_details_;
+    int ai_simulations_ = 128;
+    qint64 ai_started_at_ms_ = 0;
     int selected_position_ = -1;
     bool ai_thinking_ = false;
     quint64 generation_ = 0;

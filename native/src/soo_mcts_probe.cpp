@@ -1,13 +1,23 @@
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 #include "diamond_model/soo_evaluator.hpp"
 #include "soo/board.hpp"
+#include "soo/encoder.hpp"
 #include "soo/mcts.hpp"
 #include "soo/rules.hpp"
 
@@ -58,11 +68,40 @@ void configure_topology(const std::filesystem::path& root) {
     topo.configured = true;
 }
 
+double percentile(std::vector<double> values, double fraction) {
+    std::sort(values.begin(), values.end());
+    const auto index = static_cast<size_t>(
+        std::ceil(fraction * static_cast<double>(values.size()))) - 1;
+    return values.at(std::min(index, values.size() - 1));
+}
+
+double process_cpu_seconds() {
+#ifdef _WIN32
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0.0;
+    ULARGE_INTEGER kernel_ticks{}, user_ticks{};
+    kernel_ticks.LowPart = kernel.dwLowDateTime;
+    kernel_ticks.HighPart = kernel.dwHighDateTime;
+    user_ticks.LowPart = user.dwLowDateTime;
+    user_ticks.HighPart = user.dwHighDateTime;
+    return static_cast<double>(kernel_ticks.QuadPart + user_ticks.QuadPart) / 10'000'000.0;
+#else
+    return static_cast<double>(std::clock()) / CLOCKS_PER_SEC;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) return 2;
+    if (argc < 2 || argc > 5) return 2;
     try {
+        const int simulations = argc >= 3 ? std::stoi(argv[2]) : 2;
+        const int repeats = argc >= 4 ? std::stoi(argv[3]) : 1;
+        const int threads = argc >= 5 ? std::stoi(argv[4]) : 1;
+        if (simulations <= 0 || repeats <= 0 || threads <= 0)
+            throw std::invalid_argument("simulations, repeats, and threads must be positive");
+        torch::set_num_threads(threads);
+        torch::set_num_interop_threads(1);
         const std::filesystem::path root(argv[1]);
         configure_topology(root);
         const auto occupancy = read_values<uint8_t>(root / "mcts_occupancy.u8");
@@ -88,25 +127,60 @@ int main(int argc, char** argv) {
         diamond_model::SooModel model(128, 6);
         model->load_weights(root / "weights");
         diamond_model::SooEvaluator evaluator(model);
+
+        const auto encoded = soo::encode(state, match);
+        (void)evaluator.evaluate(encoded, expected_actions);
+        std::vector<double> forward_ms;
+        forward_ms.reserve(20);
+        for (int iteration = 0; iteration < 20; ++iteration) {
+            const auto started = std::chrono::steady_clock::now();
+            (void)evaluator.evaluate(encoded, expected_actions);
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            forward_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
+        }
+
         soo::MCTSConfig config;
-        config.simulations = 2;
+        config.simulations = simulations;
         config.seed = 17;
-        soo::MCTS2P search(match, evaluator, config);
-        const auto result = search.run(state, 0.0, true);
-        if (result.root_actions != expected_actions) {
-            throw std::runtime_error("native MCTS root legal-action order differs from Python");
+        std::vector<double> move_ms;
+        move_ms.reserve(static_cast<size_t>(repeats));
+        const double cpu_started = process_cpu_seconds();
+        const auto wall_started = std::chrono::steady_clock::now();
+        soo::SearchResult result;
+        for (int iteration = 0; iteration < repeats; ++iteration) {
+            soo::MCTS2P search(match, evaluator, config);
+            const auto started = std::chrono::steady_clock::now();
+            result = search.run(state, 0.0, iteration == 0);
+            const auto elapsed = std::chrono::steady_clock::now() - started;
+            move_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
+            if (result.root_actions != expected_actions) {
+                throw std::runtime_error("native MCTS root legal-action order differs from Python");
+            }
+            if (result.evaluator_calls == 0 || result.root_priors.size() != expected_actions.size()) {
+                throw std::runtime_error("native MCTS did not receive root evaluator priors");
+            }
+            double prior_sum = 0.0;
+            for (double prior : result.root_priors) prior_sum += prior;
+            if (std::abs(prior_sum - 1.0) > 1e-6) {
+                throw std::runtime_error("native MCTS root priors are not normalized");
+            }
         }
-        if (result.evaluator_calls == 0 || result.root_priors.size() != expected_actions.size()) {
-            throw std::runtime_error("native MCTS did not receive root evaluator priors");
-        }
-        double prior_sum = 0.0;
-        for (double prior : result.root_priors) prior_sum += prior;
-        if (std::abs(prior_sum - 1.0) > 1e-6) {
-            throw std::runtime_error("native MCTS root priors are not normalized");
-        }
+        const double wall_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - wall_started).count();
+        const double cpu_seconds = process_cpu_seconds() - cpu_started;
+        const unsigned logical_cpus = std::max(1U, std::thread::hardware_concurrency());
+        const double normalized_cpu = wall_seconds > 0.0
+            ? 100.0 * cpu_seconds / wall_seconds / static_cast<double>(logical_cpus)
+            : 0.0;
         std::cout << "Soo native MCTS evaluator integration passed; root_actions="
                   << result.root_actions.size() << ", evaluator_calls="
-                  << result.evaluator_calls << "\n";
+                  << result.evaluator_calls << ", simulations=" << simulations
+                  << ", repeats=" << repeats << ", threads=" << threads
+                  << ", forward_p50_ms=" << percentile(forward_ms, 0.50)
+                  << ", forward_p95_ms=" << percentile(forward_ms, 0.95)
+                  << ", move_p50_ms=" << percentile(move_ms, 0.50)
+                  << ", move_p95_ms=" << percentile(move_ms, 0.95)
+                  << ", normalized_cpu_percent=" << normalized_cpu << "\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "probe error: " << error.what() << "\n";

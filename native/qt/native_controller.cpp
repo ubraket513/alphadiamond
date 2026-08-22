@@ -229,6 +229,11 @@ void ContractListModel::updateRow(int row, const QVariantMap& values) {
 }
 
 NativeController::NativeController(QObject* parent) : QObject(parent) {
+    bool simulations_ok = false;
+    const int configured_simulations = qEnvironmentVariableIntValue(
+        "DIAMOND_MCTS_SIMULATIONS", &simulations_ok);
+    if (simulations_ok && configured_simulations > 0 && configured_simulations <= 4096)
+        ai_simulations_ = configured_simulations;
     geometry_ = new GeometryModel(this);
     board_model_ = new ContractListModel("board", this);
     piece_model_ = new ContractListModel("piece", this);
@@ -256,6 +261,10 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 selected_position_ = -1;
                 legal_actions_.clear();
                 ai_status_ = QStringLiteral("Proposal ready");
+                if (ai_started_at_ms_ > 0) {
+                    ai_details_.push_back(QVariantMap{{"label", QStringLiteral("Search time (ms)")},
+                        {"value", QString::number(QDateTime::currentMSecsSinceEpoch() - ai_started_at_ms_)}});
+                }
                 proposeAction(action, true);
             });
     connect(ai_worker_, &NativeAiWorker::failed, this,
@@ -329,6 +338,7 @@ bool NativeController::soundAvailable() const { return sound_player_->available(
 bool NativeController::soundEnabled() const { return sound_player_->enabled(); }
 QString NativeController::soundStatus() const { return sound_player_->status(); }
 double NativeController::soundVolume() const { return sound_player_->volume(); }
+bool NativeController::soundLoaded() const { return sound_player_->loaded(); }
 int NativeController::soundPlayRequestCount() const { return sound_player_->playRequestCount(); }
 
 void NativeController::previewSound() { sound_player_->play(); }
@@ -951,16 +961,23 @@ void NativeController::startAiTurn() {
     const soo::State search_state = state_;
     const soo::Match search_match = match_;
     const QVector<int32_t> rejected = ai_rejected_;
+    const int simulations = ai_simulations_;
     ai_thinking_ = true;
+    ai_started_at_ms_ = QDateTime::currentMSecsSinceEpoch();
     ai_status_ = QStringLiteral("Thinking…");
     status_message_ = QStringLiteral("%1 is thinking…").arg(currentPlayerName());
     ai_details_ = {QVariantMap{{"label", QStringLiteral("Agent")}, {"value", aiAgentName()}},
         QVariantMap{{"label", QStringLiteral("Legal moves")},
                     {"value", QString::number(static_cast<int>(legal.size()))}}};
+#ifdef DIAMOND_QT_HAS_SOO
+    if (search_match.count == 2)
+        ai_details_.push_back(QVariantMap{{"label", QStringLiteral("Simulations")},
+                                          {"value", QString::number(simulations)}});
+#endif
     Q_EMIT changed();
 
     const quint64 request_generation = ++generation_;
-    ai_worker_->start(request_generation, [search_state, search_match, rejected, legal]() -> int {
+    ai_worker_->start(request_generation, [search_state, search_match, rejected, legal, simulations]() -> int {
         auto is_rejected = [&rejected](int32_t action) {
             return std::find(rejected.cbegin(), rejected.cend(), action) != rejected.cend();
         };
@@ -975,7 +992,7 @@ void NativeController::startAiTurn() {
             model->load_weights(root.toStdString() + "/weights");
             diamond_model::SooEvaluator evaluator(model);
             soo::MCTSConfig config;
-            config.simulations = 128;
+            config.simulations = simulations;
             config.c_puct = 1.5;
             config.dirichlet_epsilon = 0.0;
             soo::MCTS2P search(search_match, evaluator, config);
@@ -988,9 +1005,13 @@ void NativeController::startAiTurn() {
                     return result.visit_counts[left] > result.visit_counts[right];
                 return result.root_actions[left] < result.root_actions[right];
             });
-            for (size_t index : ranked)
-                if (!is_rejected(result.root_actions[index])) return result.root_actions[index];
-            return result.selected_action;
+            for (size_t index : ranked) {
+                const int32_t physical_action = soo::to_physical_action(
+                    result.root_actions[index], search_match, search_state.current_player);
+                if (!is_rejected(physical_action)) return physical_action;
+            }
+            return soo::to_physical_action(
+                result.selected_action, search_match, search_state.current_player);
         }
 #endif
         for (int32_t action : legal) if (!is_rejected(action)) return action;
@@ -1138,11 +1159,20 @@ bool NativeController::sooSmoke() {
         config.simulations = 2;
         config.c_puct = 1.5;
         config.dirichlet_epsilon = 0.0;
+        std::vector<int32_t> human_actions;
+        soo::legal_action_ids(state_, human_actions);
+        if (human_actions.empty()) return false;
+        const auto ai_state = soo::apply_action(state_, match_, human_actions.front());
+        if (ai_state.current_player == state_.current_player) return false;
         soo::MCTS2P search(match_, evaluator, config);
-        const auto result = search.run(state_, 0.0, false);
+        const auto result = search.run(ai_state, 0.0, false);
+        const int32_t physical_action = soo::to_physical_action(
+            result.selected_action, match_, ai_state.current_player);
+        const auto next_state = soo::apply_action(ai_state, match_, physical_action);
         return result.selected_action >= 0 &&
                std::find(result.root_actions.begin(), result.root_actions.end(),
-                         result.selected_action) != result.root_actions.end();
+                         result.selected_action) != result.root_actions.end() &&
+               next_state.turn_number == ai_state.turn_number + 1;
     } catch (const std::exception& error) {
         qWarning() << "Soo smoke failed:" << error.what();
         return false;

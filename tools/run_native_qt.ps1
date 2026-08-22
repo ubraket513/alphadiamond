@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$DeployDir = "dist\diamond-qt",
-    [switch]$Soo
+    [switch]$Soo,
+    [ValidateRange(1, 4096)]
+    [int]$Simulations = 128
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +16,7 @@ if (-not (Test-Path -LiteralPath $exe)) { throw "Executable not found: $exe" }
 # Smoke tests use offscreen; the interactive launcher must always use the
 # Windows platform plugin, regardless of inherited shell/user environment.
 $env:QT_QPA_PLATFORM = "windows"
+$env:DIAMOND_MCTS_SIMULATIONS = $Simulations.ToString()
 Remove-Item Env:QT_DEBUG_PLUGINS -ErrorAction SilentlyContinue
 $process = Start-Process -FilePath $exe -WorkingDirectory $directory -PassThru
 Start-Sleep -Milliseconds 800

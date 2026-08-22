@@ -17,6 +17,7 @@ class NativeMovePlayer final : public QObject {
     bool muted() const { return muted_; }
     double volume() const { return volume_; }
     QString status() const { return status_; }
+    bool loaded() const { return loaded_; }
     int playRequestCount() const { return play_request_count_; }
 
     void setMuted(bool muted);

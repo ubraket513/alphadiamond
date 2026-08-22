@@ -69,8 +69,8 @@ class PlaceholderIconProvider final : public QQuickImageProvider {
 
 int main(int argc, char* argv[]) {
     bool smoke_mode = false;
-    for (int i = 1; i < argc; ++i) smoke_mode = smoke_mode ||
-        QString::fromLocal8Bit(argv[i]) == QStringLiteral("--smoke");
+    for (int i = 1; i < argc; ++i)
+        smoke_mode = smoke_mode || QString::fromLocal8Bit(argv[i]).endsWith(QStringLiteral("-smoke"));
     qputenv("QT_QPA_PLATFORM", smoke_mode ? QByteArrayLiteral("offscreen")
                                            : QByteArrayLiteral("windows"));
 #ifdef Q_OS_WIN

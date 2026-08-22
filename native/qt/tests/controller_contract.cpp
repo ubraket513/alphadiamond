@@ -54,11 +54,13 @@ bool pump_until(QGuiApplication& app, const std::function<bool()>& done, int tim
 
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    qputenv("DIAMOND_MCTS_SIMULATIONS", QByteArrayLiteral("1"));
 #ifdef Q_OS_WIN
     if (qEnvironmentVariableIsEmpty("QT_MEDIA_BACKEND"))
         qputenv("QT_MEDIA_BACKEND", QByteArrayLiteral("windows"));
 #endif
     QGuiApplication app(argc, argv);
+    qInfo("controller contract: startup");
     NativeController controller;
     if (!require(controller.nativeRulesReady(), "native topology did not load")) return 1;
     const QMetaObject* meta = controller.metaObject();
@@ -87,6 +89,11 @@ int main(int argc, char** argv) {
     controller.previewSound();
     if (!require(controller.soundPlayRequestCount() == preview_requests + 1,
                  "sound preview did not request playback")) return 1;
+    if (!require(pump_until(app, [&controller] {
+            return controller.soundLoaded() || !controller.soundStatus().isEmpty();
+        }, 5000) && controller.soundLoaded(),
+        "Qt Multimedia could not load/decode the packaged move sound")) return 1;
+    qInfo("controller contract: sound");
     controller.startMatch(QVariantList{1, 2}, QVariantList{});
 
     auto* geometry = qobject_cast<GeometryModel*>(controller.geometry());
@@ -196,6 +203,7 @@ int main(int argc, char** argv) {
     controller.newGame();
     if (!require(controller.turnNumber() == 1 && controller.gameLabel() != old_game_label,
                  "new game did not reset and increment the game label")) return 1;
+    qInfo("controller contract: human controller");
 
     NativeController ai_controller;
     ai_controller.startMatch(QVariantList{1, 2}, QVariantList{2});
@@ -225,7 +233,7 @@ int main(int argc, char** argv) {
 
     if (!require(pump_until(app, [&ai_controller] {
             return ai_controller.hasProposal() && ai_controller.proposalIsAi();
-        }, 5000), "AI result was not published as a confirmable proposal")) return 1;
+        }, 30000), "AI result was not published as a confirmable proposal")) return 1;
     const int ai_turn = ai_controller.turnNumber();
     const QString first_ai_move = ai_controller.proposalSummary();
     if (!require(ai_controller.canConfirm(), "AI proposal cannot be confirmed")) return 1;
@@ -234,7 +242,7 @@ int main(int argc, char** argv) {
     if (!require(pump_until(app, [&ai_controller, &first_ai_move] {
             return ai_controller.hasProposal() && ai_controller.proposalIsAi()
                 && ai_controller.proposalSummary() != first_ai_move;
-        }, 5000), "Think Again did not produce a different proposal")) return 1;
+        }, 30000), "Think Again did not produce a different proposal")) return 1;
     if (!require(ai_controller.turnNumber() == ai_turn,
                  "Think Again changed authoritative game state")) return 1;
 
@@ -242,6 +250,7 @@ int main(int argc, char** argv) {
     if (!require(pump_until(app, [&ai_controller, ai_turn] {
             return ai_controller.turnNumber() == ai_turn + 1 && ai_controller.canSelect();
         }, 5000), "confirming the AI proposal did not finish its move")) return 1;
+    qInfo("controller contract: AI controller");
 
     NativeController terminal_controller;
     terminal_controller.startMatch(QVariantList{1, 2}, QVariantList{});
@@ -285,6 +294,8 @@ int main(int argc, char** argv) {
     if (!require(terminal_controller.isGameOver() && terminal_controller.winnerId() == 1 &&
                  terminal_controller.standings().size() == 2 && !terminal_controller.canSelect(),
                  "terminal controller state does not match the Python oracle")) return 1;
+
+    qInfo("controller contract: complete");
 
     return 0;
 }

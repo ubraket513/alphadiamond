@@ -6,6 +6,12 @@ Your task is to migrate the human-play application runtime from PySide6/Python t
 
 This is an architectural migration. Do not perform a one-shot rewrite. Inspect the current repository first, establish exact interfaces and parity gates, then migrate incrementally.
 
+> **Implementation status (2026-08-23):** Gates Q0–Q6 are complete for the
+> blueprint's initial two-player human-vs-Soo release target. The final gate
+> record, QML contract manifest, build/package commands, measured CPU latency,
+> and compatibility notes are in
+> [`docs/native_windows_runtime.md`](../docs/native_windows_runtime.md).
+
 ## End goal
 
 The final human-vs-AI Windows application must have this runtime architecture:

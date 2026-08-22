@@ -151,8 +151,8 @@ QtObject {
     readonly property int durationBase:   220
     readonly property int durationSlow:   300
 
-    // A hop must finish inside HOP_DURATION_MS in app/controller.py, which is
-    // what paces the multi-hop animation; overrun and the piece lags the tick.
+    // A hop must finish inside the native controller's 140 ms landing timer;
+    // overrun and the piece lags the tick.
     readonly property int hopDuration:   130
     readonly property int fadeDuration:  160
     readonly property int panelDuration: 260

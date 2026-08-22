@@ -19,14 +19,22 @@ if ([string]::IsNullOrWhiteSpace($EnvironmentRoot) -or -not (Test-Path -LiteralP
 $qtDeploy = Join-Path $EnvironmentRoot "Library\lib\qt6\bin\windeployqt.exe"
 $envBin = Join-Path $EnvironmentRoot "Library\bin"
 $qtBin = Join-Path $EnvironmentRoot "Library\lib\qt6\bin"
- $qtRoot = Join-Path $EnvironmentRoot "Library\lib\qt6"
+$qtRoot = Join-Path $EnvironmentRoot "Library\lib\qt6"
 if (-not (Test-Path -LiteralPath $qtBin)) { throw "Qt runtime directory not found: $qtBin" }
 
 # The conda-forge Qt layout keeps deployment tools and DLLs in separate
 # directories. Make both visible before starting windeployqt itself.
 $env:PATH = "$qtBin;$envBin;$env:PATH"
 
-$destination = Join-Path $repo $OutputDir
+$repoPath = [IO.Path]::GetFullPath($repo.Path)
+$repoPrefix = $repoPath.TrimEnd('\') + '\'
+$destination = [IO.Path]::GetFullPath((Join-Path $repoPath $OutputDir))
+if (-not $destination.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputDir must resolve inside the repository: $destination"
+}
+if (Test-Path -LiteralPath $destination) {
+    Remove-Item -LiteralPath $destination -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Copy-Item -LiteralPath $exe -Destination (Join-Path $destination "diamond_qt.exe") -Force
 $soundSource = Join-Path $repo "src\diamond\assets\sounds\move.m4a"
@@ -71,11 +79,27 @@ Copy-Item -LiteralPath $artifactSource -Destination $artifactDestination -Recurs
 
 if ($WithSoo) {
     $patterns = @("torch*.dll", "c10*.dll", "fbgemm*.dll", "asmjit*.dll", "mkl*.dll",
-        "libiomp*.dll", "vcomp*.dll", "tbb*.dll", "sleef*.dll", "zlib*.dll", "uv*.dll", "libomp*.dll")
+        "libiomp*.dll", "vcomp*.dll", "tbb*.dll", "sleef*.dll", "zlib*.dll", "uv*.dll",
+        "libomp*.dll", "libprotobuf*.dll", "utf8_validity*.dll", "abseil_dll*.dll")
     foreach ($pattern in $patterns) {
         Get-ChildItem -LiteralPath $envBin -Filter $pattern -File -ErrorAction SilentlyContinue |
             Copy-Item -Destination $destination -Force
     }
 }
 
+function Invoke-PackagedSmoke([string]$Argument) {
+    $process = Start-Process -FilePath (Join-Path $destination "diamond_qt.exe") `
+        -ArgumentList $Argument -WorkingDirectory $destination -WindowStyle Hidden `
+        -PassThru -Wait
+    if ($process.ExitCode -ne 0) {
+        throw "Packaged runtime smoke failed ($Argument), exit code $($process.ExitCode)."
+    }
+}
+
+foreach ($argument in @("--smoke", "--game-smoke", "--worker-smoke")) {
+    Invoke-PackagedSmoke $argument
+}
+if ($WithSoo) { Invoke-PackagedSmoke "--soo-smoke" }
+
 Write-Host "Native Qt deployment created at: $destination"
+Write-Host "Packaged runtime smoke checks passed."

@@ -7,14 +7,35 @@ if(DIAMOND_BUILD_QT_SOO)
     endif()
 endif()
 
-qt_add_executable(diamond_qt
-    main.cpp
+add_library(diamond_qt_backend STATIC
     ai_worker.cpp
     ai_worker.hpp
     native_controller.cpp
     native_controller.hpp
     native_move_player.cpp
     native_move_player.hpp
+)
+target_link_libraries(diamond_qt_backend PUBLIC
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Multimedia
+    alphadiamond::soo_core alphadiamond::soo_search
+)
+target_include_directories(diamond_qt_backend PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_compile_features(diamond_qt_backend PUBLIC cxx_std_20)
+set_target_properties(diamond_qt_backend PROPERTIES AUTOMOC ON)
+if(DIAMOND_BUILD_QT_SOO)
+    target_link_libraries(diamond_qt_backend PUBLIC alphadiamond::diamond_model ${TORCH_LIBRARIES})
+    target_include_directories(diamond_qt_backend PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_compile_definitions(diamond_qt_backend PRIVATE
+        DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
+endif()
+if(MSVC)
+    target_compile_options(diamond_qt_backend PRIVATE /W4)
+endif()
+
+qt_add_executable(diamond_qt
+    main.cpp
     native_chrome.cpp
     native_chrome.hpp
 )
@@ -62,13 +83,8 @@ qt_add_resources(diamond_qt font_resources
 
 target_link_libraries(diamond_qt PRIVATE
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Multimedia
-    alphadiamond::soo_core alphadiamond::soo_search
+    diamond_qt_backend
 )
-if(DIAMOND_BUILD_QT_SOO)
-    target_link_libraries(diamond_qt PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
-    target_include_directories(diamond_qt PRIVATE ${TORCH_INCLUDE_DIRS})
-    target_compile_definitions(diamond_qt PRIVATE DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
-endif()
 target_compile_features(diamond_qt PRIVATE cxx_std_20)
 set_target_properties(diamond_qt PROPERTIES AUTOMOC ON WIN32_EXECUTABLE TRUE)
 
@@ -82,19 +98,9 @@ endif()
 if(BUILD_TESTING)
     add_executable(diamond_qt_controller_contract
         tests/controller_contract.cpp
-        ai_worker.cpp
-        ai_worker.hpp
-        native_controller.cpp
-        native_controller.hpp
-        native_move_player.cpp
-        native_move_player.hpp
     )
     target_link_libraries(diamond_qt_controller_contract PRIVATE
-        Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Multimedia
-        alphadiamond::soo_core alphadiamond::soo_search
-    )
-    target_include_directories(diamond_qt_controller_contract PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}"
+        diamond_qt_backend
     )
     target_compile_features(diamond_qt_controller_contract PRIVATE cxx_std_20)
     set_target_properties(diamond_qt_controller_contract PROPERTIES AUTOMOC ON)

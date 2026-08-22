@@ -8,10 +8,9 @@ computer, records the moves the human players make, asks the agent for its
 seat's move, and physically plays that move on the real board before
 confirming it.
 
-The agent seat is currently driven by a `RandomAgent`. The whole point of the
-architecture is that it can be replaced by an AlphaZero agent later **without
-touching the GUI or the controller** — see
-[Future AlphaZero integration point](#future-alphazero-integration-point).
+The primary Windows application is a native Qt 6 executable. Two-player human
+play uses the exported Soo AlphaZero model through LibTorch and the existing
+native C++ MCTS; Python remains the training and model-export environment only.
 
 ![board](guideline/board_sample.png)
 
@@ -24,14 +23,14 @@ touching the GUI or the controller** — see
 | Board | 73-hole six-pointed star (Diamond geometry), derived from lattice coordinates |
 | Players | 2 or 3 seats, chosen at match setup — 10 pieces each |
 | Turn order | Chosen at match setup; any permutation of the seats |
-| Agent | `RandomAgent` (uniform over legal moves, seedable) on any one seat, or none |
+| Agent | Soo AlphaZero (LibTorch CPU + native MCTS) for two-player human play |
 | Typeface | Google Sans Flex, bundled under the OFL |
 | Palette | Apple HIG system colours — red/yellow/green players, blue as the only UI accent |
 | Audio | Move sound per hop; volume under **View ▸ Sounds** |
 | Chrome | Frameless window with a custom title bar (menus + caption buttons) |
-| Icons | QtAwesome — Codicons for chrome, `fa6s.diamond` for the app icon |
-| GUI | PySide6 / Qt 6 / Qt Quick / QML |
-| Engine | Pure Python, no Qt imports, fully unit-tested headless |
+| Icons | Native Qt image provider; Codicon-compatible chrome and diamond app icon |
+| GUI | Native C++ / Qt 6 / Qt Quick / existing QML |
+| Engine | Native C++ rules, controller, MCTS, and LibTorch evaluator |
 
 Every move — human or agent — goes through the same four stages:
 
@@ -52,57 +51,41 @@ Nothing reaches the authoritative game state until the Controller confirms.
                  └────────┬────────┘
                           │  properties / slots / list models
                  ┌────────┴────────┐
-                 │ GameController  │   turn state machine, proposals,
-                 │  (app/)         │   generation tokens, animation timing
+                 │NativeController │   turn state machine, proposals,
+                 │  (native/qt)    │   generation tokens, animation timing
                  └────────┬────────┘
              ┌────────────┴────────────┐
              │                         │
      ┌───────┴───────┐        ┌────────┴────────┐
-     │ GameSession   │        │ AiWorker        │  QThreadPool, 1 thread
-     │  (game/)      │        │  (app/)         │
+     │ soo_core      │        │ NativeAiWorker  │  dedicated QThread
+     │  (native/)    │        │  (native/qt)    │
      └───────┬───────┘        └────────┬────────┘
              │                         │
    rules / board / state /             │
-   move / history / save-load     ┌────┴────────┐
-                                  │ Agent       │  RandomAgent today,
-                                  │ (agents/)   │  AlphaZeroAgent later
-                                  └─────────────┘
+   move / history / save-load     ┌────┴─────────────┐
+                                  │ MCTS2P + SooModel│
+                                  │ (LibTorch CPU)   │
+                                  └──────────────────┘
 ```
 
-**Dependency rule:** `game/` and `agents/` never import PySide6. QML never
-computes legality. All rule decisions — including validation of moves an agent
-proposes — happen in `game/rules.py`.
+**Dependency rule:** QML never computes legality. All authoritative rule
+decisions and AI proposal validation happen in the native C++ engine. The
+Python GUI is retained only as the explicit `legacy-gui` oracle during the
+migration tail; it is not a dependency of the native application.
 
 ### Layout
 
 ```
+native/
+├── include/soo/         engine, state, rules, MCTS interfaces
+├── include/diamond_model/ LibTorch Soo model/evaluator
+├── src/                 reusable native engine/model implementation
+└── qt/                  NativeController, worker, audio, native chrome, host
 src/diamond/
-├── main.py              entry point: engine + QML wiring
-├── app/
-│   ├── controller.py    GameController: the turn state machine
-│   ├── models.py        BoardModel, PieceModel, MoveHistoryModel,
-│   │                    PlayerModel, BoardGeometry
-│   ├── fonts.py         registers the bundled typeface with Qt
-│   ├── icons.py         QtAwesome app icon + QML image provider
-│   ├── window_chrome.py DWM attributes, window styles, shell identity
-│   ├── native_chrome.py WM_NCCALCSIZE / WM_NCHITTEST: Snap Layouts
-│   ├── sounds.py        move sound effect (best-effort, mutable)
-│   └── ai_worker.py     async agent boundary + generation tokens
-├── game/
-│   ├── coordinates.py   cube lattice coordinates and the 6 directions
-│   ├── board.py         73 holes, neighbours, camps (derived, not hard-coded)
-│   ├── move.py          Move / MoveKind
-│   ├── state.py         GameState (immutable), PlayerSpec, initial position
-│   ├── rules.py         move generation, validation, win detection
-│   ├── history.py       MoveRecord with a full state snapshot
-│   └── session.py       authoritative game: commit / undo / save / load
-├── agents/
-│   ├── base.py          Agent protocol, MoveRequest, MoveProposal
-│   └── random_agent.py  RandomAgent
-├── assets/
-│   ├── fonts/           bundled Google Sans Flex (OFL) + licence
-│   └── sounds/          move.m4a
-└── qml/
+├── alphazero/           authoritative Python training/export pipeline
+├── app/ + game/         legacy Python GUI oracle (optional)
+├── assets/              bundled fonts and move sound
+└── qml/                 shared visual source used unchanged by native Qt
     ├── Main.qml  Board.qml  Hole.qml  Piece.qml
     ├── SidePanel.qml  GamePanel.qml
     ├── AiPanel.qml  HistoryPanel.qml
@@ -118,9 +101,9 @@ src/diamond/
     └── Style/Theme.qml   ← every colour, size and duration lives here
 ```
 
-`session.py` is an addition to the structure sketched in the blueprint: it keeps
-commit/undo/persistence in the engine layer so those paths stay testable without
-Qt, and leaves `GameController` a thin Qt wrapper.
+The app and native contract test both link the reusable `diamond_qt_backend`
+library. The QML files are embedded as Qt resources; no Python package-resource
+API is used by the shipped executable.
 
 ### Board geometry
 
@@ -301,8 +284,8 @@ a dismissed dialog should get out of the way rather than be admired on the way
 out. Menus drop in from a few pixels above. A plain fade reads as a slideshow;
 a large scale reads as a cartoon.
 
-One hard constraint: a piece's hop animation must finish inside
-`HOP_DURATION_MS` in `app/controller.py`, which paces the multi-hop sequence.
+One hard constraint: a piece's hop animation must finish inside the 140 ms
+native controller timer interval, which paces the multi-hop sequence.
 Overrun it and the piece lags its own tick.
 
 ### Colour
@@ -518,17 +501,16 @@ printed with its source location.
 
 #### Icons
 
-Icons come from [QtAwesome](https://qtawesome.readthedocs.io), which bundles its
-own fonts — the reason to use it rather than drawing each glyph as a QML
-`Shape`, which is what the caption marks and chevrons used to be. The text
-typeface has no window-control or arrow characters, and the *Segoe MDL2 Assets*
-font they normally come from is not something a cross-platform build can assume.
+Icons are rendered by the native Qt image provider in `native/qt/main.cpp`.
+It implements the exact icon names already requested by the shared QML, so the
+visual files did not need a migration-only fork and QtAwesome is no longer a
+runtime dependency.
 
 The caption buttons use Microsoft's own **Codicons** (`msc.chrome-minimize`,
 `msc.chrome-maximize`, `msc.chrome-restore`, `msc.chrome-close`), so the title
 bar draws the same shapes the shell does.
 
-QML reaches them through an image provider registered by `app/icons.py`:
+QML reaches them through the native `qta` image provider:
 
 ```qml
 Icon { name: "msc.chevron-up"; size: 14; color: Theme.text }
@@ -547,7 +529,7 @@ definition at 16px.
 
 `Qt.FramelessWindowHint` makes the window a `WS_POPUP`, which the shell treats
 as a transient thing rather than an application window. Several behaviours go
-with it, and `app/window_chrome.py` and `app/native_chrome.py` put them back:
+with it, and `native/qt/native_chrome.cpp` puts them back:
 
 | Behaviour | Restored by |
 |---|---|
@@ -575,10 +557,9 @@ when the native filter is running to do so. Measured on both states, the
 client inset is 0 on all four sides, and a maximised window matches the
 monitor's work area exactly.
 
-The **taskbar icon** needs an explicit AppUserModelID. Without one the shell
-falls back to the host executable — `python.exe` — so it shows Python's icon
-and groups the window with any other Python process, no matter what
-`setWindowIcon` says. It must be set before the first window exists.
+The **taskbar icon** needs an explicit AppUserModelID. The native host sets it
+before the first window exists so Windows groups the process as Diamond and
+uses the bundled icon.
 
 **Snap Layouts** is the flyout Windows 11 shows when you hover a maximise
 button. Windows offers it only to a window whose hit test answers
@@ -623,8 +604,8 @@ dialog from the board lattice behind it.
 ### Typography
 
 The UI is set in **Google Sans Flex**, bundled in `src/diamond/assets/fonts/`
-under the SIL Open Font License (Regular/Medium/Bold). It is registered with Qt
-at startup by `app/fonts.py`, which hands the resolved family name to QML — so
+under the SIL Open Font License (Regular/Medium/Bold). It is embedded in the
+native Qt resources and registered at startup, which hands the resolved family name to QML — so
 the UI never asks for a family that might not exist. The font ships with the
 app rather than being assumed installed: no desktop OS provides it, and a
 missing family would silently fall back to a system default and shift every
@@ -673,88 +654,92 @@ coordinate offset and a step by an odd one.
 
 ## Requirements
 
-* Python **3.11+**
-* PySide6 **6.6+** (Qt 6)
-* pytest (only for the test suite)
+For the primary Windows GUI:
 
-Verified on Python 3.14.6 / PySide6 6.11.1.
+* Windows 10/11 x64
+* Visual Studio C++ build tools
+* CMake/Ninja, Qt 6 (Core, Gui, Qml, Quick, QuickControls2, Multimedia)
+* CPU LibTorch for the Soo-enabled build
+
+This checkout uses the mamba environment at
+`C:\ProgramData\miniforge3\envs\alphadiamond`. Python 3.11+ is still required
+for training/export and for the optional legacy GUI oracle, but not by the
+packaged native executable.
 
 ## Installation
 
-```bash
-cd alphadiamond
-pip install -e .            # runtime
-pip install -e ".[dev]"     # runtime + pytest
+```powershell
+mamba activate C:\ProgramData\miniforge3\envs\alphadiamond
+cmake -S . -B build-qt-soo-clean -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DDIAMOND_BUILD_QT_SOO=ON `
+  -DDIAMOND_BUILD_LIBTORCH_PROBE=ON
+cmake --build build-qt-soo-clean --parallel 1
+powershell -ExecutionPolicy Bypass -File .\tools\deploy_native_qt.ps1 `
+  -BuildDir build-qt-soo-clean -OutputDir dist\diamond-qt-soo `
+  -WithSoo -EnvironmentRoot $env:CONDA_PREFIX
 ```
 
 ## How to run
 
-The package lives under `src/`, so `python -m diamond` only resolves once the
-project is on the import path. Either install it:
+Run the packaged Soo application through the launcher, which clears stale Qt
+platform settings and exposes the simulation count:
 
-```bash
-pip install -e .
-diamond                 # or: python -m diamond
-```
-
-...or run it straight from the checkout without installing:
-
-```bash
-PYTHONPATH=src python -m diamond          # bash / WSL
-$env:PYTHONPATH="src"; python -m diamond  # PowerShell
-```
-
-> If `python -m diamond` from the repo root reports *No module named diamond*,
-> neither step above has been done — and if it runs but looks out of date, an
-> older copy is installed and shadowing the checkout. `pip uninstall
-> diamond-console` then `pip install -e .` pins it to this source tree.
-
-Options:
-
-```bash
-PYTHONPATH=src python -m diamond --seed 42            # reproducible RandomAgent
-PYTHONPATH=src python -m diamond --thinking-delay 0   # skip the artificial pause
+```powershell
+.\tools\run_native_qt.ps1 -Soo
+.\tools\run_native_qt.ps1 -Soo -Simulations 256
 ```
 
 The window opens at 1440 × 900 and stays usable down to 980 × 640; the board
 rescales with the window.
 
-> **Headless machines / WSL without a display:** set
-> `QT_QPA_PLATFORM=offscreen` to load and drive the app without a window (this
-> is how the UI was verified here).
+The native executable can also be launched directly from
+`dist\diamond-qt-soo\diamond_qt.exe`. The deployment script verifies its DLL,
+Qt plugin, QML, sound, engine, worker, and Soo model closure before reporting
+success.
+
+The old PySide6 application remains an explicit development oracle only:
+
+```powershell
+python -m pip install -e ".[legacy-gui]"
+diamond-legacy
+```
 
 ## How to run tests
 
-```bash
-QT_QPA_PLATFORM=offscreen python -m pytest
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+ctest --test-dir build-qt-soo-clean --output-on-failure
+python -m pytest -m "not gui"
 ```
 
-`QT_QPA_PLATFORM` is only needed where no display is available. The engine
-tests need no Qt at all; the controller and integration tests run on a plain
-`QCoreApplication` — no window is ever created.
+See [docs/native_windows_runtime.md](docs/native_windows_runtime.md) for the
+complete build matrix, parity manifest, benchmark command, and compatibility
+notes.
 
-The suite covers: board topology (73 holes, 10-hole camps, neighbour
-symmetry), initial placement, move generation (steps, blocked steps, single and
-chained jumps, jump collinearity, cycle prevention), turn cycling, proposal /
-confirm / cancel, undo, save/load round-trips, win detection, RandomAgent
-legality and seed determinism, stale AI results, and a full P1 → P2 → P3 → P1
-integration loop.
+`QT_QPA_PLATFORM` is only needed where no display is available. The engine
+tests need no Qt at all; controller contracts use an offscreen
+`QGuiApplication` and do not create the main window.
+
+The suite covers board topology, native move generation, proposal/confirmation,
+per-landing animation and sound requests, history, undo, schema-v2 save/load,
+terminal state, QML-visible model roles, stale AI results, Think Again, and
+canonical-to-physical Soo actions for the second seat.
 
 ---
 
 ## Controller workflow
 
-**Human turn (P1 / P2)**
+**Human turn (any human-controlled seat)**
 
 1. Click one of the current player's pieces — it is highlighted and every legal
    destination is marked (green ring = single step, amber ring = jump).
-2. Click a destination. The move is shown as a **proposal**: path line on the
-   board, numbered markers on intermediate jumps, and `source → destination`
-   plus the full path in the MOVE panel.
-3. **Confirm** commits it; **Cancel** discards it. Nothing changes until you
-   confirm.
+2. Click a destination. The move is shown as a **proposal**: a path line,
+   ghost destination, and numbered markers on intermediate landings.
+3. Press **Enter** (or Edit ▸ Confirm move) to commit it; **Escape** cancels.
+   Nothing changes until confirmation.
 
-**Agent turn (P3)**
+**Agent turn (the configured Soo seat)**
 
 1. The turn starts automatically; the AI panel shows `Thinking…` while the
    agent runs on a worker thread. The GUI never blocks.
@@ -809,21 +794,22 @@ computed against an old board can never be applied to the current one.
 
 ---
 
-## RandomAgent behaviour
+## Soo agent behaviour
 
-* Chooses **uniformly at random among the legal moves** of the current player.
-* Uses a private `random.Random` — never the global RNG — so `RandomAgent(seed=42)`
-  reproduces the same sequence of proposals for the same sequence of states.
-* Reports metadata: `agent`, `seed`, `legal_move_count`. The AI panel shows
-  **only** what the agent actually reported; there are no placeholder
-  evaluation, simulation or value numbers.
-* **Think Again** passes the rejected move in `MoveRequest.avoid`; the agent
-  picks something else, falling back to the same move only when it is the sole
-  legal option.
-* Runs on a worker thread with a small artificial delay (default 400 ms,
-  `--thinking-delay`) purely so the "thinking" UX exists before a real search
-  does. The delay lives in the worker, not in the agent, and never on the GUI
-  thread.
+* Uses the existing native `MCTS2P` with the exported 128-wide, six-block Soo
+  network loaded by LibTorch on CPU.
+* Uses no root Dirichlet noise, temperature zero, and a deterministic
+  visit-count/tie-break choice for human play.
+* Defaults to 128 simulations; use `-Simulations` or
+  `DIAMOND_MCTS_SIMULATIONS` to configure it.
+* Uses one Torch intra-op and one inter-op thread by default;
+  `DIAMOND_TORCH_THREADS` changes the intra-op count.
+* Converts MCTS canonical actions back to the active seat's physical board
+  coordinates before validating or displaying a proposal.
+* **Think Again** excludes the displayed physical action and searches again.
+* Runs on a dedicated native worker thread. Generation tokens discard results
+  after undo, load, new game, or shutdown; the QML/GUI thread never performs
+  inference.
 
 ---
 
@@ -853,7 +839,9 @@ Undo works normally after a load.
 
 ## Current limitations
 
-* The agent is `RandomAgent`; there is no search, evaluation or learning.
+* The release AI path is two-player human-vs-Soo. Three-player native rules and
+  controller play work, but native Min/MCTS3P model search is not part of this
+  migration gate.
 * At most **one** seat can be driven by an agent; there is no agent-vs-agent mode.
 * A player with no legal move is reported as an error rather than being passed
   over, since the position cannot arise in normal play.
@@ -862,52 +850,16 @@ Undo works normally after a load.
 * Save files always describe a match played from the standard opening; a
   session started from a set-up position cannot be saved and reloaded as such.
 * No analysis features (policy heatmaps, candidate distributions, evaluation
-  graphs). The AI panel has room reserved for them but shows nothing invented.
+  graphs). The AI panel shows actual agent, legal-move, simulation, and search
+  timing metadata only.
 * Undo has no redo.
 
 ---
 
-## Future AlphaZero integration point
+## Training and deployment boundary
 
-The implemented Python/PyTorch Milestone-1 reference and its verification
-commands are documented in [docs/alphazero.md](docs/alphazero.md). The named
-learned models are **Soo** (2-player) and **Min** (3-player), with independent
-versions and checkpoint compatibility contracts.
-
-The single seam is `agents/base.py`:
-
-```python
-class Agent(Protocol):
-    @property
-    def name(self) -> str: ...
-    def choose_move(self, request: MoveRequest) -> MoveProposal | None: ...
-```
-
-`MoveRequest` carries the board, the state, the precomputed legal moves, moves
-to avoid, and an optional seed. `MoveProposal` carries the move plus a free-form
-`metadata` dict — which is where `search_time_ms`, `simulation_count`, `value`,
-`visit_count` and `policy_probability` will go. The AI panel already renders
-whatever real keys it finds, so those values appear with no QML change.
-
-Target structure:
-
-```
-GameController → AlphaZeroAgent → MCTS → OpenVINO Runtime → Intel Iris Xe
-```
-
-To swap the agent, change one line in `main.py`:
-
-```python
-agents = {spec.id: AlphaZeroAgent(model_path=...) for spec in DEFAULT_PLAYERS
-          if spec.kind is PlayerKind.AI}
-```
-
-Nothing else has to change:
-
-* the async boundary (`AiWorker`) already runs the agent off the GUI thread and
-  already tolerates searches lasting seconds;
-* generation tokens already discard results from superseded positions;
-* `GameState` is immutable with a flat 73-entry occupancy tuple, cheap to copy
-  and ready for state hashing;
-* the engine validates every agent proposal, so a buggy search cannot corrupt
-  the game.
+Python/PyTorch remains authoritative for training and checkpoint creation; see
+[docs/alphazero.md](docs/alphazero.md). `tools/export_soo_deployment.py`
+produces the versioned portable artifact consumed by the Windows LibTorch
+runtime. The native application neither imports Python nor starts a Python or
+WSL subprocess.
