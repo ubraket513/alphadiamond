@@ -762,14 +762,19 @@ Candidate step 38,250 against the A0 starting point, step 34,650:
 | search budget | result | win rate | implied Elo | verdict |
 |---|---|---|---|---|
 | 64 simulations | 30W–10L | 75.0 % (CI 60–86 %) | **+191** | **stronger** |
+| 128 simulations | 30W–10L | 75.0 % (CI 60–86 %) | **+191** | **stronger** |
 
 A0 training is producing a genuinely better network, not merely a healthy one.
 
-Note *which* budget shows it. The gain appears at 64 simulations — where the
-prior carries most of the weight — even though the training ran at 128. That is
-the expected shape: a better prior helps most when search is scarce. It is also
-the direct rebuttal to a worry recorded in §6.8, that the network might stay
-permanently search-dependent. It has not.
+**The gain is identical at both budgets**, which is worth stating because the
+first, buggy run suggested otherwise — it showed 100 % at 64 and 50 % at 128, and
+I had already written an explanation for that pattern (a better prior helps most
+where search is scarce). With the harness fixed the pattern is not there. The
+improvement is uniform, and the tidy story about it was a story about a bug.
+
+It does still rebut the worry recorded in §6.8, that the network might stay
+permanently search-dependent: it is 191 Elo better at 64 simulations than the
+checkpoint A0 started from.
 
 ### 7.3 A harness bug that produced a perfect score
 
