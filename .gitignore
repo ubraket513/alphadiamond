@@ -6,6 +6,10 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Native self-play extension: built in place, never committed.
+*.so
+*.pyd
 .pytest_cache/
 /runs/
 

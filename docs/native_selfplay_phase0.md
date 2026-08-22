@@ -4,8 +4,12 @@ Design document for moving the Soo self-play/search hot path out of Python
 multiprocessing into a native multithreaded subsystem, while training, replay,
 checkpoints and the PyTorch model stay in Python.
 
-**Nothing here is implemented yet.** This is the evidence, the proposed shapes,
-and the parity plan that Phase 1 will be judged against.
+This is the evidence, the proposed shapes, and the parity plan that Phase 1 is
+judged against. It is a design record and is **not** rewritten as work lands.
+
+**Status: Phase 1 (§8 steps 0-5) is implemented and Gate A passes.** Gates B, C
+and D are open. See
+[native_selfplay_phase1_progress.md](native_selfplay_phase1_progress.md).
 
 Follows [rtx5060_bottleneck_findings.md](rtx5060_bottleneck_findings.md).
 
