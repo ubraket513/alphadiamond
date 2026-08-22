@@ -18,8 +18,9 @@
 #include "soo/mcts.hpp"
 #include "soo/prior.hpp"
 #include "soo/profile.hpp"
-#include "soo/selfplay.hpp"
+#include "soo/random.hpp"
 #include "soo/rules.hpp"
+#include "soo/selfplay.hpp"
 #include "soo/state.hpp"
 
 namespace py = pybind11;
@@ -347,6 +348,7 @@ class Game {
         out["visit_counts"] = py::cast(result.visit_counts);
         out["q_values"] = py::cast(result.q_values);
         out["policy"] = py::cast(result.policy);
+        out["root_priors"] = py::cast(result.root_priors);
         out["simulations_run"] = result.simulations_run;
         out["evaluator_calls"] = result.evaluator_calls;
         out["nodes_created"] = result.nodes_created;
@@ -493,6 +495,34 @@ PYBIND11_MODULE(_diamond_native, m) {
             return out.str();
         });
 
+    // The samplers, exposed so their *distributions* can be gated against
+    // Python's directly.  Section 9 does not require a matching draw sequence,
+    // which means a wrong sampler cannot be caught by comparing streams -- only
+    // by comparing distributions, and that needs the sampler callable in
+    // isolation rather than buried three layers inside a search.
+    m.def(
+        "sample_gamma",
+        [](double alpha, size_t count, uint64_t seed) {
+            soo::Rng rng(seed);
+            std::vector<double> out;
+            out.reserve(count);
+            for (size_t i = 0; i < count; ++i) out.push_back(rng.gammavariate(alpha));
+            return out;
+        },
+        py::arg("alpha"), py::arg("count"), py::arg("seed") = 0,
+        "Gamma(alpha, 1) draws -- the distribution behind add_dirichlet_noise");
+    m.def(
+        "sample_weighted",
+        [](const std::vector<double>& weights, size_t count, uint64_t seed) {
+            soo::Rng rng(seed);
+            std::vector<size_t> out;
+            out.reserve(count);
+            for (size_t i = 0; i < count; ++i) out.push_back(rng.weighted_index(weights));
+            return out;
+        },
+        py::arg("weights"), py::arg("count"), py::arg("seed") = 0,
+        "Indices drawn like random.choices(population, weights, k=1)");
+
     py::class_<MCTSConfig>(m, "MCTSConfig")
         .def(py::init([](int simulations, double c_puct, double dirichlet_alpha,
                          double dirichlet_epsilon, uint64_t seed) {
@@ -510,17 +540,32 @@ PYBIND11_MODULE(_diamond_native, m) {
     py::class_<SchedulerConfig>(m, "SchedulerConfig")
         .def(py::init([](int games, int threads, int max_batch, int max_wait_us, int simulations,
                          int max_moves, double eval_latency_ms, double seconds,
-                         bool trace_moves, int stop_after_moves) {
-                 return SchedulerConfig{games,           threads,     max_batch,
-                                        max_wait_us,     simulations, max_moves,
-                                        eval_latency_ms, seconds,     trace_moves,
-                                        stop_after_moves};
+                         bool trace_moves, int stop_after_moves, double temperature,
+                         int temperature_moves, double dirichlet_alpha,
+                         double dirichlet_epsilon, uint64_t seed) {
+                 return SchedulerConfig{games,
+                                        threads,
+                                        max_batch,
+                                        max_wait_us,
+                                        simulations,
+                                        max_moves,
+                                        eval_latency_ms,
+                                        seconds,
+                                        trace_moves,
+                                        stop_after_moves,
+                                        temperature,
+                                        temperature_moves,
+                                        dirichlet_alpha,
+                                        dirichlet_epsilon,
+                                        seed};
              }),
              py::arg("games") = 64, py::arg("threads") = 4, py::arg("max_batch") = 32,
              py::arg("max_wait_us") = 2000, py::arg("simulations") = 64,
              py::arg("max_moves") = 400, py::arg("eval_latency_ms") = 0.0,
              py::arg("seconds") = 5.0, py::arg("trace_moves") = false,
-             py::arg("stop_after_moves") = 0);
+             py::arg("stop_after_moves") = 0, py::arg("temperature") = 0.0,
+             py::arg("temperature_moves") = 0, py::arg("dirichlet_alpha") = 0.3,
+             py::arg("dirichlet_epsilon") = 0.0, py::arg("seed") = 0);
 
     py::class_<Game>(m, "Game")
         .def(py::init<const std::vector<std::array<int, 3>>&>(), py::arg("players"),

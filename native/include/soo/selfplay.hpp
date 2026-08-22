@@ -74,6 +74,15 @@ struct SchedulerConfig {
     double seconds = 5.0;           // measurement window
     bool trace_moves = false;       // record each lane's move sequence
     int stop_after_moves = 0;       // per lane; 0 = run for the full window
+
+    // Exploration.  All zero reproduces the deterministic Gate C behaviour
+    // exactly, including drawing nothing, so every measurement taken before
+    // stochastic MCTS existed remains reproducible.
+    double temperature = 0.0;       // move sampling, for the first N moves
+    int temperature_moves = 0;      // SelfPlayConfig.temperature_moves
+    double dirichlet_alpha = 0.3;
+    double dirichlet_epsilon = 0.0;
+    uint64_t seed = 0;              // base seed; each lane derives its own
 };
 
 struct SchedulerMetrics {

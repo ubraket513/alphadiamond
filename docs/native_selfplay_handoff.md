@@ -34,6 +34,7 @@ Read in this order:
 | **B** | deterministic MCTS parity | **pass** — bit-identical q, identical request sequence |
 | **C** | native + batcher throughput, no Python | **pass** — 8.2x–18x the Python ceiling at measured value-only latencies |
 | **D** | end-to-end with PyTorch | **pass** — 18.5x the Python backend at cap 32, same host, same seeded work |
+| **E** | stochastic MCTS: Dirichlet + temperature | **pass** — distribution parity with Python, deterministic per seed, 16 lanes → 16 games |
 
 Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
@@ -54,16 +55,10 @@ Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
 ### 3.1 The actual remaining work, in order
 
-1. **Stochastic MCTS in the native backend.** Dirichlet noise at the root and
-   temperature sampling of moves, to the RNG policy in §9 of the design
-   (distribution and semantics must match Python; the draw sequence need not).
-
-   **This blocks everything below it, and it is a new gate, not wiring.** With a
-   real model callback there is no per-lane salt, so `dirichlet_epsilon = 0` and
-   `temperature = 0` make every lane play the *same game*: 32 lanes, 1 distinct
-   trajectory, measured. A native self-play pool today would hand the trainer N
-   copies of one game. See §10.4–10.5 of the progress doc, and pitfall 7.9
-   below.
+1. ~~**Stochastic MCTS in the native backend.**~~ **Done — Gate E**, §11 of the
+   progress doc. Dirichlet noise at the root and temperature sampling of moves,
+   gated on distribution rather than on stream, per §9's RNG policy. 16 lanes
+   now play 16 distinct games where they played 1.
 2. **`selfplay_backend = "native"`.** The config switch and `backend.py` wiring
    behind the existing pool contract —
    `SelfPlayWorkerPool.run(tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]`,
@@ -250,9 +245,20 @@ in the only mode native MCTS accepts (`epsilon = 0`, `temperature = 0`) all
 lanes from one opening play **one** game. Measured: 32 lanes, 1 trajectory.
 Throughput does not notice, because a dense forward is indifferent to equal rows
 and the evaluator is 99 % of wall. `test_lanes_play_different_games` cannot
-catch it — it tests the component that has the salt. Pinned instead by
-`test_a_real_evaluator_makes_every_lane_play_the_same_game`, which is written to
-**fail** once stochastic MCTS exists.
+catch it — it tests the component that has the salt. This is *why* Gate E
+existed; it is now pinned from both sides, by
+`test_a_real_evaluator_locks_lanes_together_without_exploration` (the cause) and
+`test_exploration_makes_lanes_diverge_under_a_real_evaluator` (the fix).
+
+### 7.10 A permissive RNG policy makes stream tests worthless (Gate E)
+§9 allows the native draw sequence to differ from Python's. The consequence is
+easy to miss: **no comparison of sequences can then catch a wrong sampler.** An
+inverted boost exponent, a double-normalised weight vector, noise applied after
+the first selection — each produces a perfectly plausible stream. Only the
+distribution shows them. Gate the samplers on moments, CDFs and frequencies, and
+expose whatever the search would otherwise hide (`root_priors` exists solely so
+the Dirichlet mixture is observable). Related: at α = 0.3 a quantile-for-quantile
+comparison is statistically hopeless — see §11.5.
 
 ---
 
@@ -262,7 +268,7 @@ catch it — it tests the component that has the salt. Pinned instead by
   kept clean of stale branches.
 - **CI jobs**: `core` (3.11/3.12/3.13, no compiler, no pybind11 — proves the
   extension stays optional), `gui` (Qt, offscreen), `lint` (changed files only),
-  `native (Gate A-D)` (builds the extension, installs CPU torch, asserts the
+  `native (Gate A-E)` (builds the extension, installs CPU torch, asserts the
   checkpoint digest, runs all gates).
 - **CI must not be allowed to skip silently.** Both the `gui` job and the
   `native` job assert their fixtures are present in a dedicated step, so a
