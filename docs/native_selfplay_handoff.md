@@ -14,6 +14,35 @@ result that matters most and is the least obvious.
 
 ---
 
+## 0. Where things stand right now
+
+**Heuristic-free (A0) training works, and it is producing a stronger network.**
+
+| | |
+|---|---|
+| phase | **A0** — `bootstrap_prior = none`, 128 simulations |
+| run | `soo-scratch-20260822`, outside the repo at `/workspace/alphadiamond-training` |
+| health | 97.7–98.3 % of games completing, sustained over 20+ iterations |
+| strength | **+191 Elo** against the checkpoint A0 started from, 30W–10L, identical at 64 and 128 simulations |
+| throughput | ~247 terminal samples/s (A0 at 128); B0 reached ~1,444 at 64 |
+
+The single non-obvious thing to know before changing anything: **A0 stability is
+decided by the fraction of policy targets produced by a search strong enough to
+improve on the network's own prior.** 128 simulations is enough, 64 is not, and
+neither censoring nor actor-refresh cadence is the operative variable — both were
+tested directly and neither explains it. §3.0.1 below, and §6 of
+[soo_scratch_training.md](soo_scratch_training.md).
+
+**The obvious next experiment** is the one deliberately not run yet: a
+depth-expanded `128×12` network at 64 simulations, against the current
+`128×6 @ 128`. Transplant the trained blocks and zero-initialise the new blocks'
+LayerNorm scale so the network starts as an identity extension. Judge it on
+completion, discarded-move fraction, samples/s and head-to-head Elo — the target
+to beat is 97.9 % learner stability at 247 samples/s. Do **not** judge it on loss
+(pitfall 7.14).
+
+---
+
 ## 1. What this project is
 
 Moving the Soo self-play/search hot path out of Python multiprocessing into a
