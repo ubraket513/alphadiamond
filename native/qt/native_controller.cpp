@@ -126,18 +126,18 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                     {"playerLabel", playerName(2)}, {"playerColor", playerColor(2)},
                     {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
                     {"pathText", QStringLiteral("%1 → %2").arg(source).arg(destination)}, {"hopCount", 1}});
-                refreshModels(); emit changed();
+                refreshModels(); Q_EMIT changed();
             });
     connect(ai_worker_, &NativeAiWorker::failed, this,
             [this](quint64 generation, const QString& message) {
                 if (generation != generation_) return;
                 ai_thinking_ = false;
                 qWarning() << "native AI worker:" << message;
-                emit changed();
+                Q_EMIT changed();
             });
     connect(ai_worker_, &NativeAiWorker::cancelled, this,
             [this](quint64 generation) {
-                if (generation == generation_) { ai_thinking_ = false; emit changed(); }
+                if (generation == generation_) { ai_thinking_ = false; Q_EMIT changed(); }
             });
     match_.count = 2;
     match_.players[0] = soo::PlayerSpec{1, 2, 5};
@@ -280,15 +280,15 @@ void NativeController::selectPosition(int position) {
         std::vector<int32_t> all; soo::legal_action_ids(state_, all);
         for (int32_t action : all) if (action / soo::kBoardSize == selected_position_) legal_actions_.push_back(action);
     }
-    refreshModels(); emit changed();
+    refreshModels(); Q_EMIT changed();
 }
 
-void NativeController::cancelProposal() { selected_position_ = -1; legal_actions_.clear(); refreshModels(); emit changed(); }
+void NativeController::cancelProposal() { selected_position_ = -1; legal_actions_.clear(); refreshModels(); Q_EMIT changed(); }
 
 void NativeController::undoLastMove() {
     if (state_history_.isEmpty()) return;
     state_ = state_history_.takeLast(); if (!history_.isEmpty()) history_.removeLast();
-    selected_position_ = -1; legal_actions_.clear(); refreshModels(); emit changed();
+    selected_position_ = -1; legal_actions_.clear(); refreshModels(); Q_EMIT changed();
 }
 
 bool NativeController::gameSmoke() {

@@ -139,7 +139,7 @@ class NativeController final : public QObject {
     Q_INVOKABLE bool gameSmoke();
     Q_INVOKABLE bool workerSmoke();
 
-  signals:
+  Q_SIGNALS:
     void changed();
 
   private:

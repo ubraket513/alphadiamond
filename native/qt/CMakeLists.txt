@@ -53,7 +53,7 @@ target_link_libraries(diamond_qt PRIVATE
 if(DIAMOND_BUILD_QT_SOO)
     target_link_libraries(diamond_qt PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
     target_include_directories(diamond_qt PRIVATE ${TORCH_INCLUDE_DIRS})
-    target_compile_definitions(diamond_qt PRIVATE DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    target_compile_definitions(diamond_qt PRIVATE DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
 endif()
 target_compile_features(diamond_qt PRIVATE cxx_std_20)
 set_target_properties(diamond_qt PROPERTIES AUTOMOC ON WIN32_EXECUTABLE TRUE)

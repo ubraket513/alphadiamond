@@ -15,7 +15,7 @@ class NativeAiWorker final : public QObject {
     void cancel();
     bool isRunning() const { return running_.load(); }
 
-  signals:
+  Q_SIGNALS:
     void resultReady(quint64 generation, int action);
     void failed(quint64 generation, QString message);
     void cancelled(quint64 generation);

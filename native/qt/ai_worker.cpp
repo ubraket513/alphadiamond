@@ -15,10 +15,10 @@ void NativeAiWorker::start(quint64 generation, std::function<int()> task) {
     thread_ = QThread::create([this, generation, task = std::move(task)]() mutable {
         try {
             const int action = task();
-            if (cancel_requested_.load()) emit cancelled(generation);
-            else emit resultReady(generation, action);
+            if (cancel_requested_.load()) Q_EMIT cancelled(generation);
+            else Q_EMIT resultReady(generation, action);
         } catch (const std::exception& error) {
-            emit failed(generation, QString::fromUtf8(error.what()));
+            Q_EMIT failed(generation, QString::fromUtf8(error.what()));
         }
         running_.store(false);
     });
