@@ -399,10 +399,9 @@ B0 does not have this problem because the heuristic prior keeps the **search** o
 track regardless of what the policy believes, so games complete and the replay is
 not censored.
 
-That has an uncomfortable corollary: **waiting longer in B0 cannot fix it**, because
-B0 never produces the training signal A0 needs. The gate can go on rising and the
-switch will still fail, because the failure is in the feedback loop rather than
-in the network.
+That suggested an uncomfortable corollary — *waiting longer in B0 cannot fix it,
+because B0 never produces the training signal A0 needs* — and the corollary was
+drawn too early. **The next measurement contradicted it** (§5.10).
 
 It also explains §5.7. Raising `max_moves` did not help because the wanderers are
 not near-misses — they are the tail that censoring is systematically deleting
@@ -427,7 +426,38 @@ half of every move played is thrown away**, and it is the long half — selected
 precisely, for being the experience the network most needs in order to stop
 producing it. B0 discards 0–2 % by comparison.
 
-### 5.10 The replay store had to be bounded first
+### 5.10 B0 *does* improve A0 robustness — the corollary was wrong
+
+The gate had read 92 % three times across 3,300 steps, and I took that flatness
+as evidence of a structural ceiling: B0 keeps the search on rails, so the network
+is never *required* to learn recovery, so it never does. That reading did not
+survive the next data point.
+
+| step | context | gate | verdict |
+|---|---|---|---|
+| 13,650 | pre-switch, trial 1 | 88 % | FAIL |
+| 18,750 | B0 | 92 % | PASS |
+| 21,750 | B0 | 92 % | PASS |
+| 22,050 | pre-switch, trial 2 | 92 % | PASS |
+| 23,550 | after 4 A0 iterations | **80 %** | FAIL |
+| 28,350 | B0 recovery | **98 %** | PASS |
+
+B0 recovery did not merely undo the damage, it went **past the plateau** — 80 %
+to 98 %, six points above the previous best. So B0 *is* teaching A0 robustness,
+just slowly enough that three readings 3,300 steps apart could not see it.
+
+That matters for the strategy, because the two failed switches both began from
+92 %: an 8 % wander rate, which censored a third of all moves in the first
+iteration and half by the fourth. At 98 % the wander rate is 2 %, and the spiral
+has four times less to feed on. Whether that is enough to keep the loop stable
+is an empirical question — but "keep training B0 and switch from a much higher
+gate reading" is now a live option that needs no code change and no semantic
+change, where an hour earlier it looked ruled out.
+
+The honest summary is that one flat stretch is not a ceiling, and I called it one
+too confidently.
+
+### 5.11 The replay store had to be bounded first
 
 The run could not have finished a six-hour block. `PersistentReplayStore` is
 append-only, and two costs compound:
