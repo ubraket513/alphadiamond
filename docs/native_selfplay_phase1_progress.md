@@ -688,3 +688,185 @@ does the work rather than how fast the work is.
   at GPU speed from the native side.
 - `selfplay_backend = "native"`, and a full training loop consuming native
   self-play samples.
+
+---
+
+## 10. Gate D on the GPU host
+
+Everything in §9 was measured on the laptop and said so. This section is the
+other half: the same code on the training host, with the forward running at GPU
+speed.
+
+### 10.0 The host
+
+| | |
+|---|---|
+| GPU | RTX 5090, 32 GB, driver 580.173.02, compute capability 12.0 (Blackwell) |
+| CPU | AMD Ryzen 9 9950X3D, **16 physical / 32 logical** cores |
+| torch | 2.13.0+cu130 |
+| checkpoint | the immutable step-80 `latest.pt`, digest asserted `1634b901…` |
+
+The extension builds unchanged (`-march=broadwell`) and **all 38 gate tests pass
+on the first run**. No port work was needed; §4 of the handoff was accurate.
+
+Note this is **not** the host `rtx5060_bottleneck_findings.md` was written on.
+Every absolute number in that document is from an RTX 5060 with 18 physical
+cores, and none of them transfer. The Python baseline below was therefore
+re-measured here rather than quoted.
+
+### 10.1 The Python backend, re-measured on this host
+
+`run_point.sh` with the production `C-w48-g48` configuration, same seed, same
+checkpoint. The work is byte-identical to the reference run — 48 games, 4,410
+samples, median 89 moves — so this is a clean same-work comparison:
+
+| run | workers | self-play s | evals/s |
+|---|---|---|---|
+| reference (RTX 5060) | 48 | 440 | 641 |
+| P5090-w16-g48 | 16 | 91 | 3,102 |
+| P5090-w24-g48 | 24 | 87 | 3,244 |
+| **P5090-w32-g48** | **32** | **79** | **3,573** |
+| P5090-w48-g48 | 48 | 85 | 3,320 |
+| P5090-w64-g48 | 64 | 86 | 3,282 |
+
+`evals/s = samples x simulations / self-play seconds`, the same formula the
+reference row uses.
+
+Two things worth recording:
+
+1. **The Python backend is 5.6x faster here than on the reference host** — 3,573
+   against 641. The A/B is run against this, not against the number in the
+   design document. Quoting the 641 would have inflated the native result by
+   5.6x for free.
+2. **Worker count barely matters**: 16 workers and 64 workers are within 15 % of
+   each other, on a 16-core machine. That is §7.3 of the findings reproducing
+   exactly — the backend is **parent-bound**, serialized behind one coordinator,
+   not bound by worker parallelism. GPU utilisation sat at **7 %** throughout.
+
+### 10.2 Risk 5 — does a real GPU forward behind the GIL recreate the ceiling?
+
+**Yes, and it is the right ceiling.** The evaluator thread is **98.8–99.6 % busy
+in every configuration measured** — 20 combinations of thread count and batch
+cap. Worker threads change nothing (2 threads and 24 threads land within 4 %);
+`max_batch` is the only knob that moves throughput, exactly as risk 4 predicted
+and §8.2 measured with the dummy evaluator.
+
+But the *composition* of that busy time is the answer risk 5 actually wanted.
+At cap 32 the crossing costs 468 µs against an isolated 401 µs forward:
+
+| component | µs/crossing | share |
+|---|---|---|
+| the forward itself | ~401 | 86 % |
+| boundary: marshalling + one GIL acquisition | ~5 | 1 % |
+| H2D / D2H transfer and sync | ~62 | 13 % |
+
+The boundary is **5 µs here, down from the laptop's 30 µs**. The evaluator
+thread is saturated doing *GPU work*, not waiting on Python. Risk 5 named a real
+constraint and the constraint is the model, which is where the design wanted it.
+
+Risk 5 projected **8,456 evals/s** in ValueOnly. Measured: **70,720**. The
+projection was arithmetically sound and anchored to the 5060's 3.784 ms forward;
+this card does the same batch in 0.401 ms.
+
+### 10.3 The A/B throughput table
+
+`python az-bench/profiles/bench_native_gpu_ab.py --device cuda:0 --python-seconds 79 --python-samples 4410`
+
+Three quantities, and the distance between them is the content:
+
+- **roofline** — `max_batch / forward_seconds`; free, always-full batching.
+- **real** — the actual Soo checkpoint through the callback on the GPU.
+- **diverse** — the Gate C salted dummy evaluator, provably `2 x cap` distinct
+  games, with `eval_latency_ms` pinned to *this host's measured forward*.
+
+**ValueOnly — the B0 production path:**
+
+| cap | fwd ms | roofline | real | diverse | % roof | calls/s | evals/call | evaluator % | vs Python |
+|---|---|---|---|---|---|---|---|---|---|
+| **32** | 0.401 | 79,743 | 70,720 | **66,041** | 83 % | 2,210 | 32.0 | 98.8 % | **18.5x** |
+| 64 | 0.558 | 114,679 | 99,176 | 95,684 | 83 % | 1,550 | 64.0 | 98.7 % | 26.8x |
+| 128 | 0.875 | 146,341 | 133,703 | 122,964 | 84 % | 1,045 | 128.0 | 98.8 % | 34.4x |
+| 256 | 1.463 | 174,933 | 159,187 | 147,326 | 84 % | 622 | 256.0 | 98.9 % | 41.2x |
+
+**PolicyValue — the reference path:**
+
+| cap | fwd ms | roofline | real | diverse | % roof | calls/s | evals/call | evaluator % |
+|---|---|---|---|---|---|---|---|---|
+| 32 | 0.430 | 74,444 | 39,218 | 62,333 | 84 % | 1,226 | 32.0 | 99.4 % |
+| 64 | 0.605 | 105,857 | 54,316 | 89,162 | 84 % | 849 | 64.0 | 99.4 % |
+| 128 | 0.923 | 138,695 | 65,896 | 118,286 | 85 % | 515 | 128.0 | 99.4 % |
+| 256 | 1.527 | 167,658 | 73,221 | 140,674 | 84 % | 286 | 256.0 | 99.6 % |
+
+**Batches are completely full at every cap**, up to 256 — the §8.3 result holds
+at real GPU latency.
+
+**The quotable number is 18.5x**, at cap 32, against the *diverse* column,
+against this host's own tuned Python baseline. Everything larger requires
+raising `max_batch_size` above its production value of 32, which risk 4 already
+said should be promoted to a first-class knob and which this table now justifies
+with GPU-host evidence.
+
+**PolicyValue reaches only 53 % of its roofline** while ValueOnly reaches 89 %.
+The gap is the per-row Python `for` loop doing the segmented softmax in
+`policy_value_callback`. That is a genuine, now-measured constraint on the
+reference path — and it is a Python-side one, so it costs nothing to fix when
+PolicyValue matters. It does not affect B0, which does not use it.
+
+### 10.4 A caveat that had to be measured, not assumed
+
+The `real` and `diverse` columns differ by 4–18 %, and the reason is not noise.
+
+**With a real model callback, every lane plays the same game.** Lane diversity
+in Gate C came entirely from the dummy evaluator's per-lane salt (§8.6). A real
+model has no salt: it is a pure function of the position. With
+`dirichlet_epsilon = 0` and `temperature = 0` — the only mode native MCTS
+accepts — 32 lanes from one opening produce **1 distinct trajectory**. Measured
+directly, not inferred.
+
+This is §8.6's bug wearing different clothes, and none of the existing tests
+could catch it: `test_lanes_play_different_games` asserts diversity *of the
+dummy evaluator*, which is precisely the component that has the salt.
+
+Throughput barely notices — a dense forward does not care that its rows are
+equal, and the evaluator is 99 % of wall — which is exactly what makes it
+dangerous. It is now pinned by
+`test_a_real_evaluator_makes_every_lane_play_the_same_game`, written to **fail**
+when stochastic MCTS lands so the assertion gets replaced deliberately rather
+than quietly.
+
+The `diverse` column exists because of this: it is the same scheduler at the
+same measured GPU latency with lane diversity that is *proved* rather than
+assumed, and it is the pessimistic figure. Quote it.
+
+### 10.5 What this means for `selfplay_backend = "native"`
+
+Items 3 and 4 of the handoff — the config switch, then a training loop on native
+samples — read like wiring. **They are blocked, and not by wiring.**
+
+A native self-play pool today would hand the trainer *N copies of one game* per
+iteration. Production self-play depends on Dirichlet noise at the root
+(`dirichlet_epsilon = 0.25`) and temperature sampling for the first 20 moves
+(`temperature = 1.0`) for its trajectory diversity, and native MCTS refuses both
+by design — invariant 4, which says it must refuse rather than approximate, and
+is correct to.
+
+So the remaining path is:
+
+1. **Stochastic MCTS in the native backend** — Dirichlet noise and temperature
+   sampling, to §9 of the design's RNG policy (distribution and semantics must
+   match Python; the draw sequence need not). This is a **new gate**, with its
+   own parity question, not a step inside Gate D.
+2. Then `selfplay_backend = "native"` behind the existing `SelfPlayWorkerPool`
+   contract — `run(tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]`.
+3. Then the training loop.
+
+This was not visible before the GPU host, because it takes a real model to
+expose it. It does not change Gate D's verdict.
+
+### 10.6 Verdict
+
+Gate D's throughput half **passes**, decisively. 18.5x the Python backend at the
+production batch cap, on the same machine, same checkpoint, same seeded work,
+against a Python baseline tuned on this host rather than quoted from another.
+The evaluator thread is the ceiling and the ceiling is the GPU forward, which is
+the constraint the design chose to have.

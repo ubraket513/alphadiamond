@@ -3,8 +3,9 @@
 **Start here** if you are picking this work up in a new session, especially on
 the GPU training host.
 
-Everything below is current as of `main` @ `b722bd1`. All four gates that can be
-closed without a GPU are closed and merged.
+Everything below is current as of the Gate D GPU-host pass. All four gates are
+closed, including Gate D's throughput half, which was run on the RTX 5090
+training host — see §10 of the progress document for the A/B table.
 
 ---
 
@@ -32,7 +33,7 @@ Read in this order:
 | **A** | rules / encoding / prior parity | **pass** — 1,327-position corpus, exact |
 | **B** | deterministic MCTS parity | **pass** — bit-identical q, identical request sequence |
 | **C** | native + batcher throughput, no Python | **pass** — 8.2x–18x the Python ceiling at measured value-only latencies |
-| **D** | end-to-end with PyTorch | **correctness half passes on CPU; throughput half needs the GPU host** |
+| **D** | end-to-end with PyTorch | **pass** — 18.5x the Python backend at cap 32, same host, same seeded work |
 
 Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
@@ -40,21 +41,42 @@ Merged: #2 (A), #3 (B), #4 (gui CI fix), #5 (C), #6 (D-on-CPU).
 
 ## 3. What is left
 
-### 3.1 Gate D on the GPU host — the actual remaining work
+### 3.0 Done on the GPU host (progress doc §10)
 
-1. **The A/B throughput table.** Same immutable checkpoint, seed and config as
-   the Python backend; report the full table from
-   `rtx5060_bottleneck_findings.md`, plus Python callback calls/s and
-   evaluations per callback. The production reference point is `C-w48-g48`:
-   640–694 evals/s, parent-bound at a ~950 evals/s ceiling.
-2. **Risk 5's real question.** Does one evaluator thread holding the GIL around
-   a *real* GPU forward recreate the ceiling? §9.5 of the progress doc shows the
-   marshalling does not (30–55 µs/batch, 0.8 % of a 3.784 ms value-only forward)
-   — but the forward itself has never run at GPU speed from the native side.
-3. **`selfplay_backend = "native"`.** The config switch and `backend.py` wiring
-   behind the existing pool contract. Not written. Backend selection must stay
-   explicit and additive; `"python"` stays the default.
-4. **A training loop consuming native self-play samples**, end to end.
+1. **The A/B throughput table.** Done. **18.5x** at the production cap of 32,
+   against a Python baseline re-tuned on the same host (3,573 evals/s at 32
+   workers, *not* the 641 in `rtx5060_bottleneck_findings.md` — that is a
+   different, much weaker machine and none of its absolutes transfer).
+2. **Risk 5.** Answered. The evaluator thread *is* the ceiling — 98.8–99.6 %
+   busy in all 20 configurations measured — but 86 % of that is the forward
+   itself and only ~1 % is the boundary. The ceiling is the GPU, which is where
+   the design wanted it.
+
+### 3.1 The actual remaining work, in order
+
+1. **Stochastic MCTS in the native backend.** Dirichlet noise at the root and
+   temperature sampling of moves, to the RNG policy in §9 of the design
+   (distribution and semantics must match Python; the draw sequence need not).
+
+   **This blocks everything below it, and it is a new gate, not wiring.** With a
+   real model callback there is no per-lane salt, so `dirichlet_epsilon = 0` and
+   `temperature = 0` make every lane play the *same game*: 32 lanes, 1 distinct
+   trajectory, measured. A native self-play pool today would hand the trainer N
+   copies of one game. See §10.4–10.5 of the progress doc, and pitfall 7.9
+   below.
+2. **`selfplay_backend = "native"`.** The config switch and `backend.py` wiring
+   behind the existing pool contract —
+   `SelfPlayWorkerPool.run(tuple[SelfPlayJob, ...]) -> tuple[EpisodeResult, ...]`,
+   in `orchestration/selfplay_workers.py`. Backend selection must stay explicit
+   and additive; `"python"` stays the default.
+3. **A training loop consuming native self-play samples**, end to end.
+
+### 3.1.1 Worth doing when PolicyValue matters
+
+`policy_value_callback` reaches only **53 %** of its roofline where ValueOnly
+reaches 89 %. The gap is the per-row Python `for` loop doing the segmented
+softmax. B0 does not use this path, so it is not urgent — but it is measured
+now, so it no longer falls under invariant 7.
 
 ### 3.2 Known optimisation target, deliberately untouched
 
@@ -109,8 +131,27 @@ python az-bench/profiles/bench_native_scheduler.py --mode latency
 python az-bench/profiles/bench_native_callback.py --seconds 3
 ```
 
-**Local baseline for comparison** (8-logical-core laptop, i7-1165G7 — the GPU
-host will differ, that is the point of re-running):
+```bash
+# The Gate D A/B table (GPU host).  The Python side is a full training run:
+# drive it with run_point.sh first and pass its self-play seconds in.
+python az-bench/profiles/bench_native_gpu_ab.py --device cuda:0 \
+    --python-seconds 79 --python-samples 4410
+python az-bench/profiles/bench_native_callback.py --seconds 5 --device cuda:0
+```
+
+**GPU-host baseline** (RTX 5090 / Ryzen 9 9950X3D, 16 physical cores), ValueOnly:
+
+| measurement | value |
+|---|---|
+| Python backend, tuned (32 workers) | 3,573 evals/s |
+| native, cap 32, diverse lanes at measured GPU latency | 66,041 evals/s (**18.5x**) |
+| native, cap 256 | 147,326 evals/s (41.2x) |
+| value-only forward, batch 32 | 0.401 ms |
+| callback boundary | ~5 µs/crossing, ~1 % of the forward |
+| evaluator thread occupancy | 98.8–99.6 %, every configuration |
+
+**Local baseline for comparison** (8-logical-core laptop, i7-1165G7 — neither
+host's absolutes transfer to the other; that is the point of re-running):
 
 | measurement | local value |
 |---|---|
@@ -201,6 +242,17 @@ destination is at distance 1. The sets are disjoint. Python's
 `if landing not in moves` guard and its C++ mirror are both unreachable. Kept
 deliberately — the mirror is exact, and the corpus cannot police a divergence
 there.
+
+### 7.9 A real evaluator has no salt (Gate D, GPU host)
+§7.1 is about the dummy evaluator's salt. The mirror-image trap is that a *real*
+model callback has no salt at all — it is a pure function of the position — so
+in the only mode native MCTS accepts (`epsilon = 0`, `temperature = 0`) all
+lanes from one opening play **one** game. Measured: 32 lanes, 1 trajectory.
+Throughput does not notice, because a dense forward is indifferent to equal rows
+and the evaluator is 99 % of wall. `test_lanes_play_different_games` cannot
+catch it — it tests the component that has the salt. Pinned instead by
+`test_a_real_evaluator_makes_every_lane_play_the_same_game`, which is written to
+**fail** once stochastic MCTS exists.
 
 ---
 

@@ -327,3 +327,44 @@ def test_policy_value_mode_returns_usable_priors() -> None:
         max_wait_us=500, simulations=8, seconds=1.5,
     )
     assert seen["rows"] == result["evaluations"]
+
+
+def test_a_real_evaluator_makes_every_lane_play_the_same_game() -> None:
+    """Pins the limitation that blocks ``selfplay_backend = "native"``.
+
+    ``test_lanes_play_different_games`` proves 32 lanes play 32 distinct games,
+    but it proves it about the *dummy* evaluator, whose whole job is to be
+    request-dependent and per-lane salted.  A real model callback has no salt:
+    it is a pure function of the position.  With ``dirichlet_epsilon = 0`` and
+    ``temperature = 0`` -- the only mode native MCTS accepts -- every lane
+    starting from the same opening therefore computes the same move, and N
+    lanes are one game replayed N times.
+
+    Measured on the GPU host: 32 lanes, **1** distinct trajectory.  Throughput
+    is barely affected (the evaluator is ~99 % of wall and a dense forward does
+    not care that its rows are equal), which is exactly why this is dangerous:
+    it does not show up in any speed number.  It does mean a native self-play
+    pool would hand the trainer N copies of one game.
+
+    Lane diversity in production comes from Dirichlet noise at the root and
+    temperature sampling of moves, and native MCTS refuses both by design
+    (invariant 4).  **When stochastic MCTS lands, this test should fail** --
+    replace it with the diversity assertion at that point rather than relaxing
+    it.
+    """
+    result = _harness().run(
+        _constant,
+        games=16,
+        threads=4,
+        max_batch=8,
+        max_wait_us=500,
+        simulations=16,
+        seconds=60.0,
+        trace_moves=True,
+        stop_after_moves=6,
+    )
+    trajectories = {tuple(lane) for lane in result["lane_moves"]}
+    assert len(trajectories) == 1, (
+        f"{len(trajectories)} distinct games from 16 lanes -- if native MCTS gained "
+        "a stochastic mode, delete this test and assert diversity instead"
+    )

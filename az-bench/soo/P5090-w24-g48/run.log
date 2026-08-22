@@ -1,0 +1,4 @@
+[resume] loaded /workspace/alphadiamond/az-bench/soo/P5090-w24-g48/latest.pt at training_step=80
+[start] Soo run=P5090-w24-g48 phase=B0 prior=canonical-target-vacancy-distance-v2 sims=64 budget=0.01h
+[i0000] 48/48 done median_moves=89 samples+4410 replay=4410 step=82 loss=5.2856 sp=87s tr=0s elapsed=0.02h
+[done] Soo iterations=1 step=82 replay=4410 elapsed=0.02h
