@@ -14,3 +14,14 @@ az-bench/** linguist-vendored
 # *.ipynb linguist-vendored
 # *.html linguist-detectable=false
 # *.css linguist-detectable=false
+
+# Golden fixtures are read byte-for-byte by the native tests: the tables are
+# binary and the rules file is parsed with getline, so neither may be
+# line-ending-translated on checkout.
+tests/golden/topology/* binary
+tests/golden/*.txt text eol=lf
+tests/native/fixtures/positions.jsonl text eol=lf
+
+# GNU make does not accept CRLF recipes.
+Makefile text eol=lf
+

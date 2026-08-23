@@ -1,4 +1,5 @@
 #include "diamond_model/deployment_artifact.hpp"
+#include "diamond_model/model_index.hpp"
 
 #include <algorithm>
 #include <array>
@@ -288,9 +289,10 @@ void add_tensor(std::map<std::string, uintmax_t>& files, const std::string& name
     files.emplace(name + ".f32", elements * sizeof(float));
 }
 
-std::map<std::string, uintmax_t> expected_weights(int64_t width, int64_t blocks) {
+std::map<std::string, uintmax_t> expected_weights(int64_t width, int64_t blocks,
+                                                  int64_t input_features, int64_t value_size) {
     std::map<std::string, uintmax_t> files;
-    add_tensor(files, "trunk__input_projection__weight", width * 4);
+    add_tensor(files, "trunk__input_projection__weight", width * input_features);
     add_tensor(files, "trunk__input_projection__bias", width);
     for (int64_t block = 0; block < blocks; ++block) {
         const std::string prefix = "trunk__blocks__" + std::to_string(block) + "__";
@@ -310,8 +312,8 @@ std::map<std::string, uintmax_t> expected_weights(int64_t width, int64_t blocks)
     }
     add_tensor(files, "value_head__0__weight", width * width);
     add_tensor(files, "value_head__0__bias", width);
-    add_tensor(files, "value_head__2__weight", width);
-    add_tensor(files, "value_head__2__bias", 1);
+    add_tensor(files, "value_head__2__weight", width * value_size);
+    add_tensor(files, "value_head__2__bias", value_size);
     add_tensor(files, "trunk__adjacency", 6 * 73 * 73);
     return files;
 }
@@ -345,46 +347,115 @@ std::string runtime_sha256(const std::filesystem::path& root,
     return sha256_bytes(std::move(aggregate));
 }
 
+
+const JsonValue::Object& object_field(const JsonValue::Object& object, const std::string& name) {
+    const auto* nested = std::get_if<JsonValue::Object>(&field(object, name).value);
+    if (!nested) throw std::runtime_error("metadata field must be an object: " + name);
+    return *nested;
+}
+
+void require_keys(const JsonValue::Object& object, const std::set<std::string>& expected,
+                  const std::string& where) {
+    std::set<std::string> actual;
+    for (const auto& [key, unused] : object) {
+        (void)unused;
+        actual.insert(key);
+    }
+    if (actual != expected) throw std::runtime_error("deployment metadata fields mismatch: " + where);
+}
+
+// A batched shape: [batch, rest...]. The batch size is the corpus batch and is
+// not fixed by the format, so only the trailing dimensions are required.
+void require_batched_shape(const JsonValue::Object& object, const std::string& name,
+                           std::initializer_list<int64_t> trailing) {
+    const auto* array = std::get_if<JsonValue::Array>(&field(object, name).value);
+    if (!array || array->size() != trailing.size() + 1)
+        throw std::runtime_error("metadata shape mismatch: " + name);
+    const auto* batch = std::get_if<int64_t>(&array->at(0).value);
+    if (!batch || *batch <= 0) throw std::runtime_error("metadata shape mismatch: " + name);
+    size_t index = 1;
+    for (int64_t dimension : trailing) {
+        const auto* actual = std::get_if<int64_t>(&array->at(index++).value);
+        if (!actual || *actual != dimension)
+            throw std::runtime_error("metadata shape mismatch: " + name);
+    }
+}
+
+void require_nullable_digest(const JsonValue::Object& object, const std::string& name) {
+    const JsonValue& value = field(object, name);
+    if (std::holds_alternative<std::nullptr_t>(value.value)) return;
+    const auto* digest = std::get_if<std::string>(&value.value);
+    if (!digest || !is_hex_digest(*digest))
+        throw std::runtime_error("metadata " + name + " is invalid");
+}
+
 }  // namespace
 
-SooDeploymentArtifact validate_soo_deployment_artifact(const std::filesystem::path& root) {
+DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& root) {
     static const std::set<std::string> expected_keys = {
-        "action_space_version", "board_topology_version", "checkpoint_sha256", "corpus_seed",
-        "dtype", "encoder_version", "format_version", "input_shape", "model_name",
-        "model_sha256", "model_version", "policy_shape", "residual_blocks", "runtime_sha256",
-        "value_shape", "width"};
+        "architecture", "corpus_seed", "dtype", "format_version", "game_contract",
+        "model_family", "model_sha256", "model_version", "runtime_sha256", "source",
+        "tensor_shapes"};
+    static const std::set<std::string> architecture_keys = {"residual_blocks", "type", "width"};
+    static const std::set<std::string> contract_keys = {"action_space", "encoder", "topology"};
+    static const std::set<std::string> shape_keys = {"input", "policy", "value"};
+    static const std::set<std::string> source_keys = {
+        "checkpoint_sha256", "training_commit", "training_step"};
+
     const JsonValue parsed = JsonParser(read_text(root / "metadata.json")).parse();
     const auto* object = std::get_if<JsonValue::Object>(&parsed.value);
     if (!object) throw std::runtime_error("deployment metadata must be a JSON object");
-    std::set<std::string> actual_keys;
-    for (const auto& [key, unused] : *object) {
-        (void)unused;
-        actual_keys.insert(key);
-    }
-    if (actual_keys != expected_keys) throw std::runtime_error("deployment metadata fields mismatch");
+    require_keys(*object, expected_keys, "metadata");
 
-    require_integer(*object, "format_version", 2);
-    require_string(*object, "model_name", "Soo");
-    require_string(*object, "model_version", "2.0.0");
-    require_shape(*object, "input_shape", {2, 73, 4});
-    require_shape(*object, "policy_shape", {2, 5329});
-    require_shape(*object, "value_shape", {2, 1});
+    require_integer(*object, "format_version", 3);
     require_string(*object, "dtype", "float32");
-    require_integer(*object, "width", 128);
-    require_integer(*object, "residual_blocks", 6);
-    require_string(*object, "board_topology_version", "diamond73-v1");
-    require_string(*object, "encoder_version", "diamond-camp-relative-v1");
-    require_string(*object, "action_space_version", "diamond73-srcdst-v1");
+
+    // The game contract is what this binary implements. An artifact declaring
+    // another one is for a different game, not a different model.
+    const JsonValue::Object& contract = object_field(*object, "game_contract");
+    require_keys(contract, contract_keys, "game_contract");
+    require_string(contract, "topology", "diamond73-v1");
+    require_string(contract, "encoder", "diamond-camp-relative-v1");
+    require_string(contract, "action_space", "diamond73-srcdst-v1");
+
+    const std::string family = string_field(*object, "model_family");
+    int64_t input_features = 0;
+    int64_t value_size = 0;
+    if (family == "soo") {
+        input_features = 4;
+        value_size = 1;
+    } else if (family == "min") {
+        input_features = 6;
+        value_size = 3;
+    } else {
+        throw std::runtime_error("unknown model family: " + family);
+    }
+
+    const std::string model_version = string_field(*object, "model_version");
+    if (model_version.empty()) throw std::runtime_error("metadata model_version is empty");
+
+    const JsonValue::Object& architecture = object_field(*object, "architecture");
+    require_keys(architecture, architecture_keys, "architecture");
+    require_string(architecture, "type", "directional_residual");
+    const int64_t width = integer_field(architecture, "width");
+    const int64_t blocks = integer_field(architecture, "residual_blocks");
+    if (width <= 0 || blocks <= 0)
+        throw std::runtime_error("metadata architecture must be positive");
+
+    const JsonValue::Object& shapes = object_field(*object, "tensor_shapes");
+    require_keys(shapes, shape_keys, "tensor_shapes");
+    require_batched_shape(shapes, "input", {73, input_features});
+    require_batched_shape(shapes, "policy", {5329});
+    require_batched_shape(shapes, "value", {value_size});
+
+    const JsonValue::Object& provenance = object_field(*object, "source");
+    require_keys(provenance, source_keys, "source");
+    require_nullable_digest(provenance, "checkpoint_sha256");
+
     (void)integer_field(*object, "corpus_seed");
 
     const std::string model_hash = string_field(*object, "model_sha256");
     if (!is_hex_digest(model_hash)) throw std::runtime_error("metadata model_sha256 is invalid");
-    const JsonValue& checkpoint = field(*object, "checkpoint_sha256");
-    if (!std::holds_alternative<std::nullptr_t>(checkpoint.value)) {
-        const auto* digest = std::get_if<std::string>(&checkpoint.value);
-        if (!digest || !is_hex_digest(*digest))
-            throw std::runtime_error("metadata checkpoint_sha256 is invalid");
-    }
     if (sha256_file(root / "model.ts") != model_hash)
         throw std::runtime_error("deployment model SHA-256 mismatch");
     const std::string runtime_hash = string_field(*object, "runtime_sha256");
@@ -393,7 +464,9 @@ SooDeploymentArtifact validate_soo_deployment_artifact(const std::filesystem::pa
     const auto weights = root / "weights";
     if (!std::filesystem::is_directory(weights))
         throw std::runtime_error("deployment weights directory is missing");
-    const auto expected = expected_weights(128, 6);
+    // Checked against the *declared* architecture, not against constants: that
+    // is the whole point of format 3.
+    const auto expected = expected_weights(width, blocks, input_features, value_size);
     std::set<std::string> actual;
     for (const auto& entry : std::filesystem::directory_iterator(weights)) {
         if (!entry.is_regular_file())
@@ -415,7 +488,70 @@ SooDeploymentArtifact validate_soo_deployment_artifact(const std::filesystem::pa
     if (runtime_sha256(root, expected) != runtime_hash)
         throw std::runtime_error("deployment runtime SHA-256 mismatch");
 
-    return SooDeploymentArtifact{root, weights, "2.0.0", 128, 6};
+    return DeploymentArtifact{root,   weights,        family,         model_version,
+                              width,  blocks,         input_features, value_size};
+}
+
+DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& root,
+                                                const std::string& expected_family) {
+    DeploymentArtifact artifact = validate_deployment_artifact(root);
+    if (artifact.model_family != expected_family)
+        throw std::runtime_error("deployment model family mismatch: expected " + expected_family +
+                                 ", got " + artifact.model_family);
+    return artifact;
+}
+
+const ModelIndexEntry* ModelIndex::default_for(const std::string& family) const {
+    for (const auto& [entry_family, path] : defaults_) {
+        if (entry_family != family) continue;
+        for (const ModelIndexEntry& entry : models) {
+            if (entry.family + "/" + entry.version == path) return &entry;
+        }
+        return nullptr;
+    }
+    return nullptr;
+}
+
+ModelIndex load_model_index(const std::filesystem::path& models_dir) {
+    const JsonValue parsed = JsonParser(read_text(models_dir / "index.json")).parse();
+    const auto* object = std::get_if<JsonValue::Object>(&parsed.value);
+    if (!object) throw std::runtime_error("model index must be a JSON object");
+    require_integer(*object, "index_version", 1);
+
+    ModelIndex index;
+    const auto* models = std::get_if<JsonValue::Array>(&field(*object, "models").value);
+    if (!models) throw std::runtime_error("model index models must be an array");
+    for (const JsonValue& item : *models) {
+        const auto* entry = std::get_if<JsonValue::Object>(&item.value);
+        if (!entry) throw std::runtime_error("model index entry must be an object");
+        ModelIndexEntry loaded;
+        loaded.family = string_field(*entry, "family");
+        loaded.version = string_field(*entry, "version");
+        loaded.model_sha256 = string_field(*entry, "model_sha256");
+        loaded.runtime_sha256 = string_field(*entry, "runtime_sha256");
+        if (!is_hex_digest(loaded.model_sha256) || !is_hex_digest(loaded.runtime_sha256))
+            throw std::runtime_error("model index digest is invalid: " + loaded.family);
+        const std::string relative = string_field(*entry, "path");
+        // A path is a location inside the package, never an escape from it.
+        if (relative.find("..") != std::string::npos || relative.empty())
+            throw std::runtime_error("model index path is not package-relative: " + relative);
+        loaded.root = models_dir / std::filesystem::path(relative);
+        index.models.push_back(std::move(loaded));
+    }
+
+    const auto* defaults = std::get_if<JsonValue::Object>(&field(*object, "defaults").value);
+    if (!defaults) throw std::runtime_error("model index defaults must be an object");
+    for (const auto& [family, value] : *defaults) {
+        const auto* path = std::get_if<std::string>(&value.value);
+        if (!path) throw std::runtime_error("model index default must be a string: " + family);
+        index.defaults_.emplace_back(family, *path);
+    }
+    for (const auto& [family, unused] : *defaults) {
+        (void)unused;
+        if (index.default_for(family) == nullptr)
+            throw std::runtime_error("model index default names no bundled model: " + family);
+    }
+    return index;
 }
 
 }  // namespace diamond_model

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ubraket513/alphadiamond/TrainAlphaDiamond/manifests/checkpoint.schema.json",
+  "title": "AlphaDiamond training checkpoint manifest",
+  "description": "Provenance for one immutable checkpoint path in the bucket. Written next to checkpoint.pt as manifest.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "model_family",
+    "run_id",
+    "training_step",
+    "training_commit",
+    "architecture",
+    "game_contract",
+    "checkpoint_sha256",
+    "state",
+    "contains"
+  ],
+  "properties": {
+    "manifest_version": { "const": 1 },
+    "model_family": { "enum": ["soo", "min"] },
+    "run_id": { "type": "string", "minLength": 1 },
+    "training_step": { "type": "integer", "minimum": 0 },
+    "training_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "model_version": { "type": "string" },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "width", "residual_blocks"],
+      "properties": {
+        "type": { "type": "string" },
+        "width": { "type": "integer", "minimum": 1 },
+        "residual_blocks": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "game_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology", "encoder", "action_space"],
+      "properties": {
+        "topology": { "type": "string" },
+        "encoder": { "type": "string" },
+        "action_space": { "type": "string" }
+      }
+    },
+    "checkpoint_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "datasets": {
+      "type": "array",
+      "description": "Bucket-relative dataset/replay paths this checkpoint was trained on.",
+      "items": { "type": "string" }
+    },
+    "evaluation": {
+      "type": "object",
+      "description": "Evaluation suite identifier and the metrics it recorded.",
+      "additionalProperties": true,
+      "properties": { "suite": { "type": "string" } }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "python": { "type": "string" },
+        "torch": { "type": "string" },
+        "platform": { "type": "string" }
+      }
+    },
+    "contains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["optimizer", "scheduler", "rng"],
+      "properties": {
+        "optimizer": { "type": "boolean" },
+        "scheduler": { "type": "boolean" },
+        "rng": { "type": "boolean" }
+      }
+    },
+    "state": {
+      "enum": ["archival", "candidate", "promoted"],
+      "description": "archival: kept only. candidate: eligible for conversion. promoted: shipped in a release."
+    }
+  }
+}

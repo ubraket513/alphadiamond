@@ -14,6 +14,48 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # The definition of done for the native application: a clean checkout builds
+  # and tests the C++ core with no Python interpreter, no pybind11 and no
+  # pytest anywhere in the job. CMake is the build system; the Makefile is only
+  # a command façade, so CI drives the presets directly.
+  native-core:
+    name: native-core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset native-ci
+
+      - name: Build
+        run: cmake --build --preset native-ci --parallel
+
+      - name: Test
+        run: ctest --preset native-ci
+
+  # ASan/UBSan over the same tests. Linux only: the sanitiser flags in the
+  # preset are Clang/GCC syntax.
+  native-sanitizers:
+    name: native-sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset native-asan
+
+      - name: Build
+        run: cmake --build --preset native-asan --parallel
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --preset native-asan
+
   # The engine, AlphaZero stack and bootstrap priors are pure Python and need
   # neither Qt nor a display, so they run on plain pip across every supported
   # interpreter. Torch is CPU-only here: nothing in this job trains on a GPU.
@@ -59,8 +101,8 @@ jobs:
   # A regression -- risk 1 in docs/native_selfplay_phase0.md is two
   # authoritative rule implementations drifting apart, and the committed corpus
   # is the only thing that catches it.
-  native:
-    name: native (Gate A-F)
+  bridge-parity:
+    name: bridge-parity (Gate A-F)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,52 +152,11 @@ jobs:
       - name: Gate A-F
         run: pytest tests/native -v --durations=10
 
-  # Qt lives in its own job: it needs the system libraries and an offscreen
-  # platform plugin, and it is the part most likely to break for reasons that
-  # have nothing to do with the engine.
-  gui:
-    name: gui
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install Qt system libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libpulse0
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install pytest trueskill "PySide6>=6.10" qtawesome
-          python -m pip install --no-deps -e .
-
-      # The sound tests skip themselves on a build without QtMultimedia, because
-      # audio is optional by design and the app must run without it. That is the
-      # right behaviour on a user's machine and the wrong behaviour here, where a
-      # skip would quietly retire five tests. So CI asserts the backend is
-      # actually present, and fails with the real ImportError if it is not.
-      - name: Confirm QtMultimedia is available
-        run: |
-          python - <<'PY'
-          from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # noqa: F401
-          print("QtMultimedia imported; the sound tests will run, not skip")
-          PY
-
-      - name: Test
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: pytest -m gui --durations=10
+  # There is no `gui` job. The PySide test suite it ran was deleted with the
+  # last GUI test (5c499e7), so `pytest -m gui` collected nothing and exited 5
+  # -- a job that cannot pass and guards nothing. The Qt application under test
+  # now is the native one, and its lane joins CI with the change that fixes
+  # diamond_qt_controller_contract; see docs/architecture/products.md.
 
   # Scoped to the files a change actually touches. The tree still carries
   # pre-existing ruff findings; linting everything would make this job red on

@@ -854,7 +854,7 @@ Undo works normally after a load.
 ## Training and deployment boundary
 
 Python/PyTorch remains authoritative for training and checkpoint creation; see
-[docs/alphazero.md](docs/alphazero.md). `tools/export_soo_deployment.py`
+[docs/alphazero.md](docs/alphazero.md). `tools/export_deployment.py`
 produces the versioned portable artifact consumed by the Windows LibTorch
 runtime. The native application neither imports Python nor starts a Python or
 WSL subprocess.

@@ -68,16 +68,20 @@ torch::Tensor DirectionalResidualBlockImpl::forward(const torch::Tensor& nodes,
     return nodes + apply_gelu(norm->forward(message));
 }
 
-SooModelImpl::SooModelImpl(int64_t width, int64_t residual_blocks)
+DiamondModelImpl::DiamondModelImpl(int64_t width, int64_t residual_blocks,
+                                   int64_t input_features, int64_t value_size)
     : width_(width),
       residual_blocks_(residual_blocks),
-      input_projection(torch::nn::LinearOptions(4, width)),
+      input_features_(input_features),
+      value_size_(value_size),
+      input_projection(torch::nn::LinearOptions(input_features, width)),
       output_norm(torch::nn::LayerNormOptions({width})),
       policy_source(torch::nn::LinearOptions(width, width)),
       policy_destination(torch::nn::LinearOptions(width, width)),
       value_linear1(torch::nn::LinearOptions(width, width)),
-      value_linear2(torch::nn::LinearOptions(width, 1)) {
-    if (width <= 0 || residual_blocks <= 0) throw std::invalid_argument("invalid Soo dimensions");
+      value_linear2(torch::nn::LinearOptions(width, value_size)) {
+    if (width <= 0 || residual_blocks <= 0 || input_features <= 0 || value_size <= 0)
+        throw std::invalid_argument("invalid model dimensions");
     register_module("input_projection", input_projection);
     for (int64_t index = 0; index < residual_blocks; ++index) {
         blocks.push_back(DirectionalResidualBlock(width));
@@ -92,16 +96,17 @@ SooModelImpl::SooModelImpl(int64_t width, int64_t residual_blocks)
     register_buffer("adjacency", adjacency);
 }
 
-void SooModelImpl::set_adjacency(const torch::Tensor& value) {
+void DiamondModelImpl::set_adjacency(const torch::Tensor& value) {
     if (value.sizes() != torch::IntArrayRef({6, 73, 73})) {
-        throw std::invalid_argument("Soo adjacency must have shape [6,73,73]");
+        throw std::invalid_argument("adjacency must have shape [6,73,73]");
     }
     adjacency.copy_(value);
 }
 
-std::tuple<torch::Tensor, torch::Tensor> SooModelImpl::forward(const torch::Tensor& features) {
-    if (features.sizes().size() != 3 || features.size(1) != 73 || features.size(2) != 4) {
-        throw std::invalid_argument("Soo features must have shape [B,73,4]");
+std::tuple<torch::Tensor, torch::Tensor> DiamondModelImpl::forward(const torch::Tensor& features) {
+    if (features.sizes().size() != 3 || features.size(1) != 73 ||
+        features.size(2) != input_features_) {
+        throw std::invalid_argument("features must have shape [B,73,input_features]");
     }
     auto nodes = input_projection->forward(features);
     for (auto& module : blocks) {
@@ -116,9 +121,10 @@ std::tuple<torch::Tensor, torch::Tensor> SooModelImpl::forward(const torch::Tens
     return {policy.flatten(1), value};
 }
 
-void SooModelImpl::load_weights(const std::filesystem::path& root) {
+void DiamondModelImpl::load_weights(const std::filesystem::path& root) {
     torch::NoGradGuard no_grad;
-    copy_parameter(input_projection->weight, weight(root, "trunk__input_projection__weight"), {width_, 4});
+    copy_parameter(input_projection->weight, weight(root, "trunk__input_projection__weight"),
+                   {width_, input_features_});
     copy_parameter(input_projection->bias, weight(root, "trunk__input_projection__bias"), {width_});
     for (int64_t index = 0; index < residual_blocks_; ++index) {
         auto block = blocks.at(static_cast<size_t>(index));
@@ -147,9 +153,9 @@ void SooModelImpl::load_weights(const std::filesystem::path& root) {
     copy_parameter(value_linear1->bias,
                    weight(root, "value_head__0__bias"), {width_});
     copy_parameter(value_linear2->weight,
-                   weight(root, "value_head__2__weight"), {1, width_});
+                   weight(root, "value_head__2__weight"), {value_size_, width_});
     copy_parameter(value_linear2->bias,
-                   weight(root, "value_head__2__bias"), {1});
+                   weight(root, "value_head__2__bias"), {value_size_});
     set_adjacency(read_tensor(root / "trunk__adjacency.f32", {6, 73, 73}));
 }
 

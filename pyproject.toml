@@ -48,3 +48,10 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+
+[tool.ruff.lint]
+# This codebase raises ValueError subclasses for invalid input by design --
+# DeploymentArtifactError, ReplayCompatibilityError and friends are all
+# ValueErrors, and callers catch them as such. TRY004 would have every one of
+# them become a TypeError, which is a behaviour change dressed as a lint fix.
+ignore = ["TRY004"]

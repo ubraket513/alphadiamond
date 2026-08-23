@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace soo {
 
@@ -28,6 +29,14 @@ struct Topology {
 };
 
 Topology& mutable_topology();
+
+// Fill the topology from the five exported table files (topology_neighbour.i8,
+// topology_{camp_positions,pairwise_distance,physical_to_canonical,
+// canonical_to_physical}.i32) written by tools/export_deployment.py and
+// tools/build_golden.py.  Returns false and leaves the topology unconfigured
+// when any file is missing or the wrong size.  This is the only way a build
+// without Python gets its tables: nothing in native/ transcribes them.
+bool load_topology_from_dir(const std::string& root);
 
 inline const Topology& topology() {
     const Topology& t = mutable_topology();

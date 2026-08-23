@@ -140,3 +140,5 @@ foreach(sound_target diamond_qt diamond_qt_controller_contract)
             VERBATIM)
     endif()
 endforeach()
+
+install(TARGETS diamond_qt RUNTIME DESTINATION bin BUNDLE DESTINATION .)

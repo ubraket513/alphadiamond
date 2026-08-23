@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"C:/Users/dzk55/alphadiamond/build-pybind/cmake_install.cmake",
-		"C:/Users/dzk55/alphadiamond/build-pybind/native/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

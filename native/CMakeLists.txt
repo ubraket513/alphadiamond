@@ -3,6 +3,7 @@ set(SOO_CORE_SOURCES
     src/encoder.cpp
     src/prior.cpp
     src/rules.cpp
+    src/topology_io.cpp
 )
 
 set(SOO_SEARCH_SOURCES
@@ -58,10 +59,29 @@ if(DIAMOND_BUILD_PYBIND)
 endif()
 
 if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
-    add_executable(soo_native_smoke tests/smoke.cpp)
-    target_link_libraries(soo_native_smoke PRIVATE alphadiamond::soo_search)
-    target_compile_features(soo_native_smoke PRIVATE cxx_std_20)
-    add_test(NAME soo_native_smoke COMMAND soo_native_smoke)
+    # Golden fixtures are committed data, not build output: the tests below run
+    # on a machine with no Python, no pybind and no pytest.
+    set(DIAMOND_GOLDEN_DIR "${PROJECT_SOURCE_DIR}/tests/golden")
+
+    function(diamond_add_native_test name)
+        add_executable(${name} tests/${name}.cpp)
+        target_link_libraries(${name} PRIVATE alphadiamond::soo_search)
+        target_compile_features(${name} PRIVATE cxx_std_20)
+        target_compile_options(${name} PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra>
+            $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        )
+        add_test(NAME ${name} COMMAND ${name} ${ARGN})
+    endfunction()
+
+    diamond_add_native_test(action_codec_test)
+    diamond_add_native_test(topology_test "${DIAMOND_GOLDEN_DIR}/topology")
+    diamond_add_native_test(rules_golden_test
+        "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
+    diamond_add_native_test(mcts_golden_test
+        "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
+    diamond_add_native_test(batcher_test)
+    diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
 endif()
 
 if(DIAMOND_BUILD_LIBTORCH_PROBE)
@@ -93,14 +113,6 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
         target_compile_options(soo_libtorch_probe PRIVATE /bigobj)
     endif()
 
-    add_executable(soo_native_model_probe src/soo_native_model_probe.cpp)
-    target_link_libraries(soo_native_model_probe PRIVATE alphadiamond::diamond_model)
-    target_compile_features(soo_native_model_probe PRIVATE cxx_std_20)
-    target_compile_definitions(soo_native_model_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
-    if(MSVC)
-        target_compile_options(soo_native_model_probe PRIVATE /bigobj)
-    endif()
-
     add_executable(soo_evaluator_probe src/soo_evaluator_probe.cpp)
     target_link_libraries(soo_evaluator_probe PRIVATE alphadiamond::diamond_model)
     target_compile_features(soo_evaluator_probe PRIVATE cxx_std_20)
@@ -118,11 +130,49 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
     endif()
 
     if(BUILD_TESTING)
+        # Artifact fixtures are exported, not committed:
+        #   python tools/export_deployment.py artifacts/soo-spike --family soo
+        #   python tools/export_deployment.py artifacts/min-spike --family min
+        # The tests register only for the artifacts that are present, so a
+        # checkout without them configures cleanly instead of failing late.
+        set(DIAMOND_SOO_ARTIFACT "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")
+        set(DIAMOND_MIN_ARTIFACT "${PROJECT_SOURCE_DIR}/artifacts/min-spike")
+
         add_executable(soo_artifact_contract tests/artifact_contract.cpp)
         target_link_libraries(soo_artifact_contract PRIVATE alphadiamond::diamond_model)
         target_compile_features(soo_artifact_contract PRIVATE cxx_std_20)
-        add_test(NAME soo_artifact_contract
-                 COMMAND soo_artifact_contract "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")
+
+        add_executable(model_index_test tests/model_index_test.cpp)
+        target_link_libraries(model_index_test PRIVATE alphadiamond::diamond_model)
+        target_include_directories(model_index_test PRIVATE tests)
+        target_compile_features(model_index_test PRIVATE cxx_std_20)
+        add_test(NAME model_index_test
+                 COMMAND model_index_test "${CMAKE_CURRENT_BINARY_DIR}/model-index-scratch")
+
+        add_executable(model_parity_test tests/model_parity_test.cpp)
+        target_link_libraries(model_parity_test PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
+        target_include_directories(model_parity_test PRIVATE ${TORCH_INCLUDE_DIRS} tests)
+        target_compile_features(model_parity_test PRIVATE cxx_std_20)
+        target_compile_definitions(model_parity_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        if(MSVC)
+            target_compile_options(model_parity_test PRIVATE /bigobj)
+        endif()
+
+        if(EXISTS "${DIAMOND_SOO_ARTIFACT}/metadata.json")
+            if(EXISTS "${DIAMOND_MIN_ARTIFACT}/metadata.json")
+                add_test(NAME soo_artifact_contract
+                         COMMAND soo_artifact_contract
+                                 "${DIAMOND_SOO_ARTIFACT}" "${DIAMOND_MIN_ARTIFACT}")
+                add_test(NAME model_parity_test
+                         COMMAND model_parity_test
+                                 soo "${DIAMOND_SOO_ARTIFACT}" min "${DIAMOND_MIN_ARTIFACT}")
+            else()
+                add_test(NAME soo_artifact_contract
+                         COMMAND soo_artifact_contract "${DIAMOND_SOO_ARTIFACT}")
+                add_test(NAME model_parity_test
+                         COMMAND model_parity_test soo "${DIAMOND_SOO_ARTIFACT}")
+            endif()
+        endif()
     endif()
 endif()
 
