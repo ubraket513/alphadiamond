@@ -6,14 +6,15 @@ import copy
 import hashlib
 import io
 import pickle
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 from torch import nn
 
-from .config import TrainingConfig, config_dict
+from .config import NetworkConfig, TrainingConfig, config_dict
 from .identity import CheckpointCompatibilitySpec
 from .trainer import AlphaZeroTrainer
 
@@ -234,11 +235,45 @@ def load_inference_checkpoint(
     )
 
 
+def checkpoint_network_config(path: str | Path) -> NetworkConfig:
+    """Return the network shape a checkpoint was trained at.
+
+    Every checkpoint records its own ``network_config`` in the compatibility
+    metadata, so a tool comparing two checkpoints of *different* shapes -- a
+    depth or width sweep -- can build each side correctly instead of forcing
+    both through one config file's ``network`` block.  Reading the shape from
+    the file is also the only way to be sure which parent a transplant came
+    from; a config file merely says what someone expected.
+
+    Every other compatibility field is left to ``assert_compatible``: this
+    waives nothing, it only discovers the one field that is legitimately
+    allowed to differ between the two sides of an architecture comparison.
+    """
+    source = Path(path)
+    try:
+        payload = torch.load(source, map_location="cpu", weights_only=True)
+    except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as exc:
+        raise CheckpointError(f"cannot read checkpoint {source}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise CheckpointError(f"checkpoint {source} root must be a mapping")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise CheckpointError(f"checkpoint {source} has no metadata mapping")
+    network = metadata.get("network_config")
+    if not isinstance(network, Mapping):
+        raise CheckpointError(f"checkpoint {source} metadata has no network_config")
+    try:
+        return NetworkConfig(**network)
+    except TypeError as exc:
+        raise CheckpointError(f"checkpoint {source} network_config is malformed: {exc}") from exc
+
+
 __all__ = [
     "CHECKPOINT_FORMAT_VERSION",
     "CheckpointError",
     "CheckpointInfo",
     "InferenceCheckpointInfo",
+    "checkpoint_network_config",
     "load_checkpoint",
     "load_inference_checkpoint",
     "save_checkpoint",

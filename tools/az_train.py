@@ -299,6 +299,27 @@ def main() -> int:
         help="Override the config prior; use 'none' for the A0 phase.",
     )
     parser.add_argument("--simulations", type=int, default=None)
+    parser.add_argument(
+        "--network-width",
+        type=int,
+        default=None,
+        help=(
+            "Override network.width.  The shape is part of the checkpoint's "
+            "compatibility identity, so this starts or resumes a run at that "
+            "shape and will refuse a latest.pt of any other -- which is the "
+            "intended behaviour, not an obstacle."
+        ),
+    )
+    parser.add_argument(
+        "--network-blocks",
+        type=int,
+        default=None,
+        help=(
+            "Override network.residual_blocks.  Seed a deeper run from a "
+            "trained parent with tools/deepen_checkpoint.py rather than from "
+            "scratch, then point --runtime-dir at the run holding it."
+        ),
+    )
     parser.add_argument("--train-steps-per-iteration", type=int, default=4)
     parser.add_argument("--threads", type=int, default=4, help="Parent-side torch threads.")
     parser.add_argument("--phase", default=None, help="Ledger label, e.g. B0 or A0.")
@@ -413,6 +434,10 @@ def main() -> int:
         config["self_play"]["bootstrap_prior"] = args.bootstrap_prior
     if args.simulations is not None:
         config["mcts"]["simulations"] = args.simulations
+    if args.network_width is not None:
+        config["network"]["width"] = args.network_width
+    if args.network_blocks is not None:
+        config["network"]["residual_blocks"] = args.network_blocks
     if args.per_game_seconds is not None:
         config["self_play"]["max_game_seconds"] = args.per_game_seconds
 

@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from diamond.alphazero.arena import SooArena
-from diamond.alphazero.checkpoint import load_checkpoint
+from diamond.alphazero.checkpoint import checkpoint_network_config, load_checkpoint
 from diamond.alphazero.config import (
     ArenaConfig,
     MCTSConfig,
@@ -52,7 +52,17 @@ from diamond.game.state import build_players
 
 
 def _load(path: Path, config: dict) -> tuple[AlphaZeroTrainer, TorchEvaluator]:
-    network = NetworkConfig(**config["network"])
+    # The shape comes from the checkpoint, not from --config, so a candidate of
+    # a different depth or width can be played against its parent.  Every other
+    # compatibility field still has to match the config exactly.
+    network = checkpoint_network_config(path)
+    expected = NetworkConfig(**config["network"])
+    if network != expected:
+        print(
+            f"[arena] {path.name}: {network.width}x{network.residual_blocks} "
+            f"(config says {expected.width}x{expected.residual_blocks})",
+            file=sys.stderr,
+        )
     version = config["model_version"]
     compatibility = CheckpointCompatibilitySpec.soo(
         model_version=version, network_config=network
@@ -123,7 +133,12 @@ def main() -> int:
     arena_config = ArenaConfig(
         games=args.games,
         seed=args.seed,
-        max_moves=args.max_moves or config["self_play"]["max_moves"],
+        # arena.max_moves, not self_play.max_moves.  The two differ by 4x (2000
+        # against 500) and reading the self-play cap here silently turned every
+        # arena into a 500-move robustness probe: an unfinished game is dropped
+        # from the denominator, so a pair that times out often reports a win
+        # rate over whatever subset happened to terminate.
+        max_moves=args.max_moves or config["arena"]["max_moves"],
         promotion_threshold=config["arena"]["promotion_threshold"],
     )
     def game_factory(order: tuple[int, ...]) -> DiamondSearchAdapter:
