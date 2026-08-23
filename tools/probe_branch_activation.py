@@ -55,6 +55,7 @@ from diamond.alphazero.trainer import AlphaZeroTrainer
 
 ACTION_SIZE = 5329
 PARENT_SENTINEL = "@parent"
+WIDEN_PREFIX = "widen:"
 
 
 def _rms(tensor: torch.Tensor) -> float:
@@ -137,6 +138,12 @@ def main() -> int:
     parser.add_argument("--parent", type=Path, required=True)
     parser.add_argument("--replay", type=Path, required=True, help="a run's replay dir")
     parser.add_argument("--blocks", type=int, default=12)
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=256,
+        help=f"Target width for variants whose flags start with '{WIDEN_PREFIX}'.",
+    )
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--capacity", type=int, default=200_000)
@@ -219,12 +226,24 @@ def main() -> int:
             target = args.parent
         else:
             target = scratch / f"{name}.pt"
-            build = [
-                sys.executable, str(ROOT / "tools/deepen_checkpoint.py"),
-                "--source", str(args.parent), "--out", str(target),
-                "--blocks", str(args.blocks), "--device", args.device,
-                "--corpus", "-", *flags,
-            ]
+            # A variant grows the parent in one axis or the other; the prefix
+            # picks the operator so a sweep can mix depth and width arms in one
+            # run against one control.
+            if flags and flags[0].startswith(WIDEN_PREFIX):
+                rest = [flags[0][len(WIDEN_PREFIX):], *flags[1:]]
+                build = [
+                    sys.executable, str(ROOT / "tools/widen_checkpoint.py"),
+                    "--source", str(args.parent), "--out", str(target),
+                    "--width", str(args.width), "--device", args.device,
+                    "--corpus", "-", *[f for f in rest if f],
+                ]
+            else:
+                build = [
+                    sys.executable, str(ROOT / "tools/deepen_checkpoint.py"),
+                    "--source", str(args.parent), "--out", str(target),
+                    "--blocks", str(args.blocks), "--device", args.device,
+                    "--corpus", "-", *flags,
+                ]
             result = subprocess.run(build, capture_output=True, text=True, check=False)
             if result.returncode:
                 raise SystemExit(f"{name}: transplant failed\n{result.stdout}{result.stderr}")
@@ -245,6 +264,7 @@ def main() -> int:
         gate_indices = sorted(trainer.model.trunk.gated_blocks)
         gated = bool(gate_indices)
         new_blocks = gate_indices or [i for i in range(old_blocks, len(blocks))]
+        widened = trainer.model.trunk.width > parent_network.width
         gate_of = (
             (lambda index, seq=blocks: seq[index].alpha)
             if gated
@@ -293,7 +313,23 @@ def main() -> int:
             handle.remove()
 
         state = trainer.model.state_dict()
-        if new_blocks and len(blocks) > old_blocks:
+        if widened:
+            # Width growth has no gate to watch; what matters is whether the two
+            # halves stop being copies of each other.
+            half = parent_network.width
+            spread = []
+            for index in range(len(blocks)):
+                weight = state[f"trunk.blocks.{index}.self_projection.weight"]
+                top, bottom = weight[:half, :half], weight[half:, half:]
+                cross = weight[:half, half:].abs().mean() + weight[half:, :half].abs().mean()
+                spread.append(
+                    (float((top - bottom).abs().mean()), float(cross) / 2, float(top.abs().mean()))
+                )
+            print(f"    half asymmetry    {_mean(v[0] for v in spread):.3e}"
+                  f"   (0 means the halves are still identical)")
+            print(f"    cross-half weight {_mean(v[1] for v in spread):.3e}"
+                  f"   (vs in-half {_mean(v[2] for v in spread):.3e})")
+        elif new_blocks and len(blocks) > old_blocks:
             inherited = [i for i in range(len(blocks)) if i not in new_blocks]
             if gated:
                 values = [
