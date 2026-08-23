@@ -29,6 +29,22 @@ PRIOR="${2:-canonical-target-vacancy-distance-v2}"
 PHASE="${3:-B0}"
 shift 3 2>/dev/null || shift $# # anything further is forwarded to az_train.py
 
+# A0 needs 128 simulations and the config default is 64.
+#
+# The config's 64 is the B0 setting and always has been; A0 was only ever run at
+# 128 because the operator passed the flag, and the handoff records that as a
+# comment.  A comment is not a guard: resuming A0 without it starts training on
+# 64-simulation targets, which §6.8 measured as not being policy-improvement
+# targets at all -- the loop degrades while the loss improves, so nothing in the
+# output says anything is wrong.  Paid for once, on a production checkpoint.
+case " $* " in
+  *" --simulations "*) ;;
+  *) if [ "$PHASE" = "A0" ]; then
+       echo "[guard] phase A0 with no --simulations; using 128 (config default 64 is the B0 setting)" >&2
+       set -- --simulations 128 "$@"
+     fi ;;
+esac
+
 # The run imports from a pinned snapshot, not the working tree: repo work
 # continues while training runs, and a rebuilt extension under the working tree
 # must not reach a run already in flight.
