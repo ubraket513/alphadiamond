@@ -55,7 +55,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from diamond.alphazero.checkpoint import load_checkpoint
+from diamond.alphazero.checkpoint import checkpoint_network_config, load_checkpoint
 from diamond.alphazero.config import (
     BOOTSTRAP_PRIOR_NONE,
     MCTSConfig,
@@ -172,7 +172,17 @@ def main() -> int:
 
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    network = NetworkConfig(**config["network"])
+    # The probe follows the checkpoint's own shape; --config supplies everything
+    # else.  A depth sweep otherwise needs a config file per architecture, and
+    # the one that gets forgotten fails as a state_dict error rather than loudly.
+    network = checkpoint_network_config(args.checkpoint)
+    expected = NetworkConfig(**config["network"])
+    if network != expected:
+        print(
+            f"[gate] {args.checkpoint.name}: {network.width}x{network.residual_blocks} "
+            f"(config says {expected.width}x{expected.residual_blocks})",
+            file=sys.stderr,
+        )
     version = config["model_version"]
     compatibility = CheckpointCompatibilitySpec.soo(
         model_version=version, network_config=network

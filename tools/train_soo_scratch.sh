@@ -5,9 +5,14 @@
 # unit of supervision, not a unit of training.  SIGTERM finishes the current
 # iteration and exits with state durable.
 #
-#   tools/train_soo_scratch.sh [hours] [bootstrap-prior] [phase]
+#   tools/train_soo_scratch.sh [hours] [bootstrap-prior] [phase] [az_train args...]
 #     tools/train_soo_scratch.sh 6                    # B0, heuristics on
 #     tools/train_soo_scratch.sh 6 none A0            # after the OFF gate passes
+#     RUN_ID=soo-deep12 tools/train_soo_scratch.sh 6 none A0 \
+#       --network-blocks 12 --simulations 64          # an architecture arm
+#
+# Arguments after the third are forwarded verbatim, so a sweep does not need a
+# config file or a launcher script per shape.
 #
 # TRAIN_ROOT is deliberately outside the repository.  Checkpoints and replay
 # chunks are large and regenerable; the previous run put 213 MB of them into
@@ -22,6 +27,7 @@ CONFIG="${CONFIG:-$ROOT/runtime/configs/soo-rtx5090-native.json}"
 HOURS="${1:-6}"
 PRIOR="${2:-canonical-target-vacancy-distance-v2}"
 PHASE="${3:-B0}"
+shift 3 2>/dev/null || shift $# # anything further is forwarded to az_train.py
 
 # The run imports from a pinned snapshot, not the working tree: repo work
 # continues while training runs, and a rebuilt extension under the working tree
@@ -50,4 +56,5 @@ exec python "$ROOT/tools/az_train.py" \
   --train-steps-per-iteration 300 \
   --native-max-wait-us "${NATIVE_MAX_WAIT_US:-50}" \
   --archive-every 25 \
-  --keep-archives 20
+  --keep-archives 20 \
+  "$@"
