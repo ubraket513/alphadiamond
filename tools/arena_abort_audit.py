@@ -42,14 +42,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from diamond.alphazero.arena import _balanced_matchups
 from diamond.alphazero.checkpoint import checkpoint_network_config, load_checkpoint
-from diamond.alphazero.config import MCTSConfig, NetworkConfig, TrainingConfig
+from diamond.alphazero.config import MCTSConfig, TrainingConfig
 from diamond.alphazero.evaluator.torch import TorchEvaluator
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.network import SooModel
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.rules import has_finished
 from diamond.game.state import build_players
 
 
@@ -191,7 +190,7 @@ def main() -> int:
             f"{statistics.mean(r['baseline_fill'] for r in aborts):.1f}/10" if aborts else "-"
         )
         print(
-            f"  {str(order):>8}{candidate_player:>11}{wins:>4}{losses:>4}{len(aborts):>7}"
+            f"  {order!s:>8}{candidate_player:>11}{wins:>4}{losses:>4}{len(aborts):>7}"
             f"{median:>14.0f}{cand_fill:>17}{base_fill:>17}"
         )
 

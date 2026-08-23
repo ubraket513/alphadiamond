@@ -48,7 +48,6 @@ from diamond.alphazero.checkpoint import checkpoint_network_config, load_checkpo
 from diamond.alphazero.config import (
     ArenaConfig,
     MCTSConfig,
-    NetworkConfig,
     TrainingConfig,
 )
 from diamond.alphazero.evaluator.torch import TorchEvaluator

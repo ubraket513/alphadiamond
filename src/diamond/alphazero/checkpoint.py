@@ -6,9 +6,10 @@ import copy
 import hashlib
 import io
 import pickle
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 from torch import nn
@@ -271,8 +272,8 @@ __all__ = [
     "CHECKPOINT_FORMAT_VERSION",
     "CheckpointError",
     "CheckpointInfo",
-    "checkpoint_network_config",
     "InferenceCheckpointInfo",
+    "checkpoint_network_config",
     "load_checkpoint",
     "load_inference_checkpoint",
     "save_checkpoint",
