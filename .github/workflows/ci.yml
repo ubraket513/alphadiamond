@@ -14,6 +14,48 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # The definition of done for the native application: a clean checkout builds
+  # and tests the C++ core with no Python interpreter, no pybind11 and no
+  # pytest anywhere in the job. CMake is the build system; the Makefile is only
+  # a command façade, so CI drives the presets directly.
+  native-core:
+    name: native-core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset native-ci
+
+      - name: Build
+        run: cmake --build --preset native-ci --parallel
+
+      - name: Test
+        run: ctest --preset native-ci
+
+  # ASan/UBSan over the same tests. Linux only: the sanitiser flags in the
+  # preset are Clang/GCC syntax.
+  native-sanitizers:
+    name: native-sanitizers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset native-asan
+
+      - name: Build
+        run: cmake --build --preset native-asan --parallel
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --preset native-asan
+
   # The engine, AlphaZero stack and bootstrap priors are pure Python and need
   # neither Qt nor a display, so they run on plain pip across every supported
   # interpreter. Torch is CPU-only here: nothing in this job trains on a GPU.
@@ -59,8 +101,8 @@ jobs:
   # A regression -- risk 1 in docs/native_selfplay_phase0.md is two
   # authoritative rule implementations drifting apart, and the committed corpus
   # is the only thing that catches it.
-  native:
-    name: native (Gate A-F)
+  bridge-parity:
+    name: bridge-parity (Gate A-F)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
