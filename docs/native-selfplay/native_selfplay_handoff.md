@@ -16,30 +16,78 @@ result that matters most and is the least obvious.
 
 ## 0. Where things stand right now
 
-**Heuristic-free (A0) training works, and it is producing a stronger network.**
+**Heuristic-free (A0) training works, it is producing a stronger network, and
+architecture scaling has been tried in both directions and closed.**
 
 | | |
 |---|---|
 | phase | **A0** — `bootstrap_prior = none`, 128 simulations |
-| run | `soo-scratch-20260822`, outside the repo at `/workspace/alphadiamond-training` |
-| health | 97.7–98.3 % of games completing, sustained over 20+ iterations |
-| strength | **+191 Elo** against the checkpoint A0 started from, 30W–10L, identical at 64 and 128 simulations |
-| throughput | ~247 terminal samples/s (A0 at 128); B0 reached ~1,444 at 64 |
+| architecture | **`128x6`, frozen.** Both `128x12` and `256x6` were built, measured and rejected — §3.0.2 |
+| run | `soo-scratch-20260822`, outside the repo at `/workspace/alphadiamond-training`, at step **51,450** |
+| shipped | **step 44,250**, not the newest — 51,450 measured *weaker*, see below |
+| health | 96.5 % of games completing (94.4–98.3), median 65 moves, over 23 iterations |
+| strength | **+394 Elo** against the checkpoint A0 started from, 90.6 % over 32 opening pairs [95 % CI 82.8–96.9] |
+| throughput | **495 terminal samples/s** rolling (median 498, IQR 5.8 %) |
 
 The single non-obvious thing to know before changing anything: **A0 stability is
 decided by the fraction of policy targets produced by a search strong enough to
 improve on the network's own prior.** 128 simulations is enough, 64 is not, and
 neither censoring nor actor-refresh cadence is the operative variable — both were
 tested directly and neither explains it. §3.0.1 below, and §6 of
-[soo_scratch_training.md](soo_scratch_training.md).
+[soo_scratch_training.md](../model-training/soo_scratch_training.md).
 
-**The obvious next experiment** is the one deliberately not run yet: a
-depth-expanded `128×12` network at 64 simulations, against the current
-`128×6 @ 128`. Transplant the trained blocks and zero-initialise the new blocks'
-LayerNorm scale so the network starts as an identity extension. Judge it on
-completion, discarded-move fraction, samples/s and head-to-head Elo — the target
-to beat is 97.9 % learner stability at 247 samples/s. Do **not** judge it on loss
-(pitfall 7.14).
+### Two numbers that were being conflated, and are now separate
+
+The old headline of "~247 terminal samples/s (A0 at 128)" was a **frozen-actor
+gate** figure from §6.6 of the training document, not a production one.  The same
+run's ledger, over its A0 iterations at 128 simulations and *before* any
+optimisation, already read **423 samples/s**.  Comparing a candidate against 247
+therefore compared it against the wrong ruler, and that is what `128x12` was
+asked to beat.
+
+Keep these apart and label every future measurement as one or the other:
+
+| measurement | what it is for |
+|---|---|
+| **frozen-actor throughput** | the inference/self-play engine itself; the A/B ruler for optimisation work |
+| **rolling production throughput** | samples per hour while actually training; the input to Elo per wall-clock |
+
+Anything that changes the actor changes the second and not the first.
+
+### The measurement that was wrong for longer
+
+`SooArena` reseeds per move, but evaluation forces `dirichlet_epsilon = 0` and
+`temperature = 0` and neither path then touches the RNG.  The seed is inert, so a
+matchup cell is a pure function of `(turn order, candidate seat)` and **asking
+for 40 games played 4 games ten times**.  Every per-game confidence interval this
+project quoted was over pseudo-replicates: the `40W-0L` was `4W-0L` and the
+`30W-10L` behind the retracted `+191 Elo` was `3W-1L`, which is why it landed on
+a multiple of ten.  Use `tools/arena_v2.py`, which varies the opening instead of
+repeating the game, keeps play deterministic, and takes its interval from a
+bootstrap over opening pairs.  §3.0.3.
+
+### Training past step 44,250 has not bought anything
+
+The run continued to step 51,450 — 24 further iterations, 7,200 training steps —
+and the result is worth recording because it is the opposite of the assumption
+that a later checkpoint is a better one.  On the cert opening suite at 128
+simulations, **51,450 scored 26W–38L against 44,250 over 64 games**: 40.6 % over
+32 pairs, CI 29.7–51.6 %, Elo **−66 [−150, +11]**.  Not separated, so this is not
+"51,450 is worse" with confidence — but it is certainly not better, and the point
+estimate is negative.  Completion drifted the same way, 97.4 % down to 96.5 %.
+
+So `runtime/runs/soo/soo-scratch-20260822/latest.pt` stays at **44,250**, and the
+Qt artifact is exported from it.  Check a new checkpoint on the cert suite before
+shipping it; a later step number is not evidence.
+
+**The next experiment** is not a bigger network.  It is the search budget: 64
+fails as a teacher and 128 works, and the threshold between them has never been
+located.  Start at 96 — generation quality on 768 fresh games first, then a
+frozen-actor learner arm over about one replay turnover, judged on whether the
+*learner* holds its actor's completion rather than on actor health.  If 96 holds,
+try 80; if it breaks, try 112.  A budget of 112 would already be a 12.5 % saving
+with no architecture change, and the callback fix in #27 raised the share of
+wall-clock that simulations account for, so the payoff is larger than it was.
 
 ---
 
@@ -130,6 +178,108 @@ exist.
 **Production A0 is therefore flat 128 simulations**, at ~247 terminal samples/s
 against B0's ~1,444. That is the price of heuristic-free training at this network
 size, and it is the number any proposed improvement has to beat.
+
+### 3.0.2 Architecture scaling — tried both axes, both rejected
+
+Both arms were function-preserving transplants of the step-44,250 network, both
+carried the parent's AdamW moments (mapped by parameter *name*: optimizer state
+is keyed by position in `model.parameters()`, and growing the model shifts those
+positions), and both were judged on **held-out fit against a frozen replay of
+128-simulation searches** — not on self-play loss, which pitfall 7.14 rules out,
+and not on a gate taken before the new parameters had switched on.
+
+**Depth, `128x12`.**  Four initialisations were tried and each fixed a real
+defect in the previous one:
+
+| initialisation | gate after 300 steps | new-block contribution | held-out CE vs shallow |
+|---|---|---|---|
+| random branch, LayerNorm gamma = 0 | 0.0019 | 0.0009 | — |
+| copied branch, gamma = 0 | 0.0032 | 0.0010 | — |
+| copied branch, appended, ReZero alpha | +0.0021 | 0.0007 | −0.0001 |
+| copied branch, **interleaved**, alpha | **+0.0095** | **0.0060** | **+0.0026** |
+
+Three things worth keeping.  Zeroing a LayerNorm *scale* is not a residual gate:
+that parameter sits inside the branch and before a nonlinearity, so it rescales
+the representation rather than the amplitude, and `GELU(gamma z) != gamma GELU(z)`.
+A copied branch behind a shut gate still random-walks — Adam normalises by the
+gradient's own second moment, so a tiny noisy gradient still buys full-size steps
+(27 % of init norm in 300 steps, cut to 8 % by copying).  And appending puts
+`copy(b0)` after `b5`, which is not the distribution it was trained on;
+interleaving raised the gate fourfold and made all six blocks open in the same
+direction.  None of it helped: the best arm fit the teacher *worse*.
+
+**Width, `256x6`.**  A staged-training expansion, `W -> [[W,0],[0,W]]`, so
+1.47 M cross-half weights start at zero and receive gradient immediately —
+deliberately not plain Net2Wider, whose duplicated channels see identical
+gradients and never separate (confirmed: that control's half-asymmetry stayed at
+**exactly** 0.000e+00).  Here the capacity demonstrably switched on — asymmetry
+grew from 5e-7 to 3.8e-3 and cross-half weights to 8 % of in-half — and held-out
+CE still degraded monotonically against the shallow control:
+
+    step    150     300     600     900    1200    1500
+    CE   +0.0024 +0.0051 +0.0102 +0.0128 +0.0124 +0.0170
+
+So the two failures are different, and the width one is the stronger evidence:
+depth never opened, width opened and cost more anyway.  The accurate conclusion
+is narrow, and worth stating exactly:
+
+> **At the current 128-simulation teacher, replay size and AdamW regime, there is
+> no evidence that `128x6`'s representational capacity is the binding
+> constraint.**
+
+Not "`256x6` is a bad architecture" — a 4x model may well want its own learning
+rate, regularisation and data scale.  But the objective here is Elo per
+wall-clock, and a candidate that already costs 4x while fitting the same teacher
+worse does not justify starting that tuning project.
+
+One measurement saved the width arm from a wrong answer, and it is the reason to
+validate a growth operator empirically rather than trusting the algebra: Adam's
+second moment cannot expand block-diagonally.  Zeroed `exp_avg_sq` on 1.5 M new
+weights makes their first update ~3x normal size, and held-out CE spiked **+0.266**
+within ten steps — a hundred times the architecture effect.  `exp_avg` stays
+structural (a weight with no history has no direction); `exp_avg_sq` tiles, so a
+new weight inherits its layer-mates' scale.  The same measurement then read
++0.0006.
+
+### 3.0.3 Arena — what the old numbers were actually measuring
+
+`tools/arena_head_to_head.py` had two defects, both fixed, and the second
+invalidates every strength interval recorded before it.
+
+It read `self_play.max_moves` (500) rather than `arena.max_moves` (2000), so
+every arena was a 500-move probe.  And because evaluation zeroes both
+`dirichlet_epsilon` and `temperature`, neither `select_from_visits` nor
+`add_dirichlet_noise` consumes randomness, so the per-move seed is inert and the
+four balanced cells are pure functions of `(turn order, candidate seat)`.  Forty
+games were four games, ten times each — confirmed by identical move counts and
+identical final camp occupancy across repeats.
+
+`tools/arena_v2.py` replaces it: openings vary, play stays deterministic
+(temperature would change the question from "whose best play is stronger" to
+"whose sampled play is stronger"), openings are generated **per turn order**
+because an action sequence is only legal under the order it was made for, and
+the interval is a bootstrap over **opening pairs** rather than games, since the
+two games of a pair share a position.  Two disjoint suites, `--suite dev` for
+iterating and `--suite cert` for promotion decisions, because selecting
+candidates against one suite lets the chooser overfit it.
+
+Aborted pairs are dropped and reported, and above `--max-abort-fraction` the
+result is labelled CENSORED rather than given an Elo — these rules have no draw,
+so scoring an unfinished game 0.5 would be an invention.  That case is real: at
+64 simulations, 6 of 32 pairs did not finish, and "the search cannot resolve
+19 % of these positions" is the more useful finding than the rating of the rest.
+
+### 3.0.4 Rolling a replay store back
+
+Undoing one bad iteration by hand broke the next run twice.  An orphaned chunk
+file conflicts with the regenerated game even after its manifest entry is gone,
+and `manifest.aborted` — which holds no samples and which `load_buffer` never
+reads — is checked by `ingest_episodes`, so a rolled-back abort keeps its
+`game_id` permanently unable to complete.  Use `tools/replay_transaction.py`:
+snapshot before an iteration, and `restore` puts `chunks`, `game_ids`, `aborted`
+and `rng_state` back as one unit and disposes of unreferenced chunk files.
+`verify` reports all of this up front.  Both failures are pinned by
+`tests/alphazero/orchestration/test_replay_rollback.py`.
 
 ### 3.1 The actual remaining work, in order
 
