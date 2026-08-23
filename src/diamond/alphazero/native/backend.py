@@ -131,37 +131,43 @@ def policy_value_callback(
         if actions.size and (actions.min() < 0 or actions.max() >= action_space):
             raise ValueError("legal action is outside the model policy space")
 
-        # Row membership is built on the **host**, and that is the whole point.
+        # `output_size` is the whole point of this block, not a micro-detail.
         #
-        # This used to be `repeat_interleave(arange(n, device=cuda), counts_cuda)`,
-        # which reads as pure device work but is not: the output length of
-        # `repeat_interleave` depends on the *values* in `counts`, so with
-        # `counts` on the device torch must copy it back to size the result.
-        # That is a device-to-host sync in the middle of the evaluator thread,
-        # and a sync costs whatever is queued behind it -- on a busy GPU it
-        # drained the pipeline for ~1.6 ms against a ~1.3 ms forward.  Measured
-        # at batch 128: it was 93 % of everything `policy_value` cost over
-        # `value_only` (x2.27 -> x1.09).  `np.repeat` computes the same rows
-        # while the GPU keeps working, and the transfer is 41 KB.
+        # `repeat_interleave(arange(n, device=cuda), counts_cuda)` reads as pure
+        # device work but is not: the output length depends on the *values* in
+        # `counts`, so torch copies `counts` back to the host to size its own
+        # result.  That is a device-to-host sync on the evaluator thread -- the
+        # one thread §7.5 says must never stall -- and a sync costs whatever is
+        # queued behind it.  Passing the length torch would otherwise go and ask
+        # for removes it; `offsets` already knows it, for free, on the host.
         #
-        # The emptiness check moves to the host for the same reason: the old
-        # `int(counts.min())` was a second sync asking a question the numpy
+        # Measured at batch 128 against `value_only`, GPU loaded: x2.60 without
+        # `output_size`, x1.87 with.  Building `rows` with `np.repeat` on the
+        # host and transferring is exactly as fast (x1.86) and was tried first,
+        # but this keeps row construction on the device, moves no 41 KB buffer,
+        # and leaves the callback friendlier to compile/graph capture later.
+        #
+        # The emptiness check stays on the host for the same reason: the old
+        # `int(counts.min())` was a *second* sync asking a question the numpy
         # array already answers.  The native side only asks about nodes it is
         # expanding, so an empty row should be impossible -- but it would divide
         # by zero and hand MCTS NaN priors, so it stays checked.
-        counts = np.diff(offsets).astype(np.int64)
-        if counts.size and counts.min() <= 0:
+        counts_host = np.diff(offsets).astype(np.int64)
+        if counts_host.size and counts_host.min() <= 0:
             raise ValueError("a policy_value request has a row with no legal actions")
-        rows = torch.from_numpy(
-            np.repeat(np.arange(counts.size, dtype=np.int64), counts)
-        ).to(torch_device)
+        counts = torch.from_numpy(counts_host).to(torch_device)
+        rows = torch.repeat_interleave(
+            torch.arange(counts.numel(), device=torch_device),
+            counts,
+            output_size=int(actions.size),
+        )
         columns = torch.from_numpy(actions.astype(np.int64)).to(torch_device)
 
         # One flat gather over the ragged set, then a segmented softmax done
         # entirely on the device.  Row membership comes from the offsets, so no
         # padding is built.
         selected = logits[rows, columns]
-        priors = _segmented_softmax(selected, rows, counts.size)
+        priors = _segmented_softmax(selected, rows, counts_host.size)
 
         return (
             priors.to(torch.float32).cpu().numpy(),
