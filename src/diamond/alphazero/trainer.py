@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as functional
 from torch import nn
+from torch.nn import functional
 
 from .config import TrainingConfig
 from .identity import CheckpointCompatibilitySpec, ModelIdentity
-from .replay import ReplayBatch, validate_value_target
+from .replay import ReplayBatch, TrainingSample, validate_value_target
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,51 @@ class AlphaZeroTrainer:
         )
         self.training_step = 0
 
+    def train_samples(
+        self, samples: Sequence[TrainingSample], *, action_size: int
+    ) -> TrainingMetrics:
+        """Train on replay samples without materialising a dense Python policy.
+
+        `train_batch` goes through `ReplayBatch`, whose policy targets are dense
+        tuples: 512 x 5329 Python floats per batch, built one at a time and then
+        converted to a tensor one at a time. Measured on this machine that pair
+        costs 310 ms per batch, against 13.6 ms for scattering the sparse policy
+        straight into a zero tensor -- same values, 23x less time, and at 64
+        simulations a batch is cheaper than a training step should ever be
+        dominated by. See az-bench/profiles/bench_replay_pipeline.py.
+        """
+        if not samples:
+            raise ValueError("training batch must not be empty")
+        player_count = self.compatibility.identity.player_count
+        rows: list[int] = []
+        columns: list[int] = []
+        values: list[float] = []
+        for index, sample in enumerate(samples):
+            if sample.compatibility != self.compatibility:
+                raise ValueError("training batch compatibility does not match trainer")
+            validate_value_target(sample.value_target, player_count)
+            for action_id, probability in sample.sparse_policy:
+                if action_id >= action_size:
+                    raise ValueError("sample action exceeds action space")
+                rows.append(index)
+                columns.append(action_id)
+                values.append(probability)
+
+        features = torch.tensor(
+            [sample.node_features for sample in samples], dtype=torch.float32, device=self.device
+        )
+        value_targets = torch.tensor(
+            [sample.value_target for sample in samples], dtype=torch.float32, device=self.device
+        )
+        policy_targets = torch.zeros(
+            (len(samples), action_size), dtype=torch.float32, device=self.device
+        )
+        policy_targets[
+            torch.tensor(rows, dtype=torch.long, device=self.device),
+            torch.tensor(columns, dtype=torch.long, device=self.device),
+        ] = torch.tensor(values, dtype=torch.float32, device=self.device)
+        return self._train_tensors(features, policy_targets, value_targets)
+
     def train_batch(self, batch: ReplayBatch) -> TrainingMetrics:
         if batch.compatibility != self.compatibility:
             raise ValueError("training batch compatibility does not match trainer")
@@ -66,6 +112,15 @@ class AlphaZeroTrainer:
         value_targets = torch.tensor(
             batch.value_targets, dtype=torch.float32, device=self.device
         )
+        return self._train_tensors(features, policy_targets, value_targets)
+
+    def _train_tensors(
+        self,
+        features: torch.Tensor,
+        policy_targets: torch.Tensor,
+        value_targets: torch.Tensor,
+    ) -> TrainingMetrics:
+        batch_size = features.shape[0]
         if not torch.isfinite(features).all() or not torch.isfinite(value_targets).all():
             raise ValueError("training batch contains non-finite values")
         if torch.any(policy_targets < 0) or not torch.isfinite(policy_targets).all():
