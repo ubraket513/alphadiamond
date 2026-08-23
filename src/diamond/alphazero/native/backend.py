@@ -131,14 +131,35 @@ def policy_value_callback(
         if actions.size and (actions.min() < 0 or actions.max() >= action_space):
             raise ValueError("legal action is outside the model policy space")
 
-        counts = torch.from_numpy(np.diff(offsets).astype(np.int64)).to(torch_device)
-        if int(counts.min()) <= 0:
-            # The native side only asks about nodes it is expanding, and those
-            # always have a legal move.  An empty row would divide by zero and
-            # return NaN priors, which MCTS would happily search on.
+        # `output_size` is the whole point of this block, not a micro-detail.
+        #
+        # `repeat_interleave(arange(n, device=cuda), counts_cuda)` reads as pure
+        # device work but is not: the output length depends on the *values* in
+        # `counts`, so torch copies `counts` back to the host to size its own
+        # result.  That is a device-to-host sync on the evaluator thread -- the
+        # one thread §7.5 says must never stall -- and a sync costs whatever is
+        # queued behind it.  Passing the length torch would otherwise go and ask
+        # for removes it; `offsets` already knows it, for free, on the host.
+        #
+        # Measured at batch 128 against `value_only`, GPU loaded: x2.60 without
+        # `output_size`, x1.87 with.  Building `rows` with `np.repeat` on the
+        # host and transferring is exactly as fast (x1.86) and was tried first,
+        # but this keeps row construction on the device, moves no 41 KB buffer,
+        # and leaves the callback friendlier to compile/graph capture later.
+        #
+        # The emptiness check stays on the host for the same reason: the old
+        # `int(counts.min())` was a *second* sync asking a question the numpy
+        # array already answers.  The native side only asks about nodes it is
+        # expanding, so an empty row should be impossible -- but it would divide
+        # by zero and hand MCTS NaN priors, so it stays checked.
+        counts_host = np.diff(offsets).astype(np.int64)
+        if counts_host.size and counts_host.min() <= 0:
             raise ValueError("a policy_value request has a row with no legal actions")
+        counts = torch.from_numpy(counts_host).to(torch_device)
         rows = torch.repeat_interleave(
-            torch.arange(counts.numel(), device=torch_device), counts
+            torch.arange(counts.numel(), device=torch_device),
+            counts,
+            output_size=int(actions.size),
         )
         columns = torch.from_numpy(actions.astype(np.int64)).to(torch_device)
 
@@ -146,7 +167,7 @@ def policy_value_callback(
         # entirely on the device.  Row membership comes from the offsets, so no
         # padding is built.
         selected = logits[rows, columns]
-        priors = _segmented_softmax(selected, rows, counts.numel())
+        priors = _segmented_softmax(selected, rows, counts_host.size)
 
         return (
             priors.to(torch.float32).cpu().numpy(),
