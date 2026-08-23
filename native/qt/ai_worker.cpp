@@ -13,15 +13,15 @@ NativeAiWorker::~NativeAiWorker() {
     }
 }
 
-void NativeAiWorker::start(quint64 generation, std::function<int()> task) {
+void NativeAiWorker::start(quint64 generation, std::function<AiSearchResult()> task) {
     if (running_.exchange(true)) return;
     cancel_requested_.store(false);
     thread_ = QThread::create([this, generation, task = std::move(task)]() mutable {
         try {
-            const int action = task();
+            const AiSearchResult result = task();
             running_.store(false);
             if (cancel_requested_.load()) Q_EMIT cancelled(generation);
-            else Q_EMIT resultReady(generation, action);
+            else Q_EMIT resultReady(generation, result);
         } catch (const std::exception& error) {
             running_.store(false);
             Q_EMIT failed(generation, QString::fromUtf8(error.what()));

@@ -8,6 +8,7 @@
 #include <QVector>
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 
 #include "soo/state.hpp"
@@ -15,6 +16,7 @@
 
 class QTimer;
 class NativeMovePlayer;
+class SooSearchRuntime;
 
 class GeometryModel final : public QObject {
     Q_OBJECT
@@ -112,6 +114,11 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList aiSeats READ aiSeats NOTIFY changed)
     Q_PROPERTY(bool nativeRulesReady READ nativeRulesReady CONSTANT)
     Q_PROPERTY(bool aiThinking READ aiThinking NOTIFY changed)
+    Q_PROPERTY(QVariantList positionTelemetry READ positionTelemetry NOTIFY changed)
+    Q_PROPERTY(QVariantList decisionTelemetry READ decisionTelemetry NOTIFY changed)
+    Q_PROPERTY(QVariantMap latestSearchCompute READ latestSearchCompute NOTIFY changed)
+    Q_PROPERTY(bool analysisAvailable READ analysisAvailable NOTIFY changed)
+    Q_PROPERTY(int perspectivePlayerId READ perspectivePlayerId WRITE setPerspectivePlayerId NOTIFY changed)
 
   public:
     explicit NativeController(QObject* parent = nullptr);
@@ -165,6 +172,11 @@ class NativeController final : public QObject {
     bool nativeRulesReady() const { return soo::mutable_topology().configured; }
     bool aiThinking() const { return ai_thinking_; }
     int aiSearchStartCount() const { return ai_search_start_count_; }
+    QVariantList positionTelemetry() const;
+    QVariantList decisionTelemetry() const;
+    QVariantMap latestSearchCompute() const { return latest_search_compute_; }
+    bool analysisAvailable() const;
+    int perspectivePlayerId() const { return perspective_player_id_; }
 
     Q_INVOKABLE QVariantList seatColorsFor(int count) const;
     Q_INVOKABLE void selectPosition(int position);
@@ -185,6 +197,7 @@ class NativeController final : public QObject {
     Q_INVOKABLE bool workerSmoke();
     Q_INVOKABLE bool failureSmoke();
     Q_INVOKABLE bool sooSmoke();
+    Q_INVOKABLE void setPerspectivePlayerId(int playerId);
 
   Q_SIGNALS:
     void changed();
@@ -205,6 +218,10 @@ class NativeController final : public QObject {
     void stopAnimation();
     void finishMove();
     void startAiTurn();
+    void startHumanAnalysis();
+    void startSearch(bool selectMove);
+    void appendTelemetryForCommit(uint8_t player, int32_t action);
+    void publishLatestCompute(const SearchTelemetry& telemetry);
     void announceFinishers();
     void fail(const QString& message);
     QString playerColor(uint8_t id) const;
@@ -242,10 +259,23 @@ class NativeController final : public QObject {
     int ai_search_start_count_ = 0;
     quint64 generation_ = 0;
     NativeAiWorker* ai_worker_;
+    // A running worker keeps the runtime alive even if the window/controller
+    // is closed while a search is still in flight.
+    std::shared_ptr<SooSearchRuntime> soo_runtime_;
     NativeMovePlayer* sound_player_;
     GeometryModel* geometry_;
     ContractListModel* board_model_;
     ContractListModel* piece_model_;
     ContractListModel* history_model_;
     ContractListModel* player_model_;
+    enum class SearchPurpose : uint8_t { None, AiMove, HumanAnalysis };
+    SearchPurpose search_purpose_ = SearchPurpose::None;
+    bool analysis_thinking_ = false;
+    std::optional<SearchTelemetry> pending_telemetry_;
+    int pending_telemetry_turn_ = -1;
+    int pending_telemetry_player_ = 0;
+    QVariantList position_telemetry_;
+    QVariantList decision_telemetry_;
+    QVariantMap latest_search_compute_;
+    int perspective_player_id_ = 1;
 };

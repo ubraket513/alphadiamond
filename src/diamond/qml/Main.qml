@@ -49,7 +49,15 @@ ApplicationWindow {
         onSaveRequested: saveDialog.open()
         onLoadRequested: loadDialog.open()
         onSoundsRequested: soundDialog.open()
+        onHistoryRequested: historyDrawer.open = true
         onAboutRequested: aboutDialog.open()
+    }
+
+    HistoryDrawer {
+        id: historyDrawer
+        anchors.fill: parent
+        controller: window.ctrl
+        z: 9000
     }
 
     // -- body ------------------------------------------------------------

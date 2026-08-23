@@ -41,6 +41,15 @@ struct SearchResult {
     // root_actions.  Exposed because the mixture is otherwise unobservable
     // from outside, and an unobservable stochastic path cannot be gated.
     std::vector<double> root_priors;
+    // Value returned by the root's existing evaluator call. Both root values
+    // use the canonical root player-to-act perspective; no extra inference is
+    // performed to populate either field.
+    double root_network_value = 0.0;
+    // Visit-weighted mean of the final root-edge Q values, also from the
+    // canonical root player-to-act perspective.
+    double root_mean_value = 0.0;
+    // Wall time spent inside Evaluator::evaluate during this search.
+    double neural_evaluation_ms = 0.0;
     uint32_t simulations_run = 0;
     uint32_t evaluator_calls = 0;
     uint32_t nodes_created = 0;
@@ -113,6 +122,9 @@ class SearchSession {
     // Caught by the Gate F episode comparison; nothing cheaper found it.
     const Encoded& root_features() const { return root_encoded_; }
     void supply(const EvalOutcome& outcome) { pending_outcome_ = outcome; }
+    void add_neural_evaluation_ms(double milliseconds) {
+        result_.neural_evaluation_ms += milliseconds;
+    }
 
     const SearchResult& result() const { return result_; }
     const State& root_state() const { return root_state_; }

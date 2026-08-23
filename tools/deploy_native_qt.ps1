@@ -142,16 +142,32 @@ function Invoke-PackagedSmoke([string]$Argument) {
         "CONDA_PREFIX" = $null
         "PYTHONPATH" = $null
     }
-    $process = Start-Process -FilePath (Join-Path $destination "diamond_qt.exe") `
-        -ArgumentList $Argument -WorkingDirectory $destination -WindowStyle Hidden `
-        -Environment $cleanEnvironment -PassThru -Wait
+    # Start-Process gained -Environment in PowerShell 7.4. Use the .NET API so
+    # packaging works unchanged in Windows PowerShell 5.1 and keeps the smoke
+    # process isolated from development-machine DLL/QML paths in both shells.
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = Join-Path $destination "diamond_qt.exe"
+    $startInfo.Arguments = $Argument
+    $startInfo.WorkingDirectory = $destination
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    foreach ($name in $cleanEnvironment.Keys) {
+        if ($null -eq $cleanEnvironment[$name]) {
+            [void]$startInfo.EnvironmentVariables.Remove($name)
+        } else {
+            $startInfo.EnvironmentVariables[$name] = $cleanEnvironment[$name]
+        }
+    }
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $process.WaitForExit()
     if ($process.ExitCode -ne 0) {
         throw "Packaged runtime smoke failed ($Argument), exit code $($process.ExitCode)."
     }
 }
 
-foreach ($argument in @("--smoke", "--game-smoke", "--worker-smoke",
-        "--failure-smoke", "--sound-smoke")) {
+foreach ($argument in @("--smoke", "--game-smoke", "--worker-smoke", "--rotation-smoke",
+        "--analysis-smoke", "--failure-smoke", "--sound-smoke")) {
     Invoke-PackagedSmoke $argument
 }
 if ($WithSoo) { Invoke-PackagedSmoke "--soo-smoke" }

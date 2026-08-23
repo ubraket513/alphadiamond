@@ -4,7 +4,9 @@
 #include <QIcon>
 #include <QPixmap>
 #include <QImage>
+#include <QMouseEvent>
 #include <QQuickImageProvider>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -13,6 +15,8 @@
 #include <QPen>
 #include <QTimer>
 
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 #include "native_controller.hpp"
@@ -149,6 +153,143 @@ int main(int argc, char* argv[]) {
     }
     for (int i = 1; i < argc; ++i) {
         const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (argument == QStringLiteral("--analysis-smoke")) {
+            const auto require_analysis = [](bool condition, const char* message) {
+                if (!condition) {
+                    std::fprintf(stderr, "analysis smoke failed: %s\n", message);
+                    std::fflush(stderr);
+                }
+                return condition;
+            };
+            QObject* console = root->findChild<QObject*>(QStringLiteral("analysisConsole"));
+            QObject* outlook = root->findChild<QObject*>(QStringLiteral("positionOutlookPanel"));
+            QObject* decision = root->findChild<QObject*>(QStringLiteral("decisionValuePanel"));
+            QObject* preference = root->findChild<QObject*>(QStringLiteral("movePreferencePanel"));
+            QObject* compute = root->findChild<QObject*>(QStringLiteral("searchComputePanel"));
+            QObject* title_bar = root->findChild<QObject*>(QStringLiteral("titleBar"));
+            QObject* drawer = root->findChild<QObject*>(QStringLiteral("historyDrawer"));
+            QObject* history = root->findChild<QObject*>(QStringLiteral("drawerHistoryPanel"));
+            if (!require_analysis(console && outlook && decision && preference && compute,
+                                  "analysis console components are missing") ||
+                !require_analysis(title_bar && drawer && history, "history drawer is missing")) return 1;
+            if (!QMetaObject::invokeMethod(title_bar, "historyRequested")) {
+                std::fprintf(stderr, "analysis smoke failed: history command is not wired\n");
+                return 1;
+            }
+            QCoreApplication::processEvents();
+            if (!require_analysis(drawer->property("open").toBool(),
+                                  "history drawer did not open")) return 1;
+            drawer->setProperty("open", false);
+            QCoreApplication::processEvents();
+            return require_analysis(!drawer->property("open").toBool(),
+                                    "history drawer did not close") ? 0 : 1;
+        }
+        if (argument == QStringLiteral("--rotation-smoke")) {
+            const auto require_rotation = [](bool condition, const char* message) {
+                if (!condition) {
+                    std::fprintf(stderr, "rotation smoke failed: %s\n", message);
+                    std::fflush(stderr);
+                }
+                return condition;
+            };
+            QObject* rotation_control = root->findChild<QObject*>(
+                QStringLiteral("boardRotationControl"));
+            QObject* rotation_dial = root->findChild<QObject*>(
+                QStringLiteral("boardRotationDial"));
+            QObject* rotating_board = root->findChild<QObject*>(
+                QStringLiteral("rotatingBoard"));
+            if (!require_rotation(rotation_control && rotation_dial && rotating_board,
+                                  "QML rotation objects are missing")) return 1;
+
+            rotation_dial->setProperty("value", 137.5);
+            QCoreApplication::processEvents();
+            if (!require_rotation(
+                    std::abs(rotating_board->property("rotation").toDouble() - 137.5) <= 0.01,
+                    "clockwise angle did not reach the board")) return 1;
+
+            rotation_dial->setProperty("value", -121.25);
+            QCoreApplication::processEvents();
+            if (!require_rotation(
+                    std::abs(rotating_board->property("rotation").toDouble() + 121.25) <= 0.01,
+                    "counterclockwise angle did not reach the board")) return 1;
+
+            auto* board_model = qobject_cast<ContractListModel*>(controller.boardModel());
+            if (!require_rotation(board_model, "board model is unavailable")) return 1;
+            int occupied_human_position = -1;
+            for (const QVariant& row : board_model->rows()) {
+                const QVariantMap values = row.toMap();
+                if (values.value(QStringLiteral("occupant")).toInt() ==
+                    controller.currentPlayerId()) {
+                    occupied_human_position = values.value(
+                        QStringLiteral("positionId")).toInt();
+                    break;
+                }
+            }
+            auto* rotating_item = qobject_cast<QQuickItem*>(rotating_board);
+            const QString hole_name = QStringLiteral("boardHole-%1").arg(
+                occupied_human_position);
+            const auto find_visual_item = [&hole_name](auto&& self, QQuickItem* parent)
+                -> QQuickItem* {
+                if (!parent) return nullptr;
+                if (parent->objectName() == hole_name) return parent;
+                for (QQuickItem* child : parent->childItems())
+                    if (QQuickItem* match = self(self, child)) return match;
+                return nullptr;
+            };
+            auto* hole = find_visual_item(find_visual_item, rotating_item);
+            auto* window = qobject_cast<QQuickWindow*>(root);
+            if (!require_rotation(occupied_human_position >= 0, "no human piece was found") ||
+                !require_rotation(hole, "rotated hole delegate is unavailable") ||
+                !require_rotation(window, "QML root is not a window")) return 1;
+
+            rotation_dial->setProperty("value", 73.25);
+            QCoreApplication::processEvents();
+            const QPointF scene_position = hole->mapToScene(
+                QPointF(hole->width() / 2.0, hole->height() / 2.0));
+            QMouseEvent press(QEvent::MouseButtonPress, scene_position, scene_position,
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QMouseEvent release(QEvent::MouseButtonRelease, scene_position, scene_position,
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &press);
+            QCoreApplication::sendEvent(window, &release);
+            QCoreApplication::processEvents();
+            if (!require_rotation(controller.selectedPosition() == occupied_human_position,
+                                  "clicking the rotated hole did not select its piece")) return 1;
+
+            QList<QQuickItem*> holes;
+            const auto collect_holes = [&holes](auto&& self, QQuickItem* parent) -> void {
+                if (!parent) return;
+                if (parent->objectName().startsWith(QStringLiteral("boardHole-")))
+                    holes.push_back(parent);
+                for (QQuickItem* child : parent->childItems()) self(self, child);
+            };
+            collect_holes(collect_holes, rotating_item);
+            QQuickItem* board_item = rotating_item->parentItem();
+            if (!require_rotation(holes.size() == soo::kBoardSize && board_item,
+                                  "not every board hole is present in the rotating surface")) return 1;
+            for (int angle = -180; angle <= 180; angle += 15) {
+                rotation_dial->setProperty("value", angle);
+                QCoreApplication::processEvents();
+                for (QQuickItem* candidate : holes) {
+                    const QPointF center = candidate->mapToItem(
+                        board_item, QPointF(candidate->width() / 2.0,
+                                            candidate->height() / 2.0));
+                    const double radius = candidate->property("socketRadius").toDouble();
+                    if (!require_rotation(center.x() - radius >= 0.0 &&
+                                          center.y() - radius >= 0.0 &&
+                                          center.x() + radius <= board_item->width() &&
+                                          center.y() + radius <= board_item->height(),
+                                          "a rotated socket leaves the board panel")) return 1;
+                }
+            }
+
+            if (!require_rotation(QMetaObject::invokeMethod(rotation_control, "resetRotation"),
+                                  "resetRotation is not invokable")) return 1;
+            QCoreApplication::processEvents();
+            return require_rotation(
+                std::abs(rotating_board->property("rotation").toDouble()) < 0.01,
+                "reset did not return the board to zero") ? 0 : 1;
+        }
         if (argument == QStringLiteral("--sound-smoke")) {
             QObject::connect(&controller, &NativeController::changed, &app, [&controller, &app] {
                 if (controller.soundLoaded()) app.exit(0);

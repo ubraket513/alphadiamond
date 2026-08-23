@@ -16,6 +16,7 @@ import Style
 // is the only item that spans the whole window.
 Rectangle {
     id: root
+    objectName: "titleBar"
 
     required property var controller
     required property var window
@@ -26,6 +27,7 @@ Rectangle {
     signal saveRequested()
     signal loadRequested()
     signal soundsRequested()
+    signal historyRequested()
     signal aboutRequested()
 
     readonly property bool maximised: window.visibility === Window.Maximized
@@ -155,6 +157,7 @@ Rectangle {
                     label: root.panelVisible ? "Hide side panel" : "Show side panel",
                     action: "panel"
                 },
+                { label: "History", action: "history" },
                 { separator: true },
                 // Muting lives in the Sounds dialog alongside the volume; a
                 // second entry here would be a second place to change one
@@ -164,6 +167,8 @@ Rectangle {
             onTriggered: function (action) {
                 if (action === "panel")
                     panelToggle.on = !panelToggle.on
+                else if (action === "history")
+                    root.historyRequested()
                 else if (action === "sounds")
                     root.soundsRequested()
             }

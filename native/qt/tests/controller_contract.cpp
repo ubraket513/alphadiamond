@@ -14,6 +14,7 @@
 #include <functional>
 
 #include "native_controller.hpp"
+#include "search_telemetry.hpp"
 #include "soo/rules.hpp"
 
 namespace {
@@ -68,12 +69,60 @@ int main(int argc, char** argv) {
 #endif
     QGuiApplication app(argc, argv);
     qInfo("controller contract: startup");
+
+    SearchTelemetry telemetry;
+    telemetry.total_ms = 10.0;
+    telemetry.neural_ms = 6.0;
+    telemetry.simulations = 20;
+    telemetry.evaluator_calls = 4;
+    telemetry.actions = {
+        ActionTelemetry{101, 0.25, -0.5, 3, 0.3},
+        ActionTelemetry{202, 0.75, 0.5, 7, 0.7},
+    };
+    const SearchComputeMetrics compute = compute_search_metrics(telemetry);
+    if (!require(std::abs(compute.mcts_rules_ms - 4.0) < 1e-12 &&
+                 std::abs(compute.neural_fraction - 0.6) < 1e-12 &&
+                 std::abs(compute.simulations_per_second - 2000.0) < 1e-9 &&
+                 std::abs(compute.average_neural_evaluation_ms - 1.5) < 1e-12,
+                 "search compute accounting is incorrect")) return 1;
+    const SearchComputeMetrics empty_compute = compute_search_metrics(SearchTelemetry{});
+    if (!require(empty_compute.neural_fraction == 0.0 &&
+                 empty_compute.mcts_rules_fraction == 0.0 &&
+                 empty_compute.simulations_per_second == 0.0 &&
+                 empty_compute.evaluations_per_second == 0.0 &&
+                 empty_compute.average_neural_evaluation_ms == 0.0,
+                 "empty search compute divides by zero")) return 1;
+    const auto selected = action_telemetry_for(telemetry, 202);
+    if (!require(selected && selected->prior == 0.75 && selected->q == 0.5 &&
+                 selected->visits == 7 && selected->visit_fraction == 0.7,
+                 "selected action telemetry lost root-vector alignment")) return 1;
+    const double p1_value = normalize_soo_value(0.4, 1, 1);
+    const double p2_value = normalize_soo_value(0.4, 1, 2);
+    if (!require(p1_value == -p2_value &&
+                 std::abs(soo_estimate(p1_value) + soo_estimate(p2_value) - 1.0) < 1e-12 &&
+                 normalize_soo_value(-0.4, 2, 1) == p1_value,
+                 "fixed-perspective Soo normalization is incorrect")) return 1;
+    NativeAiWorker typed_worker;
+    bool typed_result_ready = false;
+    QObject::connect(&typed_worker, &NativeAiWorker::resultReady,
+                     [&typed_result_ready](quint64 generation, const AiSearchResult& result) {
+        typed_result_ready = generation == 77 && result.selected_action == 202 &&
+                             result.telemetry.simulations == 20;
+    });
+    typed_worker.start(77, [telemetry] {
+        return AiSearchResult{202, telemetry};
+    });
+    if (!require(pump_until(app, [&typed_result_ready] { return typed_result_ready; }),
+                 "worker did not deliver structured telemetry with its action")) return 1;
+    qInfo("controller contract: telemetry math");
+
     NativeController controller;
     if (!require(controller.nativeRulesReady(), "native topology did not load")) return 1;
     const QMetaObject* meta = controller.metaObject();
     for (const char* property : {"phase", "currentPlayerId", "isCurrentPlayerAi",
              "statusMessage", "errorMessage", "winnerId", "winnerName", "resultSummary",
-             "proposalHopCount", "lastMoveText"}) {
+             "proposalHopCount", "lastMoveText", "positionTelemetry", "decisionTelemetry",
+             "latestSearchCompute", "analysisAvailable", "perspectivePlayerId"}) {
         if (!require(meta->indexOfProperty(property) >= 0, "Python controller property is missing")) return 1;
     }
     for (const char* signal : {"errorRaised(QString)", "gameFinished(int)", "playerFinished(int,int)"}) {
@@ -186,6 +235,9 @@ int main(int argc, char** argv) {
 
     auto* history = qobject_cast<QAbstractItemModel*>(controller.historyModel());
     if (!require(history && history->rowCount() == 1, "confirmed move is missing from history")) return 1;
+    if (!require(controller.positionTelemetry().size() == 1 &&
+                 controller.decisionTelemetry().size() == 1,
+                 "human commit did not append one independent telemetry row")) return 1;
     if (!require(has_role(history, "playerId") && has_role(history, "isAi"),
                  "history parity roles are missing")) return 1;
     const int last_source_role = role_for(board, QByteArrayLiteral("isLastMoveSource"));
@@ -202,15 +254,20 @@ int main(int argc, char** argv) {
     auto* loaded_history = qobject_cast<QAbstractItemModel*>(loaded_controller.historyModel());
     if (!require(loaded_controller.turnNumber() == controller.turnNumber() &&
                  loaded_history && loaded_history->rowCount() == history->rowCount() &&
-                 loaded_controller.canUndo(), "save/load did not restore history and undo state")) return 1;
+                 loaded_controller.canUndo() && loaded_controller.positionTelemetry().isEmpty(),
+                 "save/load did not restore history or clear ephemeral telemetry")) return 1;
 
     controller.undoLastMove();
     if (!require(controller.turnNumber() == turn_before && history->rowCount() == 0,
                  "undo did not restore the prior state and history")) return 1;
+    if (!require(controller.positionTelemetry().isEmpty() &&
+                 controller.decisionTelemetry().isEmpty(),
+                 "undo did not truncate telemetry independently")) return 1;
     const QString old_game_label = controller.gameLabel();
     controller.newGame();
     if (!require(controller.turnNumber() == 1 && controller.gameLabel() != old_game_label,
                  "new game did not reset and increment the game label")) return 1;
+    if (!require(controller.positionTelemetry().isEmpty(), "new game did not clear telemetry")) return 1;
     qInfo("controller contract: human controller");
 
     soo::State jump_state;
@@ -307,6 +364,10 @@ int main(int argc, char** argv) {
     const int ai_turn = ai_controller.turnNumber();
     const QString first_ai_move = ai_controller.proposalSummary();
     if (!require(ai_controller.canConfirm(), "AI proposal cannot be confirmed")) return 1;
+    if (!require(ai_controller.analysisAvailable() &&
+                 !ai_controller.latestSearchCompute().isEmpty() &&
+                 ai_controller.positionTelemetry().size() == 1,
+                 "completed AI search did not publish pending telemetry")) return 1;
 
     ai_controller.thinkAgain();
     if (!require(pump_until(app, [&ai_controller, &first_ai_move] {
@@ -320,6 +381,9 @@ int main(int argc, char** argv) {
     if (!require(pump_until(app, [&ai_controller, ai_turn] {
             return ai_controller.turnNumber() == ai_turn + 1 && ai_controller.canSelect();
         }, 5000), "confirming the AI proposal did not finish its move")) return 1;
+    if (!require(ai_controller.positionTelemetry().size() == 2 &&
+                 ai_controller.decisionTelemetry().size() == 2,
+                 "confirmed AI move did not append its search telemetry")) return 1;
     qInfo("controller contract: AI controller");
 
     NativeController failure_controller;

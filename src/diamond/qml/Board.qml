@@ -10,6 +10,7 @@ Item {
     required property var controller
 
     readonly property var geo: controller.geometry
+    readonly property real rotationAngle: rotationControl.angle
 
     property var _bounds: ({ minX: -1, minY: -1, maxX: 1, maxY: 1 })
     property var _edges: []
@@ -67,6 +68,16 @@ Item {
         border.color: Theme.border
         radius: Theme.radiusLarge
     }
+
+    // Rotate the complete interactive board as one coordinate space. Qt maps
+    // pointer events through this transform, so holes and pieces remain
+    // selectable at their visible positions without changing engine IDs.
+    Item {
+        id: rotatingBoard
+        objectName: "rotatingBoard"
+        anchors.fill: parent
+        transformOrigin: Item.Center
+        rotation: rotationControl.angle
 
     // Camp regions: a sharp triangle per camp, vertices sitting exactly on the
     // camp's three corner holes.
@@ -210,6 +221,7 @@ Item {
             required property real unitX
             required property real unitY
 
+            objectName: "boardHole-" + positionId
             z: 2
             unitScale: root.unitScale
             interactive: root.controller.canSelect
@@ -283,5 +295,16 @@ Item {
             width: root.unitScale
             height: root.unitScale
         }
+    }
+
+    }
+
+    BoardRotationControl {
+        id: rotationControl
+        z: 100
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: Theme.spacingLarge
+        anchors.bottomMargin: Theme.spacingLarge
     }
 }

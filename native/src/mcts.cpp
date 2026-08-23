@@ -1,5 +1,6 @@
 #include "soo/mcts.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 
@@ -159,6 +160,14 @@ void SearchSession::finalize() {
     for (const uint32_t visits : result_.visit_counts) {
         result_.policy.push_back(static_cast<double>(visits) / static_cast<double>(total));
     }
+    if (total > 0) {
+        double weighted_q = 0.0;
+        for (size_t index = 0; index < result_.q_values.size(); ++index) {
+            weighted_q += result_.q_values[index] *
+                          static_cast<double>(result_.visit_counts[index]);
+        }
+        result_.root_mean_value = weighted_q / static_cast<double>(total);
+    }
 
     // puct.select_from_visits.
     if (temperature_ > 0.0) {
@@ -207,7 +216,7 @@ SearchSession::Status SearchSession::advance() {
                 return Status::NeedsEvaluation;
 
             case Phase::AwaitRoot:
-                complete_expansion(root_);
+                result_.root_network_value = complete_expansion(root_);
                 // Python mixes the noise into the priors dict before any child
                 // is created, so the very first selection already sees it.
                 // Applying it to the edges immediately after they are pushed is
@@ -275,7 +284,12 @@ MCTS2P::MCTS2P(const Match& match, Evaluator& evaluator, const MCTSConfig& confi
 SearchResult MCTS2P::run(const State& state, double temperature, bool trace) {
     session_.begin(state, temperature, trace);
     while (session_.advance() == SearchSession::Status::NeedsEvaluation) {
-        session_.supply(evaluator_.evaluate(session_.pending_features(), session_.pending_actions()));
+        const auto started = std::chrono::steady_clock::now();
+        auto outcome = evaluator_.evaluate(session_.pending_features(), session_.pending_actions());
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        session_.supply(outcome);
+        session_.add_neural_evaluation_ms(
+            std::chrono::duration<double, std::milli>(elapsed).count());
     }
     return session_.result();
 }

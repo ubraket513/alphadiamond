@@ -10,6 +10,10 @@ endif()
 add_library(diamond_qt_backend STATIC
     ai_worker.cpp
     ai_worker.hpp
+    search_telemetry.cpp
+    search_telemetry.hpp
+    soo_search_runtime.cpp
+    soo_search_runtime.hpp
     native_controller.cpp
     native_controller.hpp
     native_move_player.cpp
@@ -51,8 +55,15 @@ qt_add_resources(diamond_qt qml_resources
         "${QML_ROOT}/ActionButton.qml"
         "${QML_ROOT}/AppDialog.qml"
         "${QML_ROOT}/Board.qml"
+        "${QML_ROOT}/BoardRotationControl.qml"
         "${QML_ROOT}/GamePanel.qml"
         "${QML_ROOT}/AiPanel.qml"
+        "${QML_ROOT}/TelemetryChart.qml"
+        "${QML_ROOT}/PositionOutlookPanel.qml"
+        "${QML_ROOT}/DecisionValuePanel.qml"
+        "${QML_ROOT}/MovePreferencePanel.qml"
+        "${QML_ROOT}/SearchComputePanel.qml"
+        "${QML_ROOT}/HistoryDrawer.qml"
         "${QML_ROOT}/Hole.qml"
         "${QML_ROOT}/HistoryPanel.qml"
         "${QML_ROOT}/Icon.qml"
@@ -108,11 +119,12 @@ if(BUILD_TESTING)
         target_compile_options(diamond_qt_controller_contract PRIVATE /W4)
     endif()
     add_test(NAME diamond_qt_controller_contract COMMAND diamond_qt_controller_contract)
+    add_test(NAME diamond_qt_analysis_smoke COMMAND diamond_qt --analysis-smoke)
     get_filename_component(DIAMOND_QT_ENV_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
-    set_tests_properties(diamond_qt_controller_contract PROPERTIES
+    set_tests_properties(diamond_qt_controller_contract diamond_qt_analysis_smoke PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         ENVIRONMENT
-            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins"
+            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins;QT_FORCE_STDERR_LOGGING=1"
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/bin;PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/lib/qt6/bin"
     )

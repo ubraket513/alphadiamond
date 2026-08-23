@@ -43,6 +43,7 @@ QtObject {
     readonly property color surfaceAlt:   "#FAFAFC"
     readonly property color border:       systemGray5
     readonly property color borderStrong: systemGray3
+    readonly property color shadowSoft:   "#18000000"
 
     // -- board ------------------------------------------------------------
     readonly property color boardBackground: "#FFFFFF"

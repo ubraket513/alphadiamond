@@ -104,6 +104,24 @@ void validate_result(const soo::SearchResult& result,
     if (std::abs(prior_sum - 1.0) > 1e-6) {
         throw std::runtime_error("native MCTS root priors are not normalized");
     }
+    if (!std::isfinite(result.root_network_value) ||
+        !std::isfinite(result.root_mean_value)) {
+        throw std::runtime_error("native MCTS root values are not finite");
+    }
+    if (!(result.neural_evaluation_ms >= 0.0)) {
+        throw std::runtime_error("native MCTS neural timing is invalid");
+    }
+    uint64_t visits = 0;
+    double weighted_q = 0.0;
+    for (size_t index = 0; index < result.root_actions.size(); ++index) {
+        visits += result.visit_counts[index];
+        weighted_q += result.q_values[index] * result.visit_counts[index];
+    }
+    const double expected_root_mean = visits > 0
+        ? weighted_q / static_cast<double>(visits) : 0.0;
+    if (std::abs(result.root_mean_value - expected_root_mean) > 1e-12) {
+        throw std::runtime_error("native MCTS root mean is not visit-weighted root Q");
+    }
 }
 
 }  // namespace

@@ -8,10 +8,11 @@ import Style
 // The inner column is deliberately wrapped in a Flickable of fixed height: a
 // bare ColumnLayout propagates its minimum height outwards, which would stretch
 // the whole window row (and the board with it) whenever a panel grows. Here the
-// column takes the panel height when the content fits — so the history list
-// absorbs the slack — and scrolls only when it genuinely cannot fit.
+// column takes the panel height when the content fits and scrolls only when it
+// genuinely cannot fit.
 Item {
     id: root
+    objectName: "analysisConsole"
 
     required property var controller
 
@@ -44,13 +45,11 @@ Item {
             spacing: Theme.spacing
 
             GamePanel { controller: root.controller }
-            AiPanel   { controller: root.controller }
-
-            HistoryPanel {
-                controller: root.controller
-                Layout.fillHeight: true
-                Layout.minimumHeight: 96
-            }
+            PositionOutlookPanel { controller: root.controller }
+            DecisionValuePanel { controller: root.controller }
+            MovePreferencePanel { controller: root.controller }
+            SearchComputePanel { controller: root.controller }
+            AiPanel { controller: root.controller }
         }
     }
 }

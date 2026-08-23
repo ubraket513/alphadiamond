@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
-#include <mutex>
 #include <numeric>
 #include <map>
 #include <tuple>
@@ -25,25 +24,7 @@
 #include "soo/board.hpp"
 #include "soo/rules.hpp"
 #include "native_move_player.hpp"
-
-#ifdef DIAMOND_QT_HAS_SOO
-#include "diamond_model/deployment_artifact.hpp"
-#include "diamond_model/soo_evaluator.hpp"
-#include "soo/mcts.hpp"
-
-namespace {
-void configure_torch_cpu() {
-    static std::once_flag configured;
-    std::call_once(configured, [] {
-        bool ok = false;
-        const int requested = qEnvironmentVariableIntValue("DIAMOND_TORCH_THREADS", &ok);
-        const int threads = ok && requested > 0 ? requested : 1;
-        torch::set_num_threads(threads);
-        torch::set_num_interop_threads(1);
-    });
-}
-}
-#endif
+#include "soo_search_runtime.hpp"
 
 namespace {
 struct BoardPoint { int x; int y; int z; };
@@ -241,14 +222,29 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     history_model_ = new ContractListModel("history", this);
     player_model_ = new ContractListModel("players", this);
     ai_worker_ = new NativeAiWorker(this);
+    soo_runtime_ = std::make_shared<SooSearchRuntime>();
     sound_player_ = new NativeMovePlayer(this);
     connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
     animation_timer_ = new QTimer(this);
     animation_timer_->setInterval(140);
     connect(animation_timer_, &QTimer::timeout, this, &NativeController::animationTick);
     connect(ai_worker_, &NativeAiWorker::resultReady, this,
-            [this](quint64 generation, int action) {
-                if (generation != generation_ || !ai_thinking_) return;
+            [this](quint64 generation, const AiSearchResult& result) {
+                if (generation != generation_) return;
+                const SearchPurpose purpose = search_purpose_;
+                search_purpose_ = SearchPurpose::None;
+                if (purpose == SearchPurpose::HumanAnalysis) {
+                    analysis_thinking_ = false;
+                    if (state_.turn_number == pending_telemetry_turn_ &&
+                        state_.current_player == pending_telemetry_player_) {
+                        pending_telemetry_ = result.telemetry;
+                        publishLatestCompute(result.telemetry);
+                    }
+                    Q_EMIT changed();
+                    return;
+                }
+                if (purpose != SearchPurpose::AiMove || !ai_thinking_) return;
+                const int action = result.selected_action;
                 std::vector<int32_t> legal;
                 soo::legal_action_ids(state_, legal);
                 if (std::find(legal.begin(), legal.end(), action) == legal.end()) {
@@ -262,6 +258,10 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 }
                 ai_thinking_ = false;
                 ai_failure_latched_ = false;
+                pending_telemetry_ = result.telemetry;
+                pending_telemetry_turn_ = state_.turn_number;
+                pending_telemetry_player_ = state_.current_player;
+                publishLatestCompute(result.telemetry);
                 selected_position_ = -1;
                 legal_actions_.clear();
                 ai_status_ = QStringLiteral("Proposal ready");
@@ -275,6 +275,8 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
             [this](quint64 generation, const QString& message) {
                 if (generation != generation_) return;
                 ai_thinking_ = false;
+                analysis_thinking_ = false;
+                search_purpose_ = SearchPurpose::None;
                 ai_failure_latched_ = true;
                 ai_restart_when_idle_ = false;
                 ai_status_ = QStringLiteral("Error");
@@ -285,6 +287,8 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
             [this](quint64 generation) {
                 if (generation == generation_) {
                     ai_thinking_ = false;
+                    analysis_thinking_ = false;
+                    search_purpose_ = SearchPurpose::None;
                     ai_status_ = QStringLiteral("Ready");
                     Q_EMIT changed();
                 }
@@ -311,6 +315,7 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
         }
     }
     refreshModels();
+    QTimer::singleShot(0, this, &NativeController::startHumanAnalysis);
 }
 
 NativeController::~NativeController() { shutdown(); }
@@ -320,6 +325,70 @@ void NativeController::cancelSearch() {
     ai_restart_when_idle_ = false;
     if (ai_worker_) ai_worker_->cancel();
     ai_thinking_ = false;
+    analysis_thinking_ = false;
+    search_purpose_ = SearchPurpose::None;
+}
+
+bool NativeController::analysisAvailable() const {
+#ifdef DIAMOND_QT_HAS_SOO
+    return match_.count == 2;
+#else
+    return false;
+#endif
+}
+
+void NativeController::setPerspectivePlayerId(int playerId) {
+    if (playerId != 1 && playerId != 2) return;
+    if (perspective_player_id_ == playerId) return;
+    perspective_player_id_ = playerId;
+    Q_EMIT changed();
+}
+
+QVariantList NativeController::positionTelemetry() const {
+    if (perspective_player_id_ == 1) return position_telemetry_;
+    QVariantList rows = position_telemetry_;
+    for (QVariant& value : rows) {
+        QVariantMap row = value.toMap();
+        if (row.value("available").toBool()) {
+            row["nnValue"] = -row.value("nnValue").toDouble();
+            row["nnEstimate"] = 1.0 - row.value("nnEstimate").toDouble();
+            row["mctsValue"] = -row.value("mctsValue").toDouble();
+            row["mctsEstimate"] = 1.0 - row.value("mctsEstimate").toDouble();
+            row["perspectivePlayerId"] = 2;
+        }
+        value = row;
+    }
+    return rows;
+}
+
+QVariantList NativeController::decisionTelemetry() const {
+    if (perspective_player_id_ == 1) return decision_telemetry_;
+    QVariantList rows = decision_telemetry_;
+    for (QVariant& value : rows) {
+        QVariantMap row = value.toMap();
+        if (row.value("available").toBool()) {
+            row["nnValue"] = -row.value("nnValue").toDouble();
+            if (row.value("mctsQ").isValid())
+                row["mctsQ"] = -row.value("mctsQ").toDouble();
+            row["perspectivePlayerId"] = 2;
+        }
+        value = row;
+    }
+    return rows;
+}
+
+void NativeController::publishLatestCompute(const SearchTelemetry& telemetry) {
+    const SearchComputeMetrics metrics = compute_search_metrics(telemetry);
+    latest_search_compute_ = QVariantMap{
+        {"totalMs", metrics.total_ms}, {"neuralMs", metrics.neural_ms},
+        {"mctsRulesMs", metrics.mcts_rules_ms},
+        {"neuralFraction", metrics.neural_fraction},
+        {"mctsRulesFraction", metrics.mcts_rules_fraction},
+        {"simulations", telemetry.simulations},
+        {"evaluatorCalls", telemetry.evaluator_calls}, {"nodes", telemetry.nodes_created},
+        {"simulationsPerSecond", metrics.simulations_per_second},
+        {"evaluationsPerSecond", metrics.evaluations_per_second},
+        {"averageNeuralEvaluationMs", metrics.average_neural_evaluation_ms}};
 }
 
 QString NativeController::aiAgentName() const {
@@ -481,6 +550,12 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
     next_piece_id_ = 0;
     ai_rejected_.clear();
     ai_details_.clear();
+    pending_telemetry_.reset();
+    pending_telemetry_turn_ = -1;
+    pending_telemetry_player_ = 0;
+    position_telemetry_.clear();
+    decision_telemetry_.clear();
+    latest_search_compute_.clear();
     ai_status_ = QStringLiteral("Ready");
     announced_finishers_.clear();
     last_action_ = -1;
@@ -492,6 +567,7 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
             state_.occupancy[position] = match_.players[i].id;
     refreshModels(); Q_EMIT changed();
     if (ai_seats_.contains(state_.current_player)) startAiTurn();
+    else startHumanAnalysis();
     return true;
 }
 
@@ -671,6 +747,7 @@ bool NativeController::loadGame(const QUrl& path) {
     refreshModels();
     Q_EMIT changed();
     if (!isGameOver() && ai_seats_.contains(state_.current_player)) startAiTurn();
+    else if (!isGameOver()) startHumanAnalysis();
     return true;
 }
 
@@ -852,7 +929,57 @@ void NativeController::proposeAction(int32_t action, bool isAi) {
     Q_EMIT changed();
 }
 
+void NativeController::appendTelemetryForCommit(uint8_t player, int32_t action) {
+    const int ply = state_.turn_number;
+    const bool matching_search = pending_telemetry_.has_value() &&
+        pending_telemetry_turn_ == state_.turn_number &&
+        pending_telemetry_player_ == state_.current_player;
+    const std::optional<ActionTelemetry> selected = matching_search
+        ? action_telemetry_for(*pending_telemetry_, action) : std::nullopt;
+    const bool available = matching_search;
+    const bool decision_available = available && selected.has_value();
+
+    QVariantMap position{{"ply", ply}, {"turnNumber", ply}, {"playerId", player},
+        {"perspectivePlayerId", 1}, {"available", available}};
+    QVariantMap decision{{"ply", ply}, {"turnNumber", ply}, {"playerId", player},
+        {"perspectivePlayerId", 1}, {"selectedAction", action},
+        {"available", decision_available}};
+    if (available) {
+        const double nn_value = normalize_soo_value(
+            pending_telemetry_->root_network_value, player, 1);
+        const double mcts_value = normalize_soo_value(
+            pending_telemetry_->root_search_value, player, 1);
+        position.insert("nnValue", nn_value);
+        position.insert("nnEstimate", soo_estimate(nn_value));
+        position.insert("mctsValue", mcts_value);
+        position.insert("mctsEstimate", soo_estimate(mcts_value));
+        decision.insert("nnValue", nn_value);
+        const SearchComputeMetrics compute = compute_search_metrics(*pending_telemetry_);
+        decision.insert("totalMs", compute.total_ms);
+        decision.insert("neuralMs", compute.neural_ms);
+        decision.insert("mctsRulesMs", compute.mcts_rules_ms);
+        decision.insert("simulations", pending_telemetry_->simulations);
+        decision.insert("evaluatorCalls", pending_telemetry_->evaluator_calls);
+        decision.insert("nodes", pending_telemetry_->nodes_created);
+        decision.insert("simulationsPerSecond", compute.simulations_per_second);
+        decision.insert("evaluationsPerSecond", compute.evaluations_per_second);
+        decision.insert("averageNeuralEvaluationMs", compute.average_neural_evaluation_ms);
+    }
+    if (selected) {
+        decision.insert("mctsQ", normalize_soo_value(selected->q, player, 1));
+        decision.insert("policyPrior", selected->prior);
+        decision.insert("visitFraction", selected->visit_fraction);
+        decision.insert("visits", selected->visits);
+    }
+    position_telemetry_.push_back(position);
+    decision_telemetry_.push_back(decision);
+    pending_telemetry_.reset();
+    pending_telemetry_turn_ = -1;
+    pending_telemetry_player_ = 0;
+}
+
 void NativeController::commitAction(int32_t action) {
+    if (search_purpose_ == SearchPurpose::HumanAnalysis) cancelSearch();
     const int source = action / soo::kBoardSize;
     const int destination = action % soo::kBoardSize;
     const uint8_t player = state_.current_player;
@@ -868,6 +995,7 @@ void NativeController::commitAction(int32_t action) {
         return;
     }
     const int piece_row = piece_model_->rowWithValue(QByteArrayLiteral("positionId"), source);
+    appendTelemetryForCommit(player, action);
     state_history_.push_back(state_);
     state_ = soo::apply_action(state_, match_, action);
     history_.push_back(QVariantMap{{"turnNumber", state_.turn_number - 1},
@@ -948,6 +1076,7 @@ void NativeController::finishMove() {
     ai_status_ = QStringLiteral("Ready");
     status_message_ = QStringLiteral("%1 to move.").arg(currentPlayerName());
     Q_EMIT changed();
+    startHumanAnalysis();
 }
 
 void NativeController::announceFinishers() {
@@ -967,81 +1096,78 @@ void NativeController::fail(const QString& message) {
 
 void NativeController::startAiTurn() {
     if (isGameOver() || !ai_seats_.contains(state_.current_player) || ai_failure_latched_) return;
+    startSearch(true);
+}
+
+void NativeController::startHumanAnalysis() {
+#ifdef DIAMOND_QT_HAS_SOO
+    if (isGameOver() || match_.count != 2 || ai_seats_.contains(state_.current_player) ||
+        analysis_thinking_ || (pending_telemetry_ &&
+        pending_telemetry_turn_ == state_.turn_number &&
+        pending_telemetry_player_ == state_.current_player)) return;
+    startSearch(false);
+#endif
+}
+
+void NativeController::startSearch(bool selectMove) {
     if (ai_worker_->isRunning()) {
-        ai_restart_when_idle_ = true;
+        if (selectMove) ai_restart_when_idle_ = true;
         return;
     }
-    ai_restart_when_idle_ = false;
+    if (selectMove) ai_restart_when_idle_ = false;
 
     std::vector<int32_t> legal;
     soo::legal_action_ids(state_, legal);
     if (legal.empty()) {
-        ai_status_ = QStringLiteral("No legal move");
-        ai_thinking_ = false;
+        if (selectMove) {
+            ai_status_ = QStringLiteral("No legal move");
+            ai_thinking_ = false;
+        }
         Q_EMIT changed();
         return;
     }
 
     const soo::State search_state = state_;
     const soo::Match search_match = match_;
-    const QVector<int32_t> rejected = ai_rejected_;
+    const std::vector<int32_t> rejected = selectMove
+        ? std::vector<int32_t>(ai_rejected_.cbegin(), ai_rejected_.cend())
+        : std::vector<int32_t>{};
     const int simulations = ai_simulations_;
-    ai_thinking_ = true;
-    ai_started_at_ms_ = QDateTime::currentMSecsSinceEpoch();
-    ai_status_ = QStringLiteral("Thinking…");
-    status_message_ = QStringLiteral("%1 is thinking…").arg(currentPlayerName());
-    ai_details_ = {QVariantMap{{"label", QStringLiteral("Agent")}, {"value", aiAgentName()}},
-        QVariantMap{{"label", QStringLiteral("Legal moves")},
-                    {"value", QString::number(static_cast<int>(legal.size()))}}};
+    pending_telemetry_turn_ = state_.turn_number;
+    pending_telemetry_player_ = state_.current_player;
+    pending_telemetry_.reset();
+    search_purpose_ = selectMove ? SearchPurpose::AiMove : SearchPurpose::HumanAnalysis;
+    if (selectMove) {
+        ai_thinking_ = true;
+        ai_started_at_ms_ = QDateTime::currentMSecsSinceEpoch();
+        ai_status_ = QStringLiteral("Thinking…");
+        status_message_ = QStringLiteral("%1 is thinking…").arg(currentPlayerName());
+        ai_details_ = {QVariantMap{{"label", QStringLiteral("Agent")}, {"value", aiAgentName()}},
+            QVariantMap{{"label", QStringLiteral("Legal moves")},
+                        {"value", QString::number(static_cast<int>(legal.size()))}}};
 #ifdef DIAMOND_QT_HAS_SOO
-    if (search_match.count == 2)
-        ai_details_.push_back(QVariantMap{{"label", QStringLiteral("Simulations")},
-                                          {"value", QString::number(simulations)}});
+        if (search_match.count == 2)
+            ai_details_.push_back(QVariantMap{{"label", QStringLiteral("Simulations")},
+                                              {"value", QString::number(simulations)}});
 #endif
+        ++ai_search_start_count_;
+    } else {
+        analysis_thinking_ = true;
+    }
     Q_EMIT changed();
 
     const quint64 request_generation = ++generation_;
-    ++ai_search_start_count_;
-    ai_worker_->start(request_generation, [search_state, search_match, rejected, legal, simulations]() -> int {
+    const std::shared_ptr<SooSearchRuntime> runtime = soo_runtime_;
+    ai_worker_->start(request_generation,
+        [runtime, search_state, search_match, rejected, legal, simulations]() -> AiSearchResult {
+        if (search_match.count == 2)
+            return runtime->search(search_state, search_match, rejected, simulations);
         auto is_rejected = [&rejected](int32_t action) {
             return std::find(rejected.cbegin(), rejected.cend(), action) != rejected.cend();
         };
-#ifdef DIAMOND_QT_HAS_SOO
-        if (search_match.count == 2) {
-            configure_torch_cpu();
-            QString root = QDir(QCoreApplication::applicationDirPath())
-                               .filePath(QStringLiteral("artifacts/soo-spike"));
-            if (!QDir(root).exists())
-                root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-            const auto artifact = diamond_model::validate_soo_deployment_artifact(root.toStdString());
-            diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
-            model->load_weights(artifact.weights);
-            diamond_model::SooEvaluator evaluator(model);
-            soo::MCTSConfig config;
-            config.simulations = simulations;
-            config.c_puct = 1.5;
-            config.dirichlet_epsilon = 0.0;
-            soo::MCTS2P search(search_match, evaluator, config);
-            const auto result = search.run(search_state, 0.0, false);
-
-            std::vector<size_t> ranked(result.root_actions.size());
-            std::iota(ranked.begin(), ranked.end(), size_t{0});
-            std::sort(ranked.begin(), ranked.end(), [&result](size_t left, size_t right) {
-                if (result.visit_counts[left] != result.visit_counts[right])
-                    return result.visit_counts[left] > result.visit_counts[right];
-                return result.root_actions[left] < result.root_actions[right];
-            });
-            for (size_t index : ranked) {
-                const int32_t physical_action = soo::to_physical_action(
-                    result.root_actions[index], search_match, search_state.current_player);
-                if (!is_rejected(physical_action)) return physical_action;
-            }
-            return soo::to_physical_action(
-                result.selected_action, search_match, search_state.current_player);
-        }
-#endif
-        for (int32_t action : legal) if (!is_rejected(action)) return action;
-        return legal.front();
+        for (int32_t action : legal)
+            if (!is_rejected(action)) return AiSearchResult{action, {}};
+        return AiSearchResult{legal.front(), {}};
     });
 }
 
@@ -1113,6 +1239,12 @@ void NativeController::undoLastMove() {
     ai_failure_latched_ = false;
     stopAnimation();
     state_ = state_history_.takeLast(); if (!history_.isEmpty()) history_.removeLast();
+    if (!position_telemetry_.isEmpty()) position_telemetry_.removeLast();
+    if (!decision_telemetry_.isEmpty()) decision_telemetry_.removeLast();
+    pending_telemetry_.reset();
+    pending_telemetry_turn_ = -1;
+    pending_telemetry_player_ = 0;
+    latest_search_compute_.clear();
     ai_rejected_.clear();
     last_action_ = history_.isEmpty() ? -1
         : history_.constLast().toMap().value("source").toInt() * soo::kBoardSize
@@ -1123,7 +1255,10 @@ void NativeController::undoLastMove() {
     selected_position_ = -1; legal_actions_.clear(); clearProposal();
     status_message_ = QStringLiteral("Last move undone.");
     refreshModels(); Q_EMIT changed();
-    if (ai_seats_.contains(state_.current_player)) QTimer::singleShot(0, this, &NativeController::startAiTurn);
+    if (ai_seats_.contains(state_.current_player))
+        QTimer::singleShot(0, this, &NativeController::startAiTurn);
+    else
+        QTimer::singleShot(0, this, &NativeController::startHumanAnalysis);
 }
 
 void NativeController::requestAiMove() {
@@ -1170,7 +1305,7 @@ bool NativeController::workerSmoke() {
     if (ai_worker_->isRunning()) return false;
     ai_worker_->start(++generation_, [] {
         QThread::msleep(50);
-        return 0;
+        return AiSearchResult{0, {}};
     });
     ai_worker_->cancel();
     while (ai_worker_->isRunning()) QThread::msleep(5);
@@ -1186,7 +1321,7 @@ bool NativeController::failureSmoke() {
     ai_status_ = QStringLiteral("Thinking…");
     const quint64 request_generation = ++generation_;
     ++ai_search_start_count_;
-    ai_worker_->start(request_generation, []() -> int {
+    ai_worker_->start(request_generation, []() -> AiSearchResult {
         throw std::runtime_error("intentional worker failure smoke");
     });
     return true;
@@ -1196,29 +1331,15 @@ bool NativeController::sooSmoke() {
 #ifdef DIAMOND_QT_HAS_SOO
     if (!nativeRulesReady()) return false;
     try {
-        configure_torch_cpu();
-        const QString root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-        const auto artifact = diamond_model::validate_soo_deployment_artifact(root.toStdString());
-        diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
-        model->load_weights(artifact.weights);
-        diamond_model::SooEvaluator evaluator(model);
-        soo::MCTSConfig config;
-        config.simulations = 2;
-        config.c_puct = 1.5;
-        config.dirichlet_epsilon = 0.0;
         std::vector<int32_t> human_actions;
         soo::legal_action_ids(state_, human_actions);
         if (human_actions.empty()) return false;
         const auto ai_state = soo::apply_action(state_, match_, human_actions.front());
         if (ai_state.current_player == state_.current_player) return false;
-        soo::MCTS2P search(match_, evaluator, config);
-        const auto result = search.run(ai_state, 0.0, false);
-        const int32_t physical_action = soo::to_physical_action(
-            result.selected_action, match_, ai_state.current_player);
-        const auto next_state = soo::apply_action(ai_state, match_, physical_action);
-        return result.selected_action >= 0 &&
-               std::find(result.root_actions.begin(), result.root_actions.end(),
-                         result.selected_action) != result.root_actions.end() &&
+        const AiSearchResult result = soo_runtime_->search(ai_state, match_, {}, 2);
+        const auto next_state = soo::apply_action(ai_state, match_, result.selected_action);
+        return result.selected_action >= 0 && !result.telemetry.actions.empty() &&
+               action_telemetry_for(result.telemetry, result.selected_action).has_value() &&
                next_state.turn_number == ai_state.turn_number + 1;
     } catch (const std::exception& error) {
         qWarning() << "Soo smoke failed:" << error.what();
