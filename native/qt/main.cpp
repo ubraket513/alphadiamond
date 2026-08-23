@@ -172,6 +172,9 @@ int main(int argc, char* argv[]) {
             if (!require_analysis(console && outlook && decision && preference && compute,
                                   "analysis console components are missing") ||
                 !require_analysis(title_bar && drawer && history, "history drawer is missing")) return 1;
+            if (!require_analysis(
+                    console->findChild<QObject*>(QStringLiteral("drawerHistoryPanel")) == nullptr,
+                    "history still belongs to permanent analysis console")) return 1;
             if (!QMetaObject::invokeMethod(title_bar, "historyRequested")) {
                 std::fprintf(stderr, "analysis smoke failed: history command is not wired\n");
                 return 1;

@@ -92,6 +92,12 @@ int main(int argc, char** argv) {
                  empty_compute.evaluations_per_second == 0.0 &&
                  empty_compute.average_neural_evaluation_ms == 0.0,
                  "empty search compute divides by zero")) return 1;
+    SearchTelemetry oversubscribed_timing;
+    oversubscribed_timing.total_ms = 2.0;
+    oversubscribed_timing.neural_ms = 6.0;
+    const SearchComputeMetrics clamped_compute = compute_search_metrics(oversubscribed_timing);
+    if (!require(clamped_compute.neural_ms == 2.0 && clamped_compute.mcts_rules_ms == 0.0,
+                 "neural timing was not clamped to total search time")) return 1;
     const auto selected = action_telemetry_for(telemetry, 202);
     if (!require(selected && selected->prior == 0.75 && selected->q == 0.5 &&
                  selected->visits == 7 && selected->visit_fraction == 0.7,
@@ -114,6 +120,22 @@ int main(int argc, char** argv) {
     });
     if (!require(pump_until(app, [&typed_result_ready] { return typed_result_ready; }),
                  "worker did not deliver structured telemetry with its action")) return 1;
+
+    NativeController stale_controller;
+    stale_controller.startMatch(QVariantList{1, 2}, QVariantList{});
+    stale_controller.startMatch(QVariantList{1, 2, 3}, QVariantList{});
+    QElapsedTimer stale_grace;
+    stale_grace.start();
+    while (stale_grace.elapsed() < 1000) {
+        app.processEvents();
+        QThread::msleep(5);
+    }
+    if (!require(stale_controller.playerCount() == 3 &&
+                 !stale_controller.analysisAvailable() &&
+                 stale_controller.latestSearchCompute().isEmpty() &&
+                 stale_controller.positionTelemetry().isEmpty() &&
+                 !stale_controller.hasProposal(),
+                 "stale human analysis mutated a replacement game")) return 1;
     qInfo("controller contract: telemetry math");
 
     NativeController controller;
@@ -219,7 +241,11 @@ int main(int argc, char** argv) {
 
     const int move_sound_before = controller.soundPlayRequestCount();
     const int expected_hop_sounds = controller.proposalPathIds().size() - 1;
+    QElapsedTimer human_commit_timer;
+    human_commit_timer.start();
     controller.confirmProposal();
+    if (!require(human_commit_timer.elapsed() < 500,
+                 "human move waited for background analysis")) return 1;
     if (!require(controller.turnNumber() == turn_before + 1, "confirmation did not commit the move")) return 1;
     if (!require(!controller.hasProposal(), "proposal survived confirmation")) return 1;
     if (!require(!controller.canSelect(), "board remained selectable during piece animation")) return 1;
@@ -238,6 +264,8 @@ int main(int argc, char** argv) {
     if (!require(controller.positionTelemetry().size() == 1 &&
                  controller.decisionTelemetry().size() == 1,
                  "human commit did not append one independent telemetry row")) return 1;
+    if (!require(controller.positionTelemetry().constFirst().toMap().contains("available"),
+                 "human telemetry cannot represent a missing analysis result")) return 1;
     if (!require(has_role(history, "playerId") && has_role(history, "isAi"),
                  "history parity roles are missing")) return 1;
     const int last_source_role = role_for(board, QByteArrayLiteral("isLastMoveSource"));

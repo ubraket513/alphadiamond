@@ -92,7 +92,8 @@ double process_cpu_seconds() {
 }
 
 void validate_result(const soo::SearchResult& result,
-                     const std::vector<int32_t>& expected_actions) {
+                     const std::vector<int32_t>& expected_actions,
+                     double expected_root_network_value) {
     if (result.root_actions != expected_actions) {
         throw std::runtime_error("native MCTS root legal-action order differs from Python");
     }
@@ -107,6 +108,9 @@ void validate_result(const soo::SearchResult& result,
     if (!std::isfinite(result.root_network_value) ||
         !std::isfinite(result.root_mean_value)) {
         throw std::runtime_error("native MCTS root values are not finite");
+    }
+    if (std::abs(result.root_network_value - expected_root_network_value) > 1e-6) {
+        throw std::runtime_error("native MCTS root value was not captured from root evaluation");
     }
     if (!(result.neural_evaluation_ms >= 0.0)) {
         throw std::runtime_error("native MCTS neural timing is invalid");
@@ -179,7 +183,8 @@ int main(int argc, char** argv) {
             raw_forward_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
         }
 
-        (void)evaluator.evaluate(encoded, expected_actions);
+        const double expected_root_network_value =
+            evaluator.evaluate(encoded, expected_actions).value;
         std::vector<double> evaluator_ms;
         evaluator_ms.reserve(kInferenceSamples);
         for (int iteration = 0; iteration < kInferenceSamples; ++iteration) {
@@ -194,7 +199,7 @@ int main(int argc, char** argv) {
         config.seed = 17;
         soo::MCTS2P correctness_search(match, evaluator, config);
         soo::SearchResult result = correctness_search.run(state, 0.0, true);
-        validate_result(result, expected_actions);
+        validate_result(result, expected_actions, expected_root_network_value);
 
         std::vector<double> mcts_ms;
         mcts_ms.reserve(static_cast<size_t>(repeats));
@@ -206,7 +211,7 @@ int main(int argc, char** argv) {
             result = search.run(state, 0.0, false);
             const auto elapsed = std::chrono::steady_clock::now() - started;
             mcts_ms.push_back(std::chrono::duration<double, std::milli>(elapsed).count());
-            validate_result(result, expected_actions);
+            validate_result(result, expected_actions, expected_root_network_value);
         }
         const double wall_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - wall_started).count();
@@ -216,8 +221,7 @@ int main(int argc, char** argv) {
             ? 100.0 * cpu_seconds / wall_seconds / static_cast<double>(logical_cpus)
             : 0.0;
 
-        // The GUI currently validates the artifact and constructs/loads the native
-        // model for each proposal. Measure that complete warm-cache path separately.
+        // Retain a cold/reload-path benchmark alongside the persistent GUI runtime.
         std::vector<double> gui_proposal_ms;
         gui_proposal_ms.reserve(static_cast<size_t>(repeats));
         for (int iteration = 0; iteration < repeats; ++iteration) {
@@ -230,7 +234,7 @@ int main(int argc, char** argv) {
             diamond_model::SooEvaluator runtime_evaluator(runtime_model);
             soo::MCTS2P runtime_search(match, runtime_evaluator, config);
             const auto runtime_result = runtime_search.run(state, 0.0, false);
-            validate_result(runtime_result, expected_actions);
+            validate_result(runtime_result, expected_actions, expected_root_network_value);
             const auto elapsed = std::chrono::steady_clock::now() - started;
             gui_proposal_ms.push_back(
                 std::chrono::duration<double, std::milli>(elapsed).count());

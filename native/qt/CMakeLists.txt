@@ -124,7 +124,7 @@ if(BUILD_TESTING)
     set_tests_properties(diamond_qt_controller_contract diamond_qt_analysis_smoke PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         ENVIRONMENT
-            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins;QT_FORCE_STDERR_LOGGING=1"
+            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins;QML_IMPORT_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/qml;QT_FORCE_STDERR_LOGGING=1"
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/bin;PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/lib/qt6/bin"
     )
