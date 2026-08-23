@@ -100,9 +100,11 @@ the flag whenever the build is meant to play.
 Verify the artifact against the native contract before packaging:
 
 ```powershell
-.\build-qt-soo-clean\native\soo_artifact_contract.exe .\artifacts\soo-spike
-.\build-qt-soo-clean\native\soo_native_model_probe.exe .\artifacts\soo-spike
+ctest --test-dir .\build-qt-soo-clean -R "artifact_contract|model_parity"
 ```
+
+`model_parity_test` replaced `soo_native_model_probe.exe`: same comparison,
+registered as a test and covering every bundled family rather than Soo alone.
 
 Create a self-contained package:
 
