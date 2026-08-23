@@ -47,3 +47,13 @@ checkpoints/soo/soo-scratch-20260822/step-00044250/manifest.json
 always consumes the immutable path and verifies `checkpoint_sha256` first.
 
 Manifest fields: see [manifests/checkpoint.schema.json](manifests/checkpoint.schema.json).
+
+## CI fixtures
+
+[manifests/ci-fixtures.json](manifests/ci-fixtures.json) names every large file
+CI needs, with its SHA-256 and the bucket path it lives at. An entry carrying
+`tracked_in_git` is a temporary exception -- the file still ships in the
+repository -- and `tests/test_repo_hygiene.py` verifies its digest matches the
+manifest, so the exception cannot rot into an accidental commit. When CI fetches
+these from the bucket by path and digest, drop the `tracked_in_git` field and
+`git rm` the file; the hygiene test then enforces its absence.

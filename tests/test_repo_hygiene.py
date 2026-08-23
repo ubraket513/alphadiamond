@@ -8,6 +8,8 @@ what Git tracks matters here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -18,9 +20,20 @@ ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_PREFIXES = ("build/", "build-", "out/", "artifacts/", "runs/", "dist/")
 FORBIDDEN_SUFFIXES = (".obj", ".o", ".lib", ".a", ".pdb", ".ilk", ".exp", ".so", ".pyd", ".dll")
 
-# Weights are never source. Each exception is a deliberate, documented fixture.
+# Weights are never source. Each exception is a deliberate, documented fixture,
+# and the manifest is what documents it -- an exception nobody wrote down is
+# indistinguishable from a checkpoint that got committed by accident.
+CI_FIXTURES = Path("TrainAlphaDiamond/manifests/ci-fixtures.json")
 WEIGHT_SUFFIXES = (".pt", ".pth", ".ckpt", ".safetensors")
-ALLOWED_WEIGHTS = {"runtime/runs/soo/cpu8h-soo-20260819/latest.pt"}
+
+
+def _manifest() -> list[dict]:
+    return json.loads((ROOT / CI_FIXTURES).read_text(encoding="utf-8"))["fixtures"]
+
+
+ALLOWED_WEIGHTS = {
+    entry["tracked_in_git"] for entry in _manifest() if entry.get("tracked_in_git")
+}
 
 # Nothing tracked may exceed this. The step-80 checkpoint above is the one
 # thing that does, and it is listed rather than exempted by size.
@@ -67,6 +80,29 @@ def test_no_unexpected_large_files_are_tracked() -> None:
         if absolute.is_file() and absolute.stat().st_size > MAX_TRACKED_BYTES:
             oversized.append((path, absolute.stat().st_size))
     assert not oversized, f"large files tracked: {oversized}"
+
+
+def test_tracked_fixtures_match_their_manifest() -> None:
+    """The digest CI asserts, asserted here too.
+
+    CI's Gate D checks this checkpoint's SHA-256 because a different checkpoint
+    would silently invalidate every native parity measurement. That digest and
+    the bucket path it will be fetched from live in the manifest, so the two
+    cannot drift apart while the file is still tracked.
+    """
+    for entry in _manifest():
+        tracked = entry.get("tracked_in_git")
+        if not tracked:
+            continue
+        path = ROOT / tracked
+        assert path.is_file(), f"manifest names a missing fixture: {tracked}"
+        assert path.stat().st_size == entry["bytes"], f"{tracked} changed size"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest == entry["sha256"], (
+            f"{tracked} digest {digest} does not match the manifest; "
+            "parity measurements taken against it are no longer comparable"
+        )
+        assert entry["bucket_path"], f"{tracked} has no bucket path to migrate to"
 
 
 def test_the_bucket_root_contributes_only_documentation() -> None:
