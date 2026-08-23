@@ -85,9 +85,12 @@ the C++ test go red. Until then, `bridge-parity` keeps running in CI.
 | `native-sanitizers` (Linux) | no | the same tests under ASan/UBSan |
 | `core` | yes | Python engine, AlphaZero stack, repository hygiene |
 | `bridge-parity` | yes | Python and C++ still play the same game |
-| `gui` | yes | the PySide app |
 | `lint` | yes | ruff over changed files |
 
 The native Qt lane is deliberately absent: `diamond_qt_controller_contract`
 fails on its telemetry assertion at `main`, and a job that is red on arrival
 trains people to ignore CI. Add the lane in the same change that fixes it.
+
+There is no `gui` lane either. The PySide suite it ran was deleted with the last
+GUI test, so `pytest -m gui` collected nothing and exited 5. The Qt application
+under test now is the native one.

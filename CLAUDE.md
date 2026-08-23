@@ -52,7 +52,6 @@ make golden                      # regenerate tests/golden from the Python oracl
 ```bash
 python tools/build_native.py     # optional extension; absence must stay harmless
 pytest -m "not gui"              # engine + AlphaZero + native gates
-pytest -m gui                    # needs Qt and QT_QPA_PLATFORM=offscreen
 ```
 
 ## Shipping a model
