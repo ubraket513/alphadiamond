@@ -11,12 +11,29 @@ Gradients still flow: ``d GELU/dx`` at 0 is 0.5, and the gradient with respect
 to the LayerNorm scale is proportional to the normalised message, which is not
 zero.  The block is inert at initialisation, not frozen.
 
-Width is deliberately *not* expandable here.  Net2WiderNet's identity trick
-replicates units and halves the outgoing weights, which is exact for an
-elementwise nonlinearity but **not** across a LayerNorm: normalisation runs over
-the width axis, so duplicated units change the mean and variance and the
-function changes.  A wider network has to be trained from scratch, and that is a
-different experiment with a different baseline.
+Width is not expandable *here*, but the reason is narrower than it first looks
+and the earlier claim in this file overstated it.
+
+An **uneven** widening -- 128 -> 192, replicating only some channels -- does
+break LayerNorm: normalisation runs over the width axis, and duplicating a
+subset changes the mean and the variance, so the function changes.
+
+An **integer-multiple** widening does not.  Duplicate every channel exactly k
+times and both the mean and the variance are unchanged, because each is an
+average over a multiset that has simply been repeated; duplicate ``gamma`` and
+``beta`` the same way and ``LayerNorm(dup(x)) == dup(LayerNorm(x))`` exactly.
+Net2Wider then applies as usual to the Linear layers -- replicate output rows,
+halve the weights on duplicated input columns -- and 128 -> 256 is a
+function-preserving morph rather than a cold start.
+
+Soo needs one extra correction that a generic Net2Wider does not: the policy
+head scores ``source . destination / sqrt(width)``.  Duplication doubles the dot
+product while ``sqrt(width)`` grows by only ``sqrt(2)``, so the logits come out
+``sqrt(2)`` too large; one of the two projections has to absorb a ``1/sqrt(2)``.
+
+That is a different tool with a different verification burden -- expect
+near-identity rather than the bit-exact result deepening gives, since the
+reduction order changes -- so it is deliberately not folded in here.
 
 The identity claim is asserted numerically, not assumed -- ``--corpus`` runs the
 parent and the child over the gate corpus and reports the worst divergence.
