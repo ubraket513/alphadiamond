@@ -31,8 +31,9 @@ set_target_properties(diamond_qt_backend PROPERTIES AUTOMOC ON)
 if(DIAMOND_BUILD_QT_SOO)
     target_link_libraries(diamond_qt_backend PUBLIC alphadiamond::diamond_model ${TORCH_LIBRARIES})
     target_include_directories(diamond_qt_backend PRIVATE ${TORCH_INCLUDE_DIRS})
-    target_compile_definitions(diamond_qt_backend PRIVATE
-        DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
+    target_compile_definitions(diamond_qt_backend
+        PUBLIC DIAMOND_QT_HAS_SOO
+        PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
 endif()
 if(MSVC)
     target_compile_options(diamond_qt_backend PRIVATE /W4)
