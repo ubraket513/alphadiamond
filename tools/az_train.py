@@ -201,8 +201,13 @@ def throughput_summary(
 
 
 SELFPLAY_BACKENDS = ("python", "native", "auto")
-"""``python`` is the default and the oracle.  Selection is explicit and additive:
-a run never silently changes which engine produced its data.
+"""``auto`` is the default: the C++ core is the authority, and a run should use
+it wherever it is available rather than only when told to.
+
+That does not weaken the rule this setting has always enforced -- a run's data
+must be attributable to the engine that produced it. ``auto`` resolves to a
+concrete backend before the run starts, prints the choice and the reason, and
+records the resolved value; ``auto`` itself never reaches a run config.
 
 ``auto`` is the migration setting: it takes the native backend when the
 extension is importable and the run does not need something the native runner
@@ -478,9 +483,9 @@ def main() -> int:
         args.workers if args.workers is not None else workers.get("worker_count")
     )
 
-    # Backend selection is explicit and additive; "python" stays the default and
-    # the oracle, so a run can only end up on the native path by being told to.
-    selfplay_backend = args.selfplay_backend or workers.get("selfplay_backend", "python")
+    # The C++ core is the authority, so the default is "auto": native where it
+    # is available, Python where it is not. Both remain selectable explicitly.
+    selfplay_backend = args.selfplay_backend or workers.get("selfplay_backend", "auto")
     if selfplay_backend not in SELFPLAY_BACKENDS:
         raise SystemExit(f"unknown selfplay_backend: {selfplay_backend}")
     selfplay_backend = resolve_selfplay_backend(
