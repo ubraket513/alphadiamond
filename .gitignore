@@ -6,20 +6,39 @@ __pycache__/
 *.egg-info/
 build/
 /build-*/
+/out/
 dist/
 
 # Native self-play extension: built in place, never committed.
 *.so
 *.pyd
 .pytest_cache/
+.ruff_cache/
 /runs/
 /artifacts/
 
-# CPU training session runtime: checkpoints, replay and ledgers stay out of Git.
-# /runtime/
+# Training run output: checkpoints, replay and ledgers stay out of Git.
+# The step-80 checkpoint below is the one exception: CI's Gate D asserts its
+# digest, so it stays tracked until a bucket fixture fetch replaces it.
+/runtime/runs/**
+!/runtime/runs/soo/cpu8h-soo-20260819/
+!/runtime/runs/soo/cpu8h-soo-20260819/**
 
 # GPU benchmark runs: keep the ledgers/configs as evidence, leave the
 # checkpoints and replay chunks out of Git (regenerate from latest.pt.cpu-backup).
 az-bench/**/*.pt
 az-bench/**/replay/
 az-bench/**/checkpoints/
+
+# Bucket synchronisation root: contents are mutable object storage, not source.
+/TrainAlphaDiamond/**
+!/TrainAlphaDiamond/README.md
+!/TrainAlphaDiamond/manifests/
+!/TrainAlphaDiamond/manifests/**
+
+# Model weights are never source. Tracked exceptions are listed explicitly.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+!/runtime/runs/soo/cpu8h-soo-20260819/latest.pt
