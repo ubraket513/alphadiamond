@@ -87,7 +87,7 @@ def _load(path: Path, config: dict):
 
 
 def _openings_for_order(
-    order: tuple[int, ...], *, count: int, max_depth: int, seed: int
+    order: tuple[int, ...], *, count: int, max_depth: int, seed: int, label: str = "dev"
 ) -> list[BenchmarkOpening]:
     """Distinct legal action prefixes, generated under this turn order.
 
@@ -97,7 +97,7 @@ def _openings_for_order(
     """
     players = build_players(len(order), order=order)
     adapter = AlphaZeroGameAdapter(players)
-    version = f"{SUITE_VERSION}/order-{'-'.join(str(seat) for seat in order)}"
+    version = f"{SUITE_VERSION}/{label}/order-{'-'.join(str(seat) for seat in order)}"
     first = BenchmarkOpening(
         suite_version=version,
         player_count=len(order),
@@ -174,6 +174,30 @@ def main() -> int:
     parser.add_argument("--simulations", type=int, default=None)
     parser.add_argument("--max-moves", type=int, default=None)
     parser.add_argument("--bootstrap", type=int, default=10_000)
+    parser.add_argument(
+        "--suite",
+        choices=("dev", "cert"),
+        default="dev",
+        help=(
+            "Which frozen suite to draw openings from.  'dev' is the working "
+            "suite used while iterating; 'cert' has a different seed and is "
+            "reserved for promotion decisions and headline numbers.  Selecting "
+            "candidates repeatedly against one suite lets the *chooser* overfit "
+            "it even though no model trains on it, so the two are kept apart "
+            "and the cert suite is used sparingly."
+        ),
+    )
+    parser.add_argument(
+        "--max-abort-fraction",
+        type=float,
+        default=0.1,
+        help=(
+            "Above this share of aborted pairs the rating is reported as "
+            "censored rather than as an Elo.  An unfinished game is not a draw "
+            "-- these rules have no draw -- so scoring it 0.5 would be an "
+            "invention, and dropping many of them selects on the outcome."
+        ),
+    )
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -197,12 +221,16 @@ def main() -> int:
     )
 
     orders = tuple(itertools.permutations((1, 2)))
+    # Distinct seeds *and* distinct suite versions, so a cert opening can never
+    # collide with a dev opening by identity even if a seed is reused by mistake.
+    suite_offset = 0 if args.suite == "dev" else 1_000_000
     suites = {
         order: _openings_for_order(
             order,
             count=args.openings,
             max_depth=args.opening_depth,
-            seed=args.opening_seed + index,
+            seed=args.opening_seed + suite_offset + index,
+            label=args.suite,
         )
         for index, order in enumerate(orders)
     }
@@ -328,6 +356,7 @@ def main() -> int:
         print("\n[result] every pair contained an abort; nothing to rate.")
         return 1
 
+    abort_fraction = aborted_pairs / (aborted_pairs + len(pairs))
     score = sum(pairs) / len(pairs)
     low, high = _bootstrap(pairs, samples=args.bootstrap, seed=args.opening_seed)
     elo, elo_low, elo_high = _elo(score), _elo(low), _elo(high)
@@ -341,7 +370,16 @@ def main() -> int:
     verdict = (
         "STRONGER" if low > 0.5 else "WEAKER" if high < 0.5 else "NOT SEPARATED"
     )
-    print(f"  verdict: {verdict}   ({elapsed:.0f}s)")
+    if abort_fraction > args.max_abort_fraction:
+        verdict = f"CENSORED ({abort_fraction * 100:.0f}% of pairs unfinished)"
+        print(f"  verdict: {verdict}   ({elapsed:.0f}s)")
+        print(
+            "  Treat the score above as descriptive, not as a rating.  With this "
+            "many positions unresolved the more informative result is that the "
+            "search cannot finish them, not the Elo of the ones it could."
+        )
+    else:
+        print(f"  verdict: {verdict}   ({elapsed:.0f}s)")
     print(
         "  The interval is a bootstrap over opening pairs, not over games: the "
         "two games of a pair share a position and are not independent."
@@ -366,6 +404,9 @@ def main() -> int:
                     "aborted_games": len(aborts),
                     "aborted_pairs": aborted_pairs,
                     "score": score,
+                    "suite": args.suite,
+                    "abort_pair_fraction": abort_fraction,
+                    "censored": abort_fraction > args.max_abort_fraction,
                     "ci": [low, high],
                     "elo": elo,
                     "games": records,

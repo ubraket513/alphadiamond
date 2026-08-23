@@ -82,12 +82,12 @@ def _trainer(
     version: str,
     training: TrainingConfig,
     *,
-    gate_blocks_from: int | None = None,
+    gated_blocks: list[int] | None = None,
 ) -> AlphaZeroTrainer:
     compatibility = CheckpointCompatibilitySpec.soo(
         model_version=version, network_config=network
     )
-    model = SooModel(network, model_version=version, gate_blocks_from=gate_blocks_from)
+    model = SooModel(network, model_version=version, gated_blocks=gated_blocks)
     return AlphaZeroTrainer(model, compatibility, training)
 
 
@@ -129,6 +129,18 @@ def main() -> int:
             "outside the nonlinearity, so its gradient means 'how much of this "
             "branch is wanted' rather than 'what should the branch's internal "
             "scale be'.  Implies --branch-init copy and ignores --gamma."
+        ),
+    )
+    parser.add_argument(
+        "--interleave",
+        action="store_true",
+        help=(
+            "Place each new block directly after the block it was copied from "
+            "(b0 n0 b1 n1 ...) instead of appending the whole set (b0..b5 "
+            "n0..n5).  Appending hands copy(b0) the representation b5 produces, "
+            "which is not the distribution b0 was trained on, so a copied "
+            "branch can be useless there and useful in place.  Requires the "
+            "target depth to be a whole multiple of the parent's."
         ),
     )
     parser.add_argument(
@@ -184,6 +196,28 @@ def main() -> int:
     target_network = NetworkConfig(
         width=source_network.width, residual_blocks=args.blocks
     )
+    # `layout[child_index]` is the parent block the child block comes from, or
+    # None for an inherited slot; `donor_of` names the copy source.
+    if args.interleave:
+        if args.blocks % source_network.residual_blocks:
+            raise SystemExit(
+                f"--interleave needs a whole multiple of {source_network.residual_blocks} "
+                f"blocks, got {args.blocks}"
+            )
+        factor = args.blocks // source_network.residual_blocks
+        inherited = {index * factor: index for index in range(source_network.residual_blocks)}
+        donor_of = {
+            index * factor + offset: index
+            for index in range(source_network.residual_blocks)
+            for offset in range(1, factor)
+        }
+    else:
+        inherited = {index: index for index in range(source_network.residual_blocks)}
+        donor_of = {
+            index: index % source_network.residual_blocks
+            for index in range(source_network.residual_blocks, args.blocks)
+        }
+    new_indices = sorted(donor_of)
     # A fresh optimizer.  Adam's moments are per-parameter and the parameter set
     # has changed; carrying the parent's moments for the surviving tensors while
     # the new blocks start cold mixes two different notions of "where training
@@ -195,18 +229,36 @@ def main() -> int:
         target_network,
         version,
         child_training,
-        gate_blocks_from=source_network.residual_blocks if args.residual_gate else None,
+        gated_blocks=new_indices if args.residual_gate else None,
     )
 
     parent_state = parent.model.state_dict()
     child_state = child.model.state_dict()
+
+    parent_to_child = {parent_index: child_index for child_index, parent_index in inherited.items()}
+
+    def _child_key(key: str) -> str:
+        """Map a parent tensor name onto the slot it occupies in the child.
+
+        Interleaving moves the inherited blocks: parent block 3 lands at child
+        index 6, not 3.  Copying by name without this remap would quietly write
+        the parent's blocks into the new slots and leave the inherited ones at
+        their random init -- an identity check would fail, but only after the
+        transplant had already produced a plausible-looking file.
+        """
+        if not key.startswith("trunk.blocks."):
+            return key
+        _, _, index, rest = key.split(".", 3)
+        return f"trunk.blocks.{parent_to_child[int(index)]}.{rest}"
+
     copied = 0
     for key, tensor in parent_state.items():
-        if key not in child_state:
+        target = _child_key(key)
+        if target not in child_state:
             raise SystemExit(f"parent parameter {key} has no home in the child")
-        if child_state[key].shape != tensor.shape:
+        if child_state[target].shape != tensor.shape:
             raise SystemExit(f"shape mismatch on {key}: cannot transplant")
-        child_state[key] = tensor.clone()
+        child_state[target] = tensor.clone()
         copied += 1
 
     # Everything the parent did not have is a new trunk block.  Two independent
@@ -227,9 +279,9 @@ def main() -> int:
     # gamma a structured message to have an opinion about from the first step.
     copied_branches = []
     zeroed = []
-    for index in range(source_network.residual_blocks, args.blocks):
+    for index in new_indices:
         if args.branch_init == "copy" or args.residual_gate:
-            donor = index % source_network.residual_blocks
+            donor = donor_of[index]
             prefix = f"trunk.blocks.{index}."
             donor_prefix = f"trunk.blocks.{donor}."
             for key in list(child_state):

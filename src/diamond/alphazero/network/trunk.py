@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import torch
 from torch import Tensor, nn
 
@@ -83,7 +85,7 @@ class DiamondGraphTrunk(nn.Module):
         config: NetworkConfig,
         board: Board | None = None,
         *,
-        gate_blocks_from: int | None = None,
+        gated_blocks: Iterable[int] | None = None,
     ) -> None:
         super().__init__()
         if input_features <= 0:
@@ -94,18 +96,17 @@ class DiamondGraphTrunk(nn.Module):
         self.input_features = input_features
         self.width = config.width
         self.input_projection = nn.Linear(input_features, config.width)
-        # Blocks at or after `gate_blocks_from` carry a residual gate.  The
-        # index, rather than a bool, is what a depth transplant needs: the
-        # inherited blocks must keep their exact parameter set or the parent's
-        # weights no longer load.
-        if gate_blocks_from is not None and not 0 <= gate_blocks_from <= config.residual_blocks:
-            raise ValueError("gate_blocks_from must index a block, or equal the block count")
-        self.gate_blocks_from = gate_blocks_from
+        # An explicit set of gated indices, not a threshold: a transplant may
+        # append the new blocks or interleave them, and only the interleaved
+        # layout answers whether a copied branch is useful *where it now sits*.
+        # The inherited blocks must keep their exact parameter set either way,
+        # or the parent's weights no longer load.
+        gated = frozenset(gated_blocks or ())
+        if any(not 0 <= index < config.residual_blocks for index in gated):
+            raise ValueError("gated_blocks must index existing blocks")
+        self.gated_blocks = gated
         self.blocks = nn.ModuleList(
-            DirectionalResidualBlock(
-                config.width,
-                gated=gate_blocks_from is not None and index >= gate_blocks_from,
-            )
+            DirectionalResidualBlock(config.width, gated=index in gated)
             for index in range(config.residual_blocks)
         )
         self.output_norm = nn.LayerNorm(config.width)

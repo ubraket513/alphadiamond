@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from torch import Tensor, nn
 
 from ..config import NetworkConfig
@@ -21,13 +23,13 @@ class SooModel(nn.Module):
         config: NetworkConfig = _DEFAULT_NETWORK,
         *,
         model_version: str = "0.1.0",
-        gate_blocks_from: int | None = None,
+        gated_blocks: Iterable[int] | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.identity = ModelIdentity.soo(model_version)
         self.trunk = DiamondGraphTrunk(
-            self.input_features, config, gate_blocks_from=gate_blocks_from
+            self.input_features, config, gated_blocks=gated_blocks
         )
         self.policy_head = SourceDestinationPolicyHead(config.width)
         self.value_head = nn.Sequential(
