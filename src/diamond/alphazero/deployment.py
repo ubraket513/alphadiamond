@@ -44,7 +44,7 @@ def _is_sha256(value: object) -> bool:
 def validate_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and return a plain metadata mapping.
 
-    The spike intentionally rejects both missing and unknown fields. Adding a
+    The deployment contract intentionally rejects both missing and unknown fields. Adding a
     field therefore requires an explicit format-version decision instead of
     silently producing an artifact an older native runtime may misread.
     """
@@ -59,7 +59,7 @@ def validate_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     expected = {
         "format_version": ARTIFACT_FORMAT_VERSION,
         "model_name": "Soo",
-        "model_version": "0.1.0",
+        "model_version": "2.0.0",
         "input_shape": [2, 73, 4],
         "policy_shape": [2, 5329],
         "value_shape": [2, 1],

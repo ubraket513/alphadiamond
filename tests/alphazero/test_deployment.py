@@ -10,7 +10,7 @@ def _metadata() -> dict:
     return {
         "format_version": 2,
         "model_name": "Soo",
-        "model_version": "0.1.0",
+        "model_version": "2.0.0",
         "input_shape": [2, 73, 4],
         "policy_shape": [2, 5329],
         "value_shape": [2, 1],

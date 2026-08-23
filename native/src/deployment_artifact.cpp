@@ -365,7 +365,7 @@ SooDeploymentArtifact validate_soo_deployment_artifact(const std::filesystem::pa
 
     require_integer(*object, "format_version", 2);
     require_string(*object, "model_name", "Soo");
-    require_string(*object, "model_version", "0.1.0");
+    require_string(*object, "model_version", "2.0.0");
     require_shape(*object, "input_shape", {2, 73, 4});
     require_shape(*object, "policy_shape", {2, 5329});
     require_shape(*object, "value_shape", {2, 1});
@@ -415,7 +415,7 @@ SooDeploymentArtifact validate_soo_deployment_artifact(const std::filesystem::pa
     if (runtime_sha256(root, expected) != runtime_hash)
         throw std::runtime_error("deployment runtime SHA-256 mismatch");
 
-    return SooDeploymentArtifact{root, weights, "0.1.0", 128, 6};
+    return SooDeploymentArtifact{root, weights, "2.0.0", 128, 6};
 }
 
 }  // namespace diamond_model

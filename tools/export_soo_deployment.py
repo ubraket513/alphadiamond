@@ -1,9 +1,8 @@
 """Export the authoritative Python Soo model to a portable LibTorch artifact.
 
-This is the Q2 compatibility spike, not the final packaging format. The
-artifact deliberately contains explicit metadata, a TorchScript graph, and a
-small deterministic parity corpus so a native probe can reject incompatible
-inputs before GUI integration begins.
+The artifact deliberately contains explicit metadata, a TorchScript graph, and
+a small deterministic parity corpus so the native GUI can reject incompatible
+inputs before loading the model.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from diamond.alphazero.native.topology import player_table, topology_tables
 from diamond.game.state import build_players
 
 ARTIFACT_FORMAT_VERSION = 2
-MODEL_VERSION = "0.1.0"
+MODEL_VERSION = "2.0.0"
 CORPUS_SEED = 20260823
 CORPUS_BATCH = 2
 
