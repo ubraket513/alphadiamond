@@ -1,6 +1,7 @@
 // The topology tables are data exported from the Python board.  This test does
 // not re-derive them -- it checks the loader refuses malformed input and that
 // the loaded tables satisfy the invariants the rest of the engine assumes.
+#include <cstddef>
 #include <string>
 #include <vector>
 

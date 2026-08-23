@@ -2,6 +2,7 @@
 // anything, so it has to fail loudly rather than creatively: a default naming
 // no bundled model, a path escaping the package, or a bad digest must all be
 // refused before a single weight is touched.
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <string>

@@ -6,6 +6,7 @@
 // proves the C++ inference path is the same function as the trained network,
 // and it now runs for both families from the same code: Soo and Min differ
 // only in the declared input features and value-head width.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>

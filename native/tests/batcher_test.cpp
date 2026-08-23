@@ -6,6 +6,7 @@
 // size (a lane has at most one request outstanding, so a floor above the number
 // of lanes in flight would deadlock).
 #include <chrono>
+#include <cstddef>
 #include <thread>
 #include <vector>
 

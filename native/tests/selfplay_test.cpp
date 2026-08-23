@@ -6,6 +6,7 @@
 // across thread counts is how the scheduler is proven free of cross-lane
 // contamination -- and it is the property most easily lost to a shared buffer
 // or a reused RNG.
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>

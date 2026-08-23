@@ -4,6 +4,8 @@
 // Root visit counts alone are not enough. Two searches can arrive at the same
 // counts through different traversals, so the request sequence -- which leaves
 // were evaluated, in which order -- is what pins the descent.
+#include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <sstream>
 #include <string>

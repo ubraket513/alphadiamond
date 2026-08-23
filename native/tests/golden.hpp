@@ -3,6 +3,7 @@
 // can consume the Python oracle's frozen answers.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <sstream>

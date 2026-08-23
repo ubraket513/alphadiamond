@@ -1,6 +1,7 @@
 // Loading the exported topology tables from disk.  The tables themselves are
 // generated from the Python board (src/diamond/alphazero/native/topology.py);
 // this file only reads the exported bytes, so it is not a second authority.
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <vector>

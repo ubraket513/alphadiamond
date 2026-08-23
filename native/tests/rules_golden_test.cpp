@@ -3,6 +3,7 @@
 // ordered sequence), every successor state, the canonical encoding and the
 // bootstrap prior.  Expectations come from tests/golden/rules-v1.txt.
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
