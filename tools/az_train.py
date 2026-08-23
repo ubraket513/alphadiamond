@@ -200,9 +200,32 @@ def throughput_summary(
 
 
 
-SELFPLAY_BACKENDS = ("python", "native")
+SELFPLAY_BACKENDS = ("python", "native", "auto")
 """``python`` is the default and the oracle.  Selection is explicit and additive:
-a run never silently changes which engine produced its data."""
+a run never silently changes which engine produced its data.
+
+``auto`` is the migration setting: it takes the native backend when the
+extension is importable and the run does not need something the native runner
+lacks, and falls back to Python otherwise.  It never guesses silently -- the
+choice it made is printed and recorded in the run config, so a run's data can
+always be attributed to the engine that produced it."""
+
+
+def resolve_selfplay_backend(requested: str, *, max_game_seconds: float | None) -> str:
+    """Turn ``auto`` into a concrete backend, with the reason on stdout."""
+    if requested != "auto":
+        return requested
+    if max_game_seconds:
+        # The native runner bounds a game by moves, not by wall clock.
+        print("selfplay backend: python (max_game_seconds is set)")
+        return "python"
+    from diamond.alphazero.native import is_available, native_error
+
+    if not is_available():
+        print(f"selfplay backend: python (native unavailable: {native_error()})")
+        return "python"
+    print("selfplay backend: native")
+    return "native"
 
 
 def _mean_batch(metrics: dict) -> float:
@@ -460,6 +483,9 @@ def main() -> int:
     selfplay_backend = args.selfplay_backend or workers.get("selfplay_backend", "python")
     if selfplay_backend not in SELFPLAY_BACKENDS:
         raise SystemExit(f"unknown selfplay_backend: {selfplay_backend}")
+    selfplay_backend = resolve_selfplay_backend(
+        selfplay_backend, max_game_seconds=selfplay_config.max_game_seconds
+    )
     native_lanes = args.native_lanes
     native_max_wait_us = (
         args.native_max_wait_us
