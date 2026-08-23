@@ -2,8 +2,10 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 
 #include <algorithm>
+#include <filesystem>
 #include <chrono>
 #include <mutex>
 #include <numeric>
@@ -13,8 +15,41 @@
 
 #ifdef DIAMOND_QT_HAS_SOO
 #include "diamond_model/deployment_artifact.hpp"
+#include "diamond_model/model_index.hpp"
 #include "diamond_model/soo_evaluator.hpp"
 #include "soo/mcts.hpp"
+#endif
+
+#ifdef DIAMOND_QT_HAS_SOO
+namespace {
+
+// A packaged application ships its models beside the executable and names the
+// default in models/index.json; a development tree has artifacts/soo-spike.
+// Try the package first so a release never silently picks up a stale spike.
+QString resolve_soo_artifact() {
+    const QStringList bases = {QCoreApplication::applicationDirPath(), QDir::currentPath()};
+    for (const QString& base : bases) {
+        const QString models = QDir(base).filePath(QStringLiteral("models"));
+        if (!QFile::exists(QDir(models).filePath(QStringLiteral("index.json")))) continue;
+        try {
+            const auto index = diamond_model::load_model_index(models.toStdString());
+            if (const auto* entry = index.default_for("soo"))
+                return QString::fromStdString(entry->root.string());
+        } catch (const std::exception&) {
+            // A malformed index must not be a silent fallback to some other
+            // model: let the artifact validation below fail loudly instead.
+            return QString::fromStdString((std::filesystem::path(models.toStdString())).string());
+        }
+    }
+    for (const QString& base : bases) {
+        const QString spike = QDir(base).filePath(QStringLiteral("artifacts/soo-spike"));
+        if (QDir(spike).exists()) return spike;
+    }
+    return QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("artifacts/soo-spike"));
+}
+
+}  // namespace
 #endif
 
 class SooSearchRuntime::Impl {
@@ -33,12 +68,12 @@ class SooSearchRuntime::Impl {
             torch::set_num_threads(threads);
             torch::set_num_interop_threads(1);
         });
-        QString root = QDir(QCoreApplication::applicationDirPath())
-                           .filePath(QStringLiteral("artifacts/soo-spike"));
-        if (!QDir(root).exists())
-            root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-        const auto artifact = diamond_model::validate_soo_deployment_artifact(root.toStdString());
-        diamond_model::SooModel model(artifact.width, artifact.residual_blocks);
+        const std::string root = resolve_soo_artifact().toStdString();
+        // Family-scoped: a Min bundle in the Soo slot is refused rather than
+        // loaded with the wrong tensor shapes.
+        const auto artifact = diamond_model::validate_deployment_artifact(root, "soo");
+        diamond_model::DiamondModel model(artifact.width, artifact.residual_blocks,
+                                          artifact.input_features, artifact.value_size);
         model->load_weights(artifact.weights);
         evaluator = std::make_unique<diamond_model::SooEvaluator>(model);
     }

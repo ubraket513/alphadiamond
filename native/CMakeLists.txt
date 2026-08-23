@@ -150,6 +150,13 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
         target_link_libraries(soo_artifact_contract PRIVATE alphadiamond::diamond_model)
         target_compile_features(soo_artifact_contract PRIVATE cxx_std_20)
 
+        add_executable(model_index_test tests/model_index_test.cpp)
+        target_link_libraries(model_index_test PRIVATE alphadiamond::diamond_model)
+        target_include_directories(model_index_test PRIVATE tests)
+        target_compile_features(model_index_test PRIVATE cxx_std_20)
+        add_test(NAME model_index_test
+                 COMMAND model_index_test "${CMAKE_CURRENT_BINARY_DIR}/model-index-scratch")
+
         add_executable(model_parity_test tests/model_parity_test.cpp)
         target_link_libraries(model_parity_test PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
         target_include_directories(model_parity_test PRIVATE ${TORCH_INCLUDE_DIRS} tests)

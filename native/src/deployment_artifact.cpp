@@ -1,4 +1,5 @@
 #include "diamond_model/deployment_artifact.hpp"
+#include "diamond_model/model_index.hpp"
 
 #include <algorithm>
 #include <array>
@@ -498,6 +499,59 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
         throw std::runtime_error("deployment model family mismatch: expected " + expected_family +
                                  ", got " + artifact.model_family);
     return artifact;
+}
+
+const ModelIndexEntry* ModelIndex::default_for(const std::string& family) const {
+    for (const auto& [entry_family, path] : defaults_) {
+        if (entry_family != family) continue;
+        for (const ModelIndexEntry& entry : models) {
+            if (entry.family + "/" + entry.version == path) return &entry;
+        }
+        return nullptr;
+    }
+    return nullptr;
+}
+
+ModelIndex load_model_index(const std::filesystem::path& models_dir) {
+    const JsonValue parsed = JsonParser(read_text(models_dir / "index.json")).parse();
+    const auto* object = std::get_if<JsonValue::Object>(&parsed.value);
+    if (!object) throw std::runtime_error("model index must be a JSON object");
+    require_integer(*object, "index_version", 1);
+
+    ModelIndex index;
+    const auto* models = std::get_if<JsonValue::Array>(&field(*object, "models").value);
+    if (!models) throw std::runtime_error("model index models must be an array");
+    for (const JsonValue& item : *models) {
+        const auto* entry = std::get_if<JsonValue::Object>(&item.value);
+        if (!entry) throw std::runtime_error("model index entry must be an object");
+        ModelIndexEntry loaded;
+        loaded.family = string_field(*entry, "family");
+        loaded.version = string_field(*entry, "version");
+        loaded.model_sha256 = string_field(*entry, "model_sha256");
+        loaded.runtime_sha256 = string_field(*entry, "runtime_sha256");
+        if (!is_hex_digest(loaded.model_sha256) || !is_hex_digest(loaded.runtime_sha256))
+            throw std::runtime_error("model index digest is invalid: " + loaded.family);
+        const std::string relative = string_field(*entry, "path");
+        // A path is a location inside the package, never an escape from it.
+        if (relative.find("..") != std::string::npos || relative.empty())
+            throw std::runtime_error("model index path is not package-relative: " + relative);
+        loaded.root = models_dir / std::filesystem::path(relative);
+        index.models.push_back(std::move(loaded));
+    }
+
+    const auto* defaults = std::get_if<JsonValue::Object>(&field(*object, "defaults").value);
+    if (!defaults) throw std::runtime_error("model index defaults must be an object");
+    for (const auto& [family, value] : *defaults) {
+        const auto* path = std::get_if<std::string>(&value.value);
+        if (!path) throw std::runtime_error("model index default must be a string: " + family);
+        index.defaults_.emplace_back(family, *path);
+    }
+    for (const auto& [family, unused] : *defaults) {
+        (void)unused;
+        if (index.default_for(family) == nullptr)
+            throw std::runtime_error("model index default names no bundled model: " + family);
+    }
+    return index;
 }
 
 }  // namespace diamond_model
