@@ -204,6 +204,13 @@ change anything in that area.
   checkpoint**, `sha256:1634b901e213b065c107eea734b8c172c14babb1c2565352203961e86ea165af`.
   Tracked in git and hash-asserted by a test. Every measurement in the design
   rests on it; do not replace it.
+- `runtime/runs/soo/soo-scratch-20260822/latest.pt` — the **A0 checkpoint at
+  step 44,250**, `sha256:ad0b80321136a1919aac56ec077bf4d786a1454399dc19a78e55c312d7e0a8eb`.
+  The strongest network the project has produced, and what the Qt GUI is
+  exported from for human play. It is *not* a gate fixture and nothing is
+  defined against it — the two files exist for opposite reasons, and the
+  step-80 one is the immutable one. Beats the checkpoint A0 started from
+  (step 34,650) 40W–0L at 128 simulations, no aborted games.
 
 ---
 

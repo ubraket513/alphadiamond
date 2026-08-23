@@ -75,6 +75,35 @@ cmake -S . -B build-qt-clean -G Ninja `
 cmake --build build-qt-clean --parallel 1
 ```
 
+Export the model artifact the application loads. This step is not optional for
+a Soo build: `deploy_native_qt.ps1 -WithSoo` fails outright if
+`artifacts/soo-spike` is absent, and the directory is generated rather than
+tracked, so it does not arrive with a clone.
+
+```powershell
+python tools\export_soo_deployment.py artifacts\soo-spike `
+  --checkpoint runtime\runs\soo\soo-scratch-20260822\latest.pt
+```
+
+`soo-scratch-20260822/latest.pt` is the A0 checkpoint at training step 44,250 --
+the strongest network the project has produced, and the one the GUI should play
+humans with. It is not the same file as
+`runtime/runs/soo/cpu8h-soo-20260819/latest.pt`, which stays in the repository
+untouched: that one is the immutable step-80 checkpoint every native gate
+measurement is defined against, and a test asserts its SHA-256. Exporting from
+it would produce a working artifact that plays like an untrained network.
+
+Omitting `--checkpoint` also produces a valid artifact, from *random* weights.
+That is useful for shell and packaging work and useless for playing, so pass
+the flag whenever the build is meant to play.
+
+Verify the artifact against the native contract before packaging:
+
+```powershell
+.\build-qt-soo-clean\native\soo_artifact_contract.exe .\artifacts\soo-spike
+.\build-qt-soo-clean\native\soo_native_model_probe.exe .\artifacts\soo-spike
+```
+
 Create a self-contained package:
 
 ```powershell
