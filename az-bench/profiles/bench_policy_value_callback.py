@@ -192,7 +192,8 @@ def main() -> int:
                 timed(fn, 20)
             rounds = [[timed(fn, args.calls) for _, fn in variants] for _ in range(args.rounds)]
             medians = [statistics.median(r[i] for r in rounds) for i in range(len(variants))]
-            base = medians[0]
+            # Ratios are medians of per-round pairs, not a ratio of medians: the
+            # point of interleaving is that each round shares one load level.
             cells = "".join(
                 f"{t:>18.3f} x{statistics.median(r[i] / r[0] for r in rounds):>7.3f}"
                 for i, t in enumerate(medians)
