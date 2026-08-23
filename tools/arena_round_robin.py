@@ -178,7 +178,8 @@ def main() -> int:
     torch.set_num_threads(4)
     config = json.loads(args.config.read_text(encoding="utf-8"))
     simulations = args.simulations or config["mcts"]["simulations"]
-    max_moves = args.max_moves or config["self_play"]["max_moves"]
+    # arena.max_moves, not self_play.max_moves -- see arena_head_to_head.py.
+    max_moves = args.max_moves or config["arena"]["max_moves"]
 
     loaded = {}
     for name, path in entries:

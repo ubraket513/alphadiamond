@@ -133,7 +133,12 @@ def main() -> int:
     arena_config = ArenaConfig(
         games=args.games,
         seed=args.seed,
-        max_moves=args.max_moves or config["self_play"]["max_moves"],
+        # arena.max_moves, not self_play.max_moves.  The two differ by 4x (2000
+        # against 500) and reading the self-play cap here silently turned every
+        # arena into a 500-move robustness probe: an unfinished game is dropped
+        # from the denominator, so a pair that times out often reports a win
+        # rate over whatever subset happened to terminate.
+        max_moves=args.max_moves or config["arena"]["max_moves"],
         promotion_threshold=config["arena"]["promotion_threshold"],
     )
     def game_factory(order: tuple[int, ...]) -> DiamondSearchAdapter:
