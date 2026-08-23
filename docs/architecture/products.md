@@ -46,6 +46,17 @@ frozen into a language-neutral file:
 * `tests/test_golden_is_current.py` regenerates the file in CI and fails if it
   no longer matches the oracle. That is what keeps the frozen answers honest.
 
+### What each native test covers
+
+| Test | Proves |
+|---|---|
+| `action_codec_test` | every source/destination pair round-trips; out-of-range ids throw |
+| `topology_test` | loader rejects malformed input; neighbour symmetry, camp structure, distance metric, canonical rotation is a distance-preserving bijection |
+| `rules_golden_test` | Gate A: ordered legal actions, every successor, the encoding, the prior |
+| `mcts_golden_test` | Gate B: root statistics *and* the evaluator request sequence, q values bit-exact |
+| `batcher_test` | no minimum batch, batch cap, arrival order, `stop()` drains |
+| `selfplay_test` | lane trajectories do not depend on the worker count; episodes reproduce from a job list |
+
 Ordering is part of the contract, not cosmetic: `add_dirichlet_noise` draws one
 `gammavariate` per prior entry, so the same set in a different order is a
 different search.

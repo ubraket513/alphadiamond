@@ -32,8 +32,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+# The Gate B reference evaluator lives with the parity tests it was written for.
+sys.path.insert(0, str(ROOT / "tests" / "native"))
 
 from diamond.alphazero.action_codec import ActionCodec, ActionSpaceSpec
+from diamond.alphazero.config import MCTSConfig
+from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.bootstrap.heuristic import (
     CanonicalTargetVacancyDistancePrior,
     pairwise_distance_table,
@@ -42,15 +46,43 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAd
 from diamond.alphazero.native.topology import player_table, topology_tables
 from diamond.game.board import Camp, standard_board
 from diamond.game.state import GameState, GameStatus, build_players
+from reference_evaluator import ReferenceEvaluator
 
 CORPUS = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 GOLDEN = ROOT / "tests" / "golden"
 RULES = GOLDEN / "rules-v1.txt"
+MCTS = GOLDEN / "mcts-v1.txt"
+
+# Gate B's sample: a full search costs ~200x a Gate A comparison, so the corpus
+# is strided rather than searched whole. Simulation counts include 1 and 2
+# because that is where an off-by-one in the backup shows up.
+MCTS_STRIDE = 47
+MCTS_SIMULATIONS = (1, 2, 8, 33, 64)
 TOPOLOGY = GOLDEN / "topology"
 
 FNV_OFFSET = 0xCBF29CE484222325
 FNV_PRIME = 0x100000001B3
 MASK = 0xFFFFFFFFFFFFFFFF
+
+
+class Fnv:
+    """Incremental FNV-1a 64, for streams that are not one contiguous buffer."""
+
+    def __init__(self) -> None:
+        self.value = FNV_OFFSET
+
+    def byte(self, value: int) -> None:
+        self.value = ((self.value ^ value) * FNV_PRIME) & MASK
+
+    def bytes(self, payload: bytes) -> None:
+        for byte in payload:
+            self.byte(byte)
+
+    def i32(self, value: int) -> None:
+        self.bytes(struct.pack("<i", value))
+
+    def u64(self, value: int) -> None:
+        self.bytes(struct.pack("<Q", value))
 
 
 def fnv1a(payload: bytes) -> int:
@@ -165,6 +197,66 @@ def _record_line(record: dict, oracle: Oracle) -> tuple[str, str]:
     return pos, exp
 
 
+
+def _doubles_bytes(values) -> bytes:
+    return struct.pack(f"<{len(values)}d", *values)
+
+
+def _mcts_lines(records: list[dict], oracle: Oracle) -> list[str]:
+    """Gate B, frozen: the search's root statistics and its request sequence.
+
+    q values are hashed as raw doubles, not compared to a tolerance. The PUCT
+    key is a double comparison, so a single-ulp drift is not a rounding
+    curiosity -- it can flip a selection and change the whole descent.
+    """
+    lines = [
+        "# alphadiamond mcts golden v1",
+        "# mcts <tag> <evaluator> <simulations> <current> <turn> <occupancy>",
+        "# mexp <selected> <root_fnv> <visit_fnv> <q_fnv> <policy_fnv> <trace_fnv>"
+        " <calls> <simulations_run>",
+    ]
+    searchable = [
+        record for record in records
+        if record["player_count"] == 2 and record["status"] != "finished"
+    ]
+    for record in searchable[::MCTS_STRIDE]:
+        state = _state(record)
+        for evaluator_name in ("hash", "uniform"):
+            for simulations in MCTS_SIMULATIONS:
+                evaluator = ReferenceEvaluator(uniform=evaluator_name == "uniform")
+                config = MCTSConfig(
+                    simulations=simulations, c_puct=1.5, dirichlet_epsilon=0.0, seed=0
+                )
+                result = MCTS2P(oracle.search, evaluator, config).run(state, temperature=0.0)
+
+                actions = list(result.visit_counts)  # expansion order, not sorted
+                visits = [result.visit_counts[action] for action in actions]
+                q_values = [result.q_values[action] for action in actions]
+                policy = [result.policy[action] for action in actions]
+
+                trace = Fnv()
+                for request_digest, request_actions in evaluator.trace:
+                    trace.u64(request_digest)
+                    for action in request_actions:
+                        trace.i32(action)
+
+                occupancy = "".join(str(cell) for cell in record["occupancy"])
+                lines.append(
+                    f"mcts {record['tag']} {evaluator_name} {simulations} "
+                    f"{record['current_player_id']} {record['turn_number']} {occupancy}"
+                )
+                lines.append(
+                    f"mexp {result.selected_action} "
+                    f"{fnv1a(_actions_bytes(actions)):016x} "
+                    f"{fnv1a(struct.pack(f'<{len(visits)}i', *visits)):016x} "
+                    f"{fnv1a(_doubles_bytes(q_values)):016x} "
+                    f"{fnv1a(_doubles_bytes(policy)):016x} "
+                    f"{trace.value:016x} "
+                    f"{evaluator.calls} {simulations}"
+                )
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -197,9 +289,17 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(pos)
         lines.append(exp)
 
-    RULES.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"{RULES}: {len(records)} positions")
-    print(f"{TOPOLOGY}: 5 tables")
+    rules = output / RULES.name
+    rules.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
+    mcts = output / MCTS.name
+    mcts.write_text(
+        "\n".join(_mcts_lines(records, oracles[2])) + "\n", encoding="utf-8", newline="\n"
+    )
+
+    print(f"{rules}: {len(records)} positions")
+    print(f"{mcts}: gate B searches")
+    print(f"{output / 'topology'}: 5 tables")
     return 0
 
 

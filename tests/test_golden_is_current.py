@@ -19,6 +19,7 @@ GENERATOR = ROOT / "tools" / "build_golden.py"
 
 FILES = [
     "rules-v1.txt",
+    "mcts-v1.txt",
     "topology/topology_neighbour.i8",
     "topology/topology_camp_positions.i32",
     "topology/topology_pairwise_distance.i32",
@@ -28,13 +29,6 @@ FILES = [
 
 
 def test_golden_matches_the_python_oracle(tmp_path: Path) -> None:
-    for name in FILES:
-        source = GOLDEN / name
-        assert source.is_file(), f"missing golden file: {name}"
-        target = tmp_path / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
-
     subprocess.run(
         [sys.executable, str(GENERATOR), "--output", str(tmp_path)],
         cwd=ROOT,
@@ -42,7 +36,16 @@ def test_golden_matches_the_python_oracle(tmp_path: Path) -> None:
         capture_output=True,
     )
 
-    stale = [name for name in FILES if not filecmp.cmp(GOLDEN / name, tmp_path / name, shallow=False)]
+    # Regenerating into an empty directory also proves --output is honoured:
+    # a generator that ignored it would leave tmp_path empty and fail here
+    # rather than silently comparing the committed files with themselves.
+    for name in FILES:
+        assert (tmp_path / name).is_file(), f"generator did not write {name}"
+        assert (GOLDEN / name).is_file(), f"missing committed golden file: {name}"
+
+    stale = [
+        name for name in FILES if not filecmp.cmp(GOLDEN / name, tmp_path / name, shallow=False)
+    ]
     assert not stale, (
         f"golden files are stale: {stale}; the Python oracle changed. "
         "Re-run `make golden`, and treat any C++ test that now fails as the "
