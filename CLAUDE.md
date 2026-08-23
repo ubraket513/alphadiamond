@@ -55,6 +55,21 @@ pytest -m "not gui"              # engine + AlphaZero + native gates
 pytest -m gui                    # needs Qt and QT_QPA_PLATFORM=offscreen
 ```
 
+## Shipping a model
+
+```bash
+python tools/export_deployment.py artifacts/soo-spike --family soo \
+    --checkpoint runtime/runs/soo/<run>/latest.pt
+python tools/build_model_index.py dist/models --artifact soo=artifacts/soo-spike
+make package                     # CPack ZIP, models bundled beside the binary
+```
+
+Artifact format v3 declares the model family and architecture and is validated
+against the weights on both sides; see
+[docs/architecture/model_artifact_v3.md](docs/architecture/model_artifact_v3.md).
+A training checkpoint (optimizer, scheduler, RNG) is not a deployment artifact
+and is never bundled.
+
 ## Training data
 
 Checkpoints, replay and logs live in the Hugging Face bucket, synchronised

@@ -56,6 +56,14 @@ frozen into a language-neutral file:
 | `mcts_golden_test` | Gate B: root statistics *and* the evaluator request sequence, q values bit-exact |
 | `batcher_test` | no minimum batch, batch cap, arrival order, `stop()` drains |
 | `selfplay_test` | lane trajectories do not depend on the worker count; episodes reproduce from a job list |
+| `model_index_test` | a packaged `models/index.json` is refused when a default names no bundled model, a path escapes the package, or a digest is malformed |
+
+With LibTorch (`-DDIAMOND_BUILD_LIBTORCH_PROBE=ON`, artifacts exported first):
+
+| Test | Proves |
+|---|---|
+| `soo_artifact_contract` | v3 metadata validation: missing/unknown fields at every nesting level, a family declared over the wrong shapes, an architecture that no longer matches the tensors, a foreign game contract, corrupt or missing weights |
+| `model_parity_test` | native inference reproduces PyTorch's own outputs on the artifact's corpus, per family |
 
 Ordering is part of the contract, not cosmetic: `add_dirichlet_noise` draws one
 `gammavariate` per prior entry, so the same set in a different order is a
