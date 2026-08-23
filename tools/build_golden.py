@@ -35,18 +35,19 @@ sys.path.insert(0, str(ROOT / "src"))
 # The Gate B reference evaluator lives with the parity tests it was written for.
 sys.path.insert(0, str(ROOT / "tests" / "native"))
 
+from reference_evaluator import ReferenceEvaluator
+
 from diamond.alphazero.action_codec import ActionCodec, ActionSpaceSpec
-from diamond.alphazero.config import MCTSConfig
-from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.bootstrap.heuristic import (
     CanonicalTargetVacancyDistancePrior,
     pairwise_distance_table,
 )
+from diamond.alphazero.config import MCTSConfig
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
+from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.native.topology import player_table, topology_tables
 from diamond.game.board import Camp, standard_board
 from diamond.game.state import GameState, GameStatus, build_players
-from reference_evaluator import ReferenceEvaluator
 
 CORPUS = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 GOLDEN = ROOT / "tests" / "golden"
@@ -212,8 +213,10 @@ def _mcts_lines(records: list[dict], oracle: Oracle) -> list[str]:
     lines = [
         "# alphadiamond mcts golden v1",
         "# mcts <tag> <evaluator> <simulations> <current> <turn> <occupancy>",
-        "# mexp <selected> <root_fnv> <visit_fnv> <q_fnv> <policy_fnv> <trace_fnv>"
-        " <calls> <simulations_run>",
+        (
+            "# mexp <selected> <root_fnv> <visit_fnv> <q_fnv> <policy_fnv> <trace_fnv>"
+            " <calls> <simulations_run>"
+        ),
     ]
     searchable = [
         record for record in records
