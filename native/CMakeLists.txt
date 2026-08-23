@@ -138,11 +138,42 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
     endif()
 
     if(BUILD_TESTING)
+        # Artifact fixtures are exported, not committed:
+        #   python tools/export_deployment.py artifacts/soo-spike --family soo
+        #   python tools/export_deployment.py artifacts/min-spike --family min
+        # The tests register only for the artifacts that are present, so a
+        # checkout without them configures cleanly instead of failing late.
+        set(DIAMOND_SOO_ARTIFACT "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")
+        set(DIAMOND_MIN_ARTIFACT "${PROJECT_SOURCE_DIR}/artifacts/min-spike")
+
         add_executable(soo_artifact_contract tests/artifact_contract.cpp)
         target_link_libraries(soo_artifact_contract PRIVATE alphadiamond::diamond_model)
         target_compile_features(soo_artifact_contract PRIVATE cxx_std_20)
-        add_test(NAME soo_artifact_contract
-                 COMMAND soo_artifact_contract "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")
+
+        add_executable(model_parity_test tests/model_parity_test.cpp)
+        target_link_libraries(model_parity_test PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
+        target_include_directories(model_parity_test PRIVATE ${TORCH_INCLUDE_DIRS} tests)
+        target_compile_features(model_parity_test PRIVATE cxx_std_20)
+        target_compile_definitions(model_parity_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        if(MSVC)
+            target_compile_options(model_parity_test PRIVATE /bigobj)
+        endif()
+
+        if(EXISTS "${DIAMOND_SOO_ARTIFACT}/metadata.json")
+            if(EXISTS "${DIAMOND_MIN_ARTIFACT}/metadata.json")
+                add_test(NAME soo_artifact_contract
+                         COMMAND soo_artifact_contract
+                                 "${DIAMOND_SOO_ARTIFACT}" "${DIAMOND_MIN_ARTIFACT}")
+                add_test(NAME model_parity_test
+                         COMMAND model_parity_test
+                                 soo "${DIAMOND_SOO_ARTIFACT}" min "${DIAMOND_MIN_ARTIFACT}")
+            else()
+                add_test(NAME soo_artifact_contract
+                         COMMAND soo_artifact_contract "${DIAMOND_SOO_ARTIFACT}")
+                add_test(NAME model_parity_test
+                         COMMAND model_parity_test soo "${DIAMOND_SOO_ARTIFACT}")
+            endif()
+        endif()
     endif()
 endif()
 

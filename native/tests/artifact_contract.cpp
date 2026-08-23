@@ -41,7 +41,16 @@ void erase_line_containing(std::string& text, const std::string& marker) {
 
 bool rejects(const std::filesystem::path& root) {
     try {
-        (void)diamond_model::validate_soo_deployment_artifact(root);
+        (void)diamond_model::validate_deployment_artifact(root);
+        return false;
+    } catch (const std::exception&) {
+        return true;
+    }
+}
+
+bool rejects_family(const std::filesystem::path& root, const std::string& family) {
+    try {
+        (void)diamond_model::validate_deployment_artifact(root, family);
         return false;
     } catch (const std::exception&) {
         return true;
@@ -56,7 +65,7 @@ struct TempArtifact {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) return 2;
+    if (argc < 2) return 2;
     try {
         const std::filesystem::path source(argv[1]);
         TempArtifact temporary{std::filesystem::temp_directory_path() /
@@ -67,10 +76,20 @@ int main(int argc, char** argv) {
 
         const auto metadata_path = temporary.path / "metadata.json";
         const std::string original_metadata = read_text(metadata_path);
-        (void)diamond_model::validate_soo_deployment_artifact(temporary.path);
+        const auto artifact = diamond_model::validate_deployment_artifact(temporary.path);
+        if (artifact.model_family != "soo") throw std::runtime_error("expected a Soo artifact");
+        if (artifact.input_features != 4 || artifact.value_size != 1)
+            throw std::runtime_error("Soo artifact reported the wrong tensor shape");
 
+        // A family the binary knows, declared on weights that belong to another
+        // one: the shapes must catch it even though the name is valid.
         std::string changed = original_metadata;
-        erase_line_containing(changed, "\"model_name\"");
+        replace_once(changed, "\"model_family\": \"soo\"", "\"model_family\": \"min\"");
+        write_text(metadata_path, changed);
+        if (!rejects(temporary.path)) throw std::runtime_error("wrong model family accepted");
+
+        changed = original_metadata;
+        erase_line_containing(changed, "\"model_family\"");
         write_text(metadata_path, changed);
         if (!rejects(temporary.path)) throw std::runtime_error("missing metadata field accepted");
 
@@ -79,13 +98,31 @@ int main(int argc, char** argv) {
         write_text(metadata_path, changed);
         if (!rejects(temporary.path)) throw std::runtime_error("extra metadata field accepted");
 
+        // Format 3 validates the weights against the *declared* architecture,
+        // so a declaration that no longer matches the tensors must be refused.
         changed = original_metadata;
-        replace_once(changed, "  \"width\": 128", "  \"width\": 64");
+        replace_once(changed, "\"width\": 128", "\"width\": 64");
         write_text(metadata_path, changed);
         if (!rejects(temporary.path)) throw std::runtime_error("wrong model width accepted");
 
         changed = original_metadata;
-        const std::string hash_prefix = "  \"model_sha256\": \"";
+        replace_once(changed, "\"residual_blocks\": 6", "\"residual_blocks\": 8");
+        write_text(metadata_path, changed);
+        if (!rejects(temporary.path)) throw std::runtime_error("wrong block count accepted");
+
+        // A different game contract is a different game, not a different model.
+        changed = original_metadata;
+        replace_once(changed, "\"topology\": \"diamond73-v1\"", "\"topology\": \"diamond73-v2\"");
+        write_text(metadata_path, changed);
+        if (!rejects(temporary.path)) throw std::runtime_error("foreign game contract accepted");
+
+        changed = original_metadata;
+        replace_once(changed, "\"format_version\": 3", "\"format_version\": 2");
+        write_text(metadata_path, changed);
+        if (!rejects(temporary.path)) throw std::runtime_error("older format version accepted");
+
+        changed = original_metadata;
+        const std::string hash_prefix = "\"model_sha256\": \"";
         const size_t hash_at = changed.find(hash_prefix);
         if (hash_at == std::string::npos) throw std::runtime_error("model hash fixture missing");
         changed.replace(hash_at + hash_prefix.size(), 64, std::string(64, '0'));
@@ -117,8 +154,20 @@ int main(int argc, char** argv) {
         if (!rejects(temporary.path)) throw std::runtime_error("corrupt tensor content accepted");
         write_text(weight, original_weight);
 
-        (void)diamond_model::validate_soo_deployment_artifact(temporary.path);
-        std::cout << "Soo deployment artifact contract passed\n";
+        (void)diamond_model::validate_deployment_artifact(temporary.path, "soo");
+        if (!rejects_family(temporary.path, "min"))
+            throw std::runtime_error("family-scoped validation accepted the wrong family");
+
+        // The second artifact, when supplied, is a Min bundle: the same
+        // validator must accept it without a single Soo constant relaxed.
+        if (argc >= 3) {
+            const auto min_artifact = diamond_model::validate_deployment_artifact(argv[2], "min");
+            if (min_artifact.input_features != 6 || min_artifact.value_size != 3)
+                throw std::runtime_error("Min artifact reported the wrong tensor shape");
+            std::cout << "Min deployment artifact accepted\n";
+        }
+
+        std::cout << "deployment artifact contract passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "artifact contract failed: " << error.what() << "\n";

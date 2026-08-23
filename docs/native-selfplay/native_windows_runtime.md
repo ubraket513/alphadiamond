@@ -81,7 +81,7 @@ a Soo build: `deploy_native_qt.ps1 -WithSoo` fails outright if
 tracked, so it does not arrive with a clone.
 
 ```powershell
-python tools\export_soo_deployment.py artifacts\soo-spike `
+python tools\export_deployment.py artifacts\soo-spike `
   --checkpoint runtime\runs\soo\soo-scratch-20260822\latest.pt
 ```
 

@@ -1,9 +1,14 @@
-# Deployment artifact format v3 (proposed)
+# Deployment artifact format v3
 
-Written 2026-08-24. Not implemented: `tools/export_soo_deployment.py` still
-writes v2, which hardcodes Soo model version `2.0.0`, width 128 and six
-residual blocks. This record fixes the shape v3 must have *before* Min gets a
-native inference path, so that adding Min is not also a format redesign.
+Written 2026-08-24, implemented the same day. v2 hardcoded Soo model version
+`2.0.0`, width 128 and six residual blocks, so a second model family could not
+be described without changing the validator. v3 declares the family and the
+architecture, and the loader checks the weights against the declaration --
+which is what made adding Min a model port rather than a format redesign.
+
+Written by `tools/export_deployment.py --family soo|min`; validated by
+`diamond_model::validate_deployment_artifact` and
+`diamond.alphazero.deployment.validate_metadata`.
 
 ## Training checkpoint is not a deployment artifact
 
@@ -72,10 +77,15 @@ stores every model twice. v3 ships exactly one canonical runtime
 representation, and keeps the second only as a conversion or diagnostic fixture
 if it is still earning its place.
 
-## Open before Min can be bundled
+## Min
 
-* `native/src/soo_model.cpp` / `soo_evaluator.cpp` are Soo-specific; Min needs
-  its own native inference and its own artifact contract test.
-* Promotion policy: preserve every checkpoint in the bucket, convert release
-  candidates during promotion, publish only accepted artifacts, bundle one
-  default per family.
+`DiamondModel` (the former `SooModelImpl`, generalised) takes the input-feature
+count and value-head width from the artifact, so one implementation serves both
+families: Soo is 4 features and a scalar value, Min is 6 features and one value
+per seat. `model_parity_test` runs the artifact's own deterministic corpus
+through the native model for each family and compares against the outputs
+PyTorch produced at export time; both currently match exactly.
+
+Still open: promotion policy -- preserve every checkpoint in the bucket,
+convert release candidates during promotion, publish only accepted artifacts,
+bundle one default per family.
