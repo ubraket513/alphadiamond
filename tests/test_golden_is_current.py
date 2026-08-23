@@ -28,6 +28,24 @@ FILES = [
 ]
 
 
+def _first_difference(name: str, committed: Path, regenerated: Path) -> str:
+    """Name the first differing line.
+
+    "The file changed" is not an actionable report when the file has thousands
+    of lines and one number in one of them moved.
+    """
+    if not name.endswith(".txt"):
+        return f"{name}: binary difference"
+    before = committed.read_text(encoding="utf-8").splitlines()
+    after = regenerated.read_text(encoding="utf-8").splitlines()
+    if len(before) != len(after):
+        return f"{name}: {len(before)} lines committed, {len(after)} regenerated"
+    for index, (old, new) in enumerate(zip(before, after), start=1):
+        if old != new:
+            return f"{name}:{index}\n  committed:   {old}\n  regenerated: {new}"
+    return f"{name}: differs only in line endings"
+
+
 def test_golden_matches_the_python_oracle(tmp_path: Path) -> None:
     subprocess.run(
         [sys.executable, str(GENERATOR), "--output", str(tmp_path)],
@@ -46,8 +64,11 @@ def test_golden_matches_the_python_oracle(tmp_path: Path) -> None:
     stale = [
         name for name in FILES if not filecmp.cmp(GOLDEN / name, tmp_path / name, shallow=False)
     ]
+    detail = "\n".join(
+        _first_difference(name, GOLDEN / name, tmp_path / name) for name in stale
+    )
     assert not stale, (
         f"golden files are stale: {stale}; the Python oracle changed. "
         "Re-run `make golden`, and treat any C++ test that now fails as the "
-        "port drifting, not as a fixture to overwrite."
+        f"port drifting, not as a fixture to overwrite.\n{detail}"
     )
