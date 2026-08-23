@@ -18,10 +18,13 @@ Variants:
 ``device rows``
     The callback as it shipped before this benchmark existed.  Builds row
     membership with ``repeat_interleave(arange(n, device=cuda), counts_cuda)``.
+``output_size`` (now shipped)
+    Identical output, with the length ``repeat_interleave`` would otherwise sync
+    to discover passed in -- ``offsets`` already knows it on the host.
 ``host rows``
-    Identical output, ``rows`` built with ``np.repeat`` and transferred.  The
-    device version has to copy ``counts`` back to size its own result, so it is
-    a device-to-host sync on the evaluator thread wearing device clothing.
+    Identical output, ``rows`` built with ``np.repeat`` and transferred.  Ties
+    with ``output_size`` on every shape measured, and was tried first, but it
+    moves a 41 KB buffer and takes row construction off the device.
 ``legal only``
     Scores just the legal actions instead of building ``[B, 5329]`` and gathering
     ~1 % of it back.  Reads like the obvious win and **is not one** -- the dense
@@ -87,6 +90,19 @@ def _variants(model, torch, device, feats, actions, counts):
         columns = torch.from_numpy(actions).to(device)
         return finish(_segmented_softmax(logits[rows, columns], rows, counts.size), values)
 
+    def output_size():
+        nodes, values = head()
+        with torch.inference_mode():
+            logits = model.policy_head(nodes)
+        counts_device = torch.from_numpy(counts).to(device)
+        rows = torch.repeat_interleave(
+            torch.arange(counts_device.numel(), device=device),
+            counts_device,
+            output_size=int(actions.size),
+        )
+        columns = torch.from_numpy(actions).to(device)
+        return finish(_segmented_softmax(logits[rows, columns], rows, counts.size), values)
+
     def host_rows():
         nodes, values = head()
         with torch.inference_mode():
@@ -110,7 +126,8 @@ def _variants(model, torch, device, feats, actions, counts):
     return [
         ("value_only", value_only),
         ("device rows (was shipped)", device_rows),
-        ("host rows (now shipped)", host_rows),
+        ("output_size (now shipped)", output_size),
+        ("host rows", host_rows),
         ("legal only", legal_only),
     ]
 
