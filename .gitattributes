@@ -4,6 +4,7 @@ docs/** linguist-vendored
 blueprint/** linguist-vendored
 .vscode/** linguist-vendored
 .github/** linguist-vendored
+az-bench/** linguist-vendored
 
 # Ignore specific files
 # path/to/large-file.js linguist-vendored
