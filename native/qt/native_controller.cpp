@@ -14,7 +14,6 @@
 
 #include <cmath>
 #include <algorithm>
-#include <fstream>
 #include <stdexcept>
 #include <numeric>
 #include <map>
@@ -754,33 +753,7 @@ bool NativeController::loadGame(const QUrl& path) {
 void NativeController::loadTopology() {
     QString root = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("artifacts/soo-spike"));
     if (!QDir(root).exists()) root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-    auto& topo = soo::mutable_topology();
-    {
-        std::ifstream file(root.toStdString() + "/topology_neighbour.i8", std::ios::binary);
-        if (!file) return;
-        file.read(reinterpret_cast<char*>(topo.neighbour.data()), sizeof(topo.neighbour));
-        if (file.gcount() != static_cast<std::streamsize>(sizeof(topo.neighbour))) return;
-    }
-    std::vector<int32_t> camps(60), pairwise(5329), physical(438), canonical(438);
-    auto read_vector = [&](const char* name, std::vector<int32_t>& values) {
-        std::ifstream file(root.toStdString() + "/" + name, std::ios::binary);
-        if (!file) return false;
-        file.read(reinterpret_cast<char*>(values.data()), values.size() * sizeof(int32_t));
-        return file.gcount() == static_cast<std::streamsize>(values.size() * sizeof(int32_t));
-    };
-    if (!read_vector("topology_camp_positions.i32", camps) ||
-        !read_vector("topology_pairwise_distance.i32", pairwise) ||
-        !read_vector("topology_physical_to_canonical.i32", physical) ||
-        !read_vector("topology_canonical_to_physical.i32", canonical)) return;
-    for (int c = 0; c < 6; ++c) for (int p = 0; p < 10; ++p)
-        topo.camp_positions[c][p] = static_cast<uint8_t>(camps[c * 10 + p]);
-    for (int r = 0; r < 73; ++r) for (int c = 0; c < 73; ++c)
-        topo.pairwise[r][c] = static_cast<uint8_t>(pairwise[r * 73 + c]);
-    for (int c = 0; c < 6; ++c) for (int p = 0; p < 73; ++p) {
-        topo.physical_to_canonical[c][p] = static_cast<uint8_t>(physical[c * 73 + p]);
-        topo.canonical_to_physical[c][p] = static_cast<uint8_t>(canonical[c * 73 + p]);
-    }
-    topo.configured = true;
+    soo::load_topology_from_dir(root.toStdString());
 }
 
 void NativeController::rebuildPieceModel() {

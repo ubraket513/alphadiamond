@@ -1,0 +1,93 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "native-ci",
+      "displayName": "Native core + tests, no Python",
+      "description": "The definition-of-done build: no interpreter, no pybind, no Qt.",
+      "binaryDir": "${sourceDir}/build/native-ci",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": "ON",
+        "DIAMOND_BUILD_NATIVE_TESTS": "ON",
+        "DIAMOND_BUILD_PYBIND": "OFF",
+        "DIAMOND_BUILD_QT": "OFF"
+      }
+    },
+    {
+      "name": "native-release",
+      "inherits": "native-ci",
+      "displayName": "Native release",
+      "binaryDir": "${sourceDir}/build/native-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "native-asan",
+      "inherits": "native-ci",
+      "displayName": "Native core + tests, ASan/UBSan",
+      "binaryDir": "${sourceDir}/build/native-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      },
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "native-qt",
+      "inherits": "native-ci",
+      "displayName": "Native core + Qt shell",
+      "binaryDir": "${sourceDir}/build/native-qt",
+      "cacheVariables": { "DIAMOND_BUILD_QT": "ON" }
+    },
+    {
+      "name": "pybind",
+      "inherits": "native-ci",
+      "displayName": "Python bridge (parity lane only)",
+      "binaryDir": "${sourceDir}/build/pybind",
+      "cacheVariables": { "DIAMOND_BUILD_PYBIND": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "native-ci", "configurePreset": "native-ci", "configuration": "RelWithDebInfo" },
+    { "name": "native-release", "configurePreset": "native-release", "configuration": "Release" },
+    { "name": "native-asan", "configurePreset": "native-asan", "configuration": "Debug" },
+    { "name": "native-qt", "configurePreset": "native-qt", "configuration": "RelWithDebInfo" },
+    { "name": "pybind", "configurePreset": "pybind", "configuration": "RelWithDebInfo" }
+  ],
+  "testPresets": [
+    {
+      "name": "native-ci",
+      "configurePreset": "native-ci",
+      "configuration": "RelWithDebInfo",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "native-release",
+      "configurePreset": "native-release",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "native-asan",
+      "configurePreset": "native-asan",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "native-qt",
+      "configurePreset": "native-qt",
+      "configuration": "RelWithDebInfo",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ set(SOO_CORE_SOURCES
     src/encoder.cpp
     src/prior.cpp
     src/rules.cpp
+    src/topology_io.cpp
 )
 
 set(SOO_SEARCH_SOURCES
@@ -58,10 +59,25 @@ if(DIAMOND_BUILD_PYBIND)
 endif()
 
 if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
-    add_executable(soo_native_smoke tests/smoke.cpp)
-    target_link_libraries(soo_native_smoke PRIVATE alphadiamond::soo_search)
-    target_compile_features(soo_native_smoke PRIVATE cxx_std_20)
-    add_test(NAME soo_native_smoke COMMAND soo_native_smoke)
+    # Golden fixtures are committed data, not build output: the tests below run
+    # on a machine with no Python, no pybind and no pytest.
+    set(DIAMOND_GOLDEN_DIR "${PROJECT_SOURCE_DIR}/tests/golden")
+
+    function(diamond_add_native_test name)
+        add_executable(${name} tests/${name}.cpp)
+        target_link_libraries(${name} PRIVATE alphadiamond::soo_search)
+        target_compile_features(${name} PRIVATE cxx_std_20)
+        target_compile_options(${name} PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra>
+            $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        )
+        add_test(NAME ${name} COMMAND ${name} ${ARGN})
+    endfunction()
+
+    diamond_add_native_test(action_codec_test)
+    diamond_add_native_test(topology_test "${DIAMOND_GOLDEN_DIR}/topology")
+    diamond_add_native_test(rules_golden_test
+        "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
 endif()
 
 if(DIAMOND_BUILD_LIBTORCH_PROBE)
