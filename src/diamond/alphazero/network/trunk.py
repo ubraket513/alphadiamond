@@ -5,9 +5,9 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from ..config import NetworkConfig
 from ...game.board import Board, standard_board
 from ...game.coordinates import NUM_DIRECTIONS
+from ..config import NetworkConfig
 
 
 def directional_adjacency(board: Board) -> Tensor:
@@ -21,7 +21,23 @@ def directional_adjacency(board: Board) -> Tensor:
 
 
 class DirectionalResidualBlock(nn.Module):
-    def __init__(self, width: int) -> None:
+    """``nodes + GELU(LayerNorm(message))``, optionally behind a scalar gate.
+
+    ``gated`` adds a single zero-initialised ``alpha`` after the activation, so
+    the block starts as an exact identity and opens as training decides.  This
+    is ReZero's ``x + alpha * F(x)``, and the placement is the point: zeroing
+    the *LayerNorm* scale instead also yields an identity, but that parameter
+    sits **inside** ``F`` and before a nonlinearity, so it rescales the branch's
+    representation rather than its amplitude -- ``GELU(gamma * z)`` is not
+    ``gamma * GELU(z)``.  A gate that reads as "how much of this branch do I
+    want" has to be outside the activation, and only then does its sign and
+    magnitude mean what one would expect.
+
+    Off by default: the parameter is absent entirely when ``gated`` is false, so
+    every existing checkpoint keeps its exact ``state_dict``.
+    """
+
+    def __init__(self, width: int, *, gated: bool = False) -> None:
         super().__init__()
         self.self_projection = nn.Linear(width, width)
         self.direction_projections = nn.ModuleList(
@@ -29,6 +45,10 @@ class DirectionalResidualBlock(nn.Module):
         )
         self.norm = nn.LayerNorm(width)
         self.activation = nn.GELU()
+        if gated:
+            self.alpha = nn.Parameter(torch.zeros(1))
+        else:
+            self.register_parameter("alpha", None)
 
     def forward(self, nodes: Tensor, adjacency: Tensor) -> Tensor:
         # Contract over directions in two einsums rather than looping in Python.
@@ -50,7 +70,10 @@ class DirectionalResidualBlock(nn.Module):
         neighbours = torch.einsum("dij,bjw->bdiw", adjacency, nodes)
         weights = torch.stack([projection.weight for projection in self.direction_projections])
         message = self.self_projection(nodes) + torch.einsum("bdiw,dvw->biv", neighbours, weights)
-        return nodes + self.activation(self.norm(message))
+        branch = self.activation(self.norm(message))
+        if self.alpha is not None:
+            branch = self.alpha * branch
+        return nodes + branch
 
 
 class DiamondGraphTrunk(nn.Module):
@@ -59,6 +82,8 @@ class DiamondGraphTrunk(nn.Module):
         input_features: int,
         config: NetworkConfig,
         board: Board | None = None,
+        *,
+        gate_blocks_from: int | None = None,
     ) -> None:
         super().__init__()
         if input_features <= 0:
@@ -69,9 +94,19 @@ class DiamondGraphTrunk(nn.Module):
         self.input_features = input_features
         self.width = config.width
         self.input_projection = nn.Linear(input_features, config.width)
+        # Blocks at or after `gate_blocks_from` carry a residual gate.  The
+        # index, rather than a bool, is what a depth transplant needs: the
+        # inherited blocks must keep their exact parameter set or the parent's
+        # weights no longer load.
+        if gate_blocks_from is not None and not 0 <= gate_blocks_from <= config.residual_blocks:
+            raise ValueError("gate_blocks_from must index a block, or equal the block count")
+        self.gate_blocks_from = gate_blocks_from
         self.blocks = nn.ModuleList(
-            DirectionalResidualBlock(config.width)
-            for _ in range(config.residual_blocks)
+            DirectionalResidualBlock(
+                config.width,
+                gated=gate_blocks_from is not None and index >= gate_blocks_from,
+            )
+            for index in range(config.residual_blocks)
         )
         self.output_norm = nn.LayerNorm(config.width)
         self.register_buffer("adjacency", directional_adjacency(self.board))

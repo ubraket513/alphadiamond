@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from torch import Tensor, nn
 
-from .policy import SourceDestinationPolicyHead
-from .trunk import DiamondGraphTrunk
 from ..config import NetworkConfig
 from ..identity import ModelIdentity
+from .policy import SourceDestinationPolicyHead
+from .trunk import DiamondGraphTrunk
+
+_DEFAULT_NETWORK = NetworkConfig()
 
 
 class SooModel(nn.Module):
@@ -16,14 +18,17 @@ class SooModel(nn.Module):
 
     def __init__(
         self,
-        config: NetworkConfig = NetworkConfig(),
+        config: NetworkConfig = _DEFAULT_NETWORK,
         *,
         model_version: str = "0.1.0",
+        gate_blocks_from: int | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.identity = ModelIdentity.soo(model_version)
-        self.trunk = DiamondGraphTrunk(self.input_features, config)
+        self.trunk = DiamondGraphTrunk(
+            self.input_features, config, gate_blocks_from=gate_blocks_from
+        )
         self.policy_head = SourceDestinationPolicyHead(config.width)
         self.value_head = nn.Sequential(
             nn.Linear(config.width, config.width),

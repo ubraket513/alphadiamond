@@ -46,6 +46,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from pathlib import Path
 
@@ -76,11 +77,17 @@ def _source_network(payload: dict) -> tuple[NetworkConfig, str]:
     return NetworkConfig(**network), str(metadata["model_version"])
 
 
-def _trainer(network: NetworkConfig, version: str, training: TrainingConfig) -> AlphaZeroTrainer:
+def _trainer(
+    network: NetworkConfig,
+    version: str,
+    training: TrainingConfig,
+    *,
+    gate_blocks_from: int | None = None,
+) -> AlphaZeroTrainer:
     compatibility = CheckpointCompatibilitySpec.soo(
         model_version=version, network_config=network
     )
-    model = SooModel(network, model_version=version)
+    model = SooModel(network, model_version=version, gate_blocks_from=gate_blocks_from)
     return AlphaZeroTrainer(model, compatibility, training)
 
 
@@ -99,6 +106,53 @@ def main() -> int:
         type=Path,
         default=ROOT / "tests/native/fixtures/positions.jsonl",
         help="Positions to assert the identity on; '-' skips the assertion.",
+    )
+    parser.add_argument(
+        "--branch-init",
+        choices=("random", "copy"),
+        default="copy",
+        help=(
+            "What the new block's projections start from.  'copy' seeds new "
+            "block i from trained block (i %% parent_blocks); 'random' leaves "
+            "torch's default init, which is what the first arm used and which "
+            "measured inert.  Both are exact identities -- the gate is zero "
+            "either way -- so this changes only what is waiting behind it."
+        ),
+    )
+    parser.add_argument(
+        "--residual-gate",
+        action="store_true",
+        help=(
+            "Give each new block a ReZero-style scalar `alpha` after the "
+            "activation and copy the donor block whole, LayerNorm included.  "
+            "Still an exact identity at alpha = 0, but the gate now sits "
+            "outside the nonlinearity, so its gradient means 'how much of this "
+            "branch is wanted' rather than 'what should the branch's internal "
+            "scale be'.  Implies --branch-init copy and ignores --gamma."
+        ),
+    )
+    parser.add_argument(
+        "--reset-optimizer",
+        action="store_true",
+        help=(
+            "Discard the parent's AdamW moments.  The default now carries them "
+            "over for every parameter the child inherits by name; new blocks "
+            "still start with no state.  Resetting was the original behaviour "
+            "and it confounds a depth experiment with an optimizer restart -- "
+            "the parent's blocks and heads lose their trajectory too."
+        ),
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.0,
+        help=(
+            "LayerNorm scale for the new blocks.  0.0 is an exact identity.  A "
+            "small non-zero value opens the residual branch from the first step "
+            "at the cost of perturbing the parent: measured on the step-44,250 "
+            "network, 0.01 shifts policy KL by 1.5e-4 and value RMSE by 0.009, "
+            "while 0.1 already costs 0.447 value RMSE and is too much."
+        ),
     )
     parser.add_argument(
         "--tolerance",
@@ -137,7 +191,12 @@ def main() -> int:
     child_training = TrainingConfig(
         **{**payload["training_config"], "device": args.device}
     )
-    child = _trainer(target_network, version, child_training)
+    child = _trainer(
+        target_network,
+        version,
+        child_training,
+        gate_blocks_from=source_network.residual_blocks if args.residual_gate else None,
+    )
 
     parent_state = parent.model.state_dict()
     child_state = child.model.state_dict()
@@ -150,15 +209,55 @@ def main() -> int:
         child_state[key] = tensor.clone()
         copied += 1
 
-    # Everything the parent did not have is a new trunk block; make each inert.
+    # Everything the parent did not have is a new trunk block.  Two independent
+    # decisions: what its projections start from, and how far its gate is open.
+    #
+    # The gate is what makes the transplant an identity, and it does that
+    # whatever the projections hold: LayerNorm with gamma = beta = 0 emits zeros
+    # for any input, GELU(0) is 0, and the block returns `nodes`.  So seeding
+    # the projections from trained blocks costs nothing in fidelity.
+    #
+    # It is not cosmetic.  With random projections the first arm's new blocks
+    # never switched on -- gamma flat at ~0.002 from 900 steps to 2,100 while
+    # the inherited blocks sat at 0.8-1.6 -- because the gradient reaching gamma
+    # is proportional to the normalised message, and a random message carries no
+    # signal to open the gate for.  Meanwhile Adam normalises by the gradient's
+    # own second moment, so those projections still took full-size steps and
+    # random-walked 42 % of their init norm behind a shut gate.  Copying gives
+    # gamma a structured message to have an opinion about from the first step.
+    copied_branches = []
     zeroed = []
     for index in range(source_network.residual_blocks, args.blocks):
-        for suffix in ("weight", "bias"):
-            key = f"trunk.blocks.{index}.norm.{suffix}"
+        if args.branch_init == "copy" or args.residual_gate:
+            donor = index % source_network.residual_blocks
+            prefix = f"trunk.blocks.{index}."
+            donor_prefix = f"trunk.blocks.{donor}."
+            for key in list(child_state):
+                if not key.startswith(prefix) or key.endswith(".alpha"):
+                    continue
+                # With an explicit gate the donor's LayerNorm comes too: the
+                # branch should compute a trained function, and `alpha` alone
+                # decides how much of it reaches the trunk.
+                if ".norm." in key and not args.residual_gate:
+                    continue
+                source_key = donor_prefix + key[len(prefix):]
+                if source_key not in parent_state:
+                    raise SystemExit(f"donor parameter {source_key} is missing")
+                child_state[key] = parent_state[source_key].clone()
+            copied_branches.append((index, donor))
+        if args.residual_gate:
+            key = f"trunk.blocks.{index}.alpha"
             if key not in child_state:
-                raise SystemExit(f"expected new block parameter {key}")
+                raise SystemExit(f"expected gate parameter {key}")
             child_state[key] = torch.zeros_like(child_state[key])
             zeroed.append(key)
+        else:
+            for suffix, value in (("weight", args.gamma), ("bias", 0.0)):
+                key = f"trunk.blocks.{index}.norm.{suffix}"
+                if key not in child_state:
+                    raise SystemExit(f"expected new block parameter {key}")
+                child_state[key] = torch.full_like(child_state[key], value)
+                zeroed.append(key)
     child.model.load_state_dict(child_state)
 
     added = args.blocks - source_network.residual_blocks
@@ -166,22 +265,81 @@ def main() -> int:
         f"[transplant] {source_network.width}x{source_network.residual_blocks} "
         f"-> {target_network.width}x{target_network.residual_blocks}: "
         f"{copied} tensors copied, {added} block(s) added, "
-        f"{len(zeroed)} norm tensors zeroed"
+        f"{len(zeroed)} norm tensors set (gamma={args.gamma})"
     )
+    if copied_branches:
+        pairs = ", ".join(f"{donor}->{index}" for index, donor in copied_branches)
+        print(f"[branches] projections seeded from trained blocks: {pairs}")
 
     if str(args.corpus) != "-":
         worst = _assert_identity(parent.model, child.model, args.corpus)
         print(f"[identity] worst |child - parent| over the corpus: {worst:.3e}")
-        if worst > args.tolerance:
-            raise SystemExit(
-                f"identity assertion failed: {worst:.3e} > {args.tolerance:.3e}"
+        if args.gamma == 0.0:
+            # An exact identity is the claim, so hold it to one.
+            if worst > args.tolerance:
+                raise SystemExit(
+                    f"identity assertion failed: {worst:.3e} > {args.tolerance:.3e}"
+                )
+        else:
+            # A non-zero gate is a deliberate perturbation, so the number is a
+            # measurement rather than a gate.  Report it and let the caller
+            # judge; --tolerance would only encode a guess about how much
+            # divergence this particular gamma should buy.
+            print(
+                f"[identity] gamma={args.gamma} is not an identity by "
+                f"construction; the divergence above is the cost of opening "
+                f"the gate, not a failure"
             )
+
+    if args.reset_optimizer:
+        print("[optimizer] parent moments discarded (--reset-optimizer)")
+    else:
+        carried, fresh = _carry_optimizer_state(parent, child)
+        print(
+            f"[optimizer] AdamW moments carried for {carried} inherited "
+            f"parameters; {fresh} new parameters start with no state"
+        )
 
     # The training step carries over: the child *is* this network, further on.
     child.training_step = parent.training_step
     save_checkpoint(args.out, child)
     print(f"[written] {args.out} at training_step {child.training_step}")
     return 0
+
+
+def _carry_optimizer_state(parent: AlphaZeroTrainer, child: AlphaZeroTrainer) -> tuple[int, int]:
+    """Move the parent's AdamW moments onto the child's inherited parameters.
+
+    Discarding them was the original behaviour and it is not free.  A growth
+    operator is supposed to preserve the *training state*, not only the
+    function: Adam's first and second moments and its step count are what make
+    the next update the size the schedule expects, and throwing them away
+    restarts the bias correction for the inherited blocks and both heads --
+    parameters the experiment is not trying to change.  A depth result measured
+    against that is a depth-plus-optimizer-restart result.
+
+    The mapping is by parameter *name*.  Optimizer state is keyed by position in
+    `model.parameters()`, and inserting blocks shifts those positions, so
+    copying by index would silently attach the value head's moments to a trunk
+    projection.
+
+    New blocks are deliberately left with no state: they have no history to
+    continue, and inventing one from a donor would give two parameters the same
+    moments while their gradients immediately diverge.
+    """
+    parent_names = [name for name, _ in parent.model.named_parameters()]
+    child_index = {name: index for index, (name, _) in enumerate(child.model.named_parameters())}
+    parent_state = parent.optimizer.state_dict()["state"]
+
+    child_dict = child.optimizer.state_dict()
+    carried_state = {}
+    for parent_position, name in enumerate(parent_names):
+        if parent_position not in parent_state or name not in child_index:
+            continue
+        carried_state[child_index[name]] = copy.deepcopy(parent_state[parent_position])
+    child_dict["state"] = carried_state
+    child.optimizer.load_state_dict(child_dict)
+    return len(carried_state), len(child_index) - len(carried_state)
 
 
 def _assert_identity(parent: SooModel, child: SooModel, corpus: Path) -> float:
