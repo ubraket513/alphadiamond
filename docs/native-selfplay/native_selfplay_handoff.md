@@ -402,18 +402,18 @@ python az-bench/profiles/bench_native_callback.py --seconds 5 --device cuda:0
 tools/train_soo_scratch.sh 6                     # B0, heuristics on
 tools/train_soo_scratch.sh 6 none A0             # A0 -- but see 3.0.1, use --simulations 128
 
-# A0 readiness, on the production engine and production exploration.
-# 2 fixed seeds x 20 games is a regression probe; use fresh seeds and 768 games
-# for anything you intend to act on (pitfall 7.15).
-python tools/a0_gate.py --checkpoint <ckpt>
-python tools/a0_gate.py --checkpoint <ckpt> --games 192 \
-    --seeds 20260823 20260824 20260825 20260826 --lanes 256 --threads 12
+# Native self-play and complete pipeline measurements. These emit JSON and do
+# not impose timing thresholds.
+build/native-training/native/selfplay_benchmark --repetitions 5
+build/native-training/native/end_to_end_benchmark --repetitions 5 \
+    --scratch build/native-training/benchmark-e2e
 
 # What the unfinished games are doing.
 python tools/audit_aborted_games.py --checkpoint <ckpt> --games 192
 
-# Durable copy: this host has workspace_is_volume=false.
-python tools/backup_training_run.py --publish
+# Release staging is local and validated; external publication is operator-owned.
+build/native-training/native/alphadiamond-release stage dist/models \
+    --artifact artifacts/soo-spike --default soo
 ```
 
 **GPU-host baseline** (RTX 5090 / Ryzen 9 9950X3D, 16 physical cores), ValueOnly:

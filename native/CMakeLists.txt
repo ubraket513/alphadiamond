@@ -1,3 +1,5 @@
+option(DIAMOND_BUILD_BENCHMARKS "Build explicit native benchmark executables" OFF)
+
 set(SOO_CORE_SOURCES
     src/board.cpp
     src/encoder.cpp
@@ -211,6 +213,30 @@ if(DIAMOND_BUILD_LIBTORCH)
     )
     target_compile_features(diamond_orchestration PUBLIC cxx_std_20)
 
+    if(DIAMOND_BUILD_BENCHMARKS)
+        add_executable(training_step_benchmark benchmarks/training_step_benchmark.cpp)
+        target_link_libraries(training_step_benchmark PRIVATE alphadiamond::diamond_training)
+
+        add_executable(checkpoint_benchmark benchmarks/checkpoint_benchmark.cpp)
+        target_link_libraries(checkpoint_benchmark PRIVATE alphadiamond::diamond_training)
+
+        add_executable(replay_benchmark benchmarks/replay_benchmark.cpp)
+        target_link_libraries(replay_benchmark PRIVATE alphadiamond::diamond_pipeline)
+
+        add_executable(selfplay_benchmark benchmarks/selfplay_benchmark.cpp)
+        target_link_libraries(selfplay_benchmark PRIVATE alphadiamond::soo_search)
+
+        add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
+        target_link_libraries(end_to_end_benchmark PRIVATE
+            alphadiamond::diamond_native_pipeline)
+
+        foreach(benchmark IN ITEMS
+                training_step_benchmark checkpoint_benchmark replay_benchmark
+                selfplay_benchmark end_to_end_benchmark)
+            target_compile_features(${benchmark} PRIVATE cxx_std_20)
+        endforeach()
+    endif()
+
     add_executable(alphadiamond-train src/train_main.cpp)
     target_link_libraries(alphadiamond-train PRIVATE
         alphadiamond::diamond_orchestration
@@ -275,6 +301,17 @@ if(DIAMOND_BUILD_LIBTORCH)
                  COMMAND promotion_test "${CMAKE_CURRENT_BINARY_DIR}/promotion-scratch")
         set_tests_properties(promotion_test PROPERTIES LABELS release)
 
+        add_executable(final_pipeline_smoke_test tests/final_pipeline_smoke_test.cpp)
+        target_link_libraries(final_pipeline_smoke_test PRIVATE
+            alphadiamond::diamond_release
+            alphadiamond::diamond_orchestration)
+        target_include_directories(final_pipeline_smoke_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(final_pipeline_smoke_test PRIVATE cxx_std_20)
+        target_compile_definitions(final_pipeline_smoke_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        if(MSVC)
+            target_compile_options(final_pipeline_smoke_test PRIVATE /bigobj)
+        endif()
+
         add_executable(model_parity_test tests/model_parity_test.cpp)
         target_link_libraries(model_parity_test PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
         target_include_directories(model_parity_test PRIVATE ${TORCH_INCLUDE_DIRS} tests)
@@ -292,6 +329,11 @@ if(DIAMOND_BUILD_LIBTORCH)
                 add_test(NAME model_parity_test
                          COMMAND model_parity_test
                                  soo "${DIAMOND_SOO_ARTIFACT}" min "${DIAMOND_MIN_ARTIFACT}")
+                add_test(NAME final_pipeline_smoke_test
+                         COMMAND final_pipeline_smoke_test
+                                 "${CMAKE_CURRENT_BINARY_DIR}/final-pipeline-smoke-scratch"
+                                 "${DIAMOND_SOO_ARTIFACT}" "${DIAMOND_MIN_ARTIFACT}")
+                set_tests_properties(final_pipeline_smoke_test PROPERTIES LABELS pipeline)
             else()
                 add_test(NAME soo_artifact_contract
                          COMMAND soo_artifact_contract "${DIAMOND_SOO_ARTIFACT}")
@@ -304,6 +346,10 @@ if(DIAMOND_BUILD_LIBTORCH)
                     "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
                 set_tests_properties(model_parity_test PROPERTIES
                     ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                if(TEST final_pipeline_smoke_test)
+                    set_tests_properties(final_pipeline_smoke_test PROPERTIES
+                        ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                endif()
             endif()
         endif()
 

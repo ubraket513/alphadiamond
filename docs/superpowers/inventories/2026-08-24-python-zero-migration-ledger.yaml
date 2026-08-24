@@ -236,8 +236,9 @@ routes:
     category: "C"
     phase: 0
     subsystem: "performance baselines, research probes, and report generation"
-    target_component: "native/benchmarks executables or explicit retirement record"
-    replacement_test: "Phase 0 benchmark manifest and named native benchmark commands; benchmarks are not correctness tests"
+    target_component: "training_step_benchmark; checkpoint_benchmark; replay_benchmark; selfplay_benchmark; end_to_end_benchmark; explicit retirement table"
+    replacement_test: "Named native benchmark commands; benchmarks are not correctness tests"
+    status: "replaced in PR11; controlled final measurements deferred to PR13"
     deletion_condition: "Each script has a measured native replacement or an approved retirement disposition in the ledger."
     files:
       - "az-bench/profiles/bench_block_vectorization.py"
@@ -266,7 +267,8 @@ routes:
     phase: 7
     subsystem: "Python package shell and cross-subsystem smoke entry points"
     target_component: "native pipeline smoke + packaged native executables"
-    replacement_test: "native_training_smoke_test; native_pipeline_smoke_test; package_smoke_test"
+    replacement_test: "training_step_parity_test; native_pipeline_smoke_test; final_pipeline_smoke_test; PR13 package runtime proof"
+    status: "native smoke replacements complete in PR11; packaged runtime proof belongs to PR13"
     deletion_condition: "Native smokes cover the same end-to-end contracts and the shipped package exposes only native entry points."
     files:
       - "src/diamond/__init__.py"
