@@ -29,8 +29,8 @@ from ..alphazero.evaluator.base import Evaluator
 from ..alphazero.evaluator.dummy import DummyEvaluator
 from ..alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from ..alphazero.identity import MIN_MODEL_NAME, SOO_MODEL_NAME
-from ..alphazero.mcts.search_2p import MCTS2P
 from ..alphazero.mcts.search_3p import MCTS3P
+from ..alphazero.search_factory import two_player_search
 from ..game.state import PlayerSpec
 from .base import Agent, MoveProposal, MoveRequest
 
@@ -124,10 +124,13 @@ class AlphaZeroAgent(Agent):
 
         seed = self._seed if request.seed is None else int(request.seed)
         config = MCTSConfig(simulations=self._simulations, seed=seed)
-        search_cls = MCTS2P if len(self._players) == 2 else MCTS3P
-        result = search_cls(game, self._evaluator, config).run(
-            state, temperature=self._temperature
-        )
+        # Two seats go to the C++ core where it can play them; Min is
+        # three-player and the native search is not.
+        if len(self._players) == 2:
+            search = two_player_search()(game, self._evaluator, config)
+        else:
+            search = MCTS3P(game, self._evaluator, config)
+        result = search.run(state, temperature=self._temperature)
 
         action = self._respecting_avoid(result, game, state, request)
         move = game.game.resolve_action(

@@ -17,37 +17,10 @@ from typing import Any
 
 from .config import ArenaConfig, MCTSConfig
 from .evaluator.base import Evaluator
-from .mcts.search_2p import MCTS2P
 from .mcts.search_3p import MCTS3P
+from .search_factory import SearchFactory, two_player_search
 
 GameFactory = Callable[[tuple[int, ...]], Any]
-SearchFactory = Callable[[Any, Evaluator, MCTSConfig], Any]
-
-
-def default_search_2p() -> SearchFactory:
-    """The native search where it can play, the Python one where it cannot.
-
-    Resolved once per arena rather than per game: an arena that changed engines
-    halfway through would report a win rate over two different searches. The
-    per-game check below is a capability question, not a preference -- the C++
-    core is built around the 73-hole two-seat game, and reduced boards and test
-    doubles stay on the Python search.
-    """
-    from .native import is_available
-
-    if not is_available():
-        return MCTS2P
-
-    from .native.search import NativeSearch2P
-
-    def factory(game: Any, evaluator: Evaluator, config: MCTSConfig) -> Any:
-        if NativeSearch2P.can_drive(game):
-            return NativeSearch2P(game, evaluator, config)
-        return MCTS2P(game, evaluator, config)
-
-    return factory
-
-
 def _balanced_matchups(
     player_ids: tuple[int, ...],
 ) -> tuple[tuple[tuple[int, ...], int], ...]:
@@ -103,7 +76,7 @@ class SooArena:
         if arena_config.games % len(_balanced_matchups((1, 2))) != 0:
             raise ValueError("Soo arena games must be a multiple of 4")
         self.arena_config = arena_config
-        self.search_factory = search_factory or default_search_2p()
+        self.search_factory = search_factory or two_player_search()
 
     def run(self, game_factory: GameFactory) -> SooArenaResult:
         wins = losses = aborted = 0
