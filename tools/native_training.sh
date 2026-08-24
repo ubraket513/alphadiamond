@@ -32,6 +32,11 @@ case "$(uname -s)" in
             echo "$tool is unavailable; activate the alphadiamond environment or set DIAMOND_CMAKE_BIN" >&2
             exit 1
         }
+        inherited_path=$PATH
+        environment_root=${CONDA_PREFIX:-}
+        case "$environment_root" in
+            [A-Za-z]:\\*|[A-Za-z]:/*) environment_root=$(cygpath -u "$environment_root") ;;
+        esac
 
         vsdevcmd=''
         for candidate in \
@@ -68,6 +73,18 @@ case "$(uname -s)" in
                 *) export "$name=$value" ;;
             esac
         done <"$environment_dump"
+
+        if [ -n "$environment_root" ]; then
+            for runtime_dir in \
+                "$environment_root/Library/lib/qt6/bin" \
+                "$environment_root/Library/bin" \
+                "$environment_root/Lib/site-packages/torch/lib"
+            do
+                if [ -d "$runtime_dir" ]; then PATH=$PATH:$runtime_dir; fi
+            done
+        fi
+        PATH=$PATH:$inherited_path
+        export PATH
 
         exec "$tool_path" "$@"
         ;;

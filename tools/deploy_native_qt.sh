@@ -4,10 +4,11 @@ set -eu
 build_dir='build/native-package'
 output_dir='dist/diamond-qt'
 with_soo=0
+runtime_smoke=1
 environment_root=${CONDA_PREFIX:-}
 
 usage() {
-    echo "usage: tools/deploy_native_qt.sh [--build-dir DIR] [--output-dir DIR] [--with-soo] [--environment-root DIR]" >&2
+    echo "usage: tools/deploy_native_qt.sh [--build-dir DIR] [--output-dir DIR] [--with-soo] [--environment-root DIR] [--skip-runtime-smoke]" >&2
     exit 2
 }
 
@@ -17,6 +18,7 @@ while [ "$#" -gt 0 ]; do
         --output-dir) [ "$#" -ge 2 ] || usage; output_dir=$2; shift 2 ;;
         --environment-root) [ "$#" -ge 2 ] || usage; environment_root=$2; shift 2 ;;
         --with-soo) with_soo=1; shift ;;
+        --skip-runtime-smoke) runtime_smoke=0; shift ;;
         -h|--help) usage ;;
         *) echo "unknown argument: $1" >&2; usage ;;
     esac
@@ -29,7 +31,9 @@ esac
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 case "$build_dir" in /*) ;; *) build_dir=$repo/$build_dir ;; esac
-case "$output_dir" in /*) ;; *) output_dir=$repo/$output_dir ;; esac
+case "$output_dir" in
+    [A-Za-z]:\\*|[A-Za-z]:/*) output_dir=$(cygpath -u "$output_dir") ;;
+esac
 case "$environment_root" in
     [A-Za-z]:\\*|[A-Za-z]:/*) environment_root=$(cygpath -u "$environment_root") ;;
 esac
@@ -53,26 +57,25 @@ qt_root=$environment_root/Library/lib/qt6
 env_bin=$environment_root/Library/bin
 [ -d "$qt_bin" ] || { echo "Qt runtime directory not found: $qt_bin" >&2; exit 1; }
 
-dist_root=$repo/dist
+case "$output_dir" in
+    "$repo"/dist/*) destination_name=${output_dir#"$repo"/dist/} ;;
+    dist/*) destination_name=${output_dir#dist/} ;;
+    *) echo "--output-dir must be a direct child of $repo/dist" >&2; exit 1 ;;
+esac
+case "$destination_name" in
+    ''|.|..|*/*|*\\*) echo "--output-dir must name one direct child of $repo/dist" >&2; exit 1 ;;
+esac
+
+cd -- "$repo"
+dist_root=dist
 mkdir -p -- "$dist_root"
-dist_root=$(CDPATH= cd -- "$dist_root" && pwd -P)
-destination_parent=$(dirname -- "$output_dir")
-[ -d "$destination_parent" ] || {
-    echo "output parent does not exist: $destination_parent" >&2
-    exit 1
-}
-destination_parent=$(CDPATH= cd -- "$destination_parent" && pwd -P)
-[ "$destination_parent" = "$dist_root" ] || {
-    echo "--output-dir must be a direct child of $dist_root" >&2
-    exit 1
-}
-destination=$dist_root/$(basename -- "$output_dir")
+destination=$dist_root/$destination_name
 
 is_reparse_point() {
     path=$1
     [ -L "$path" ] && return 0
     [ -e "$path" ] || return 1
-    windows_path=$(cygpath -w "$path")
+    windows_path=$(cygpath -w "$PWD/$path")
     cmd.exe //d //s //c "fsutil reparsepoint query \"$windows_path\" >nul 2>nul" >/dev/null 2>&1
 }
 
@@ -150,24 +153,30 @@ if [ "$with_soo" -eq 1 ]; then
         done
     fi
     [ -n "$torch_lib" ] || { echo "LibTorch runtime directory not found under $environment_root" >&2; exit 1; }
-    copy_glob "$destination" "$torch_lib"/*.dll
     copy_glob "$destination" \
         "$env_bin"/fbgemm*.dll "$env_bin"/asmjit*.dll "$env_bin"/mkl*.dll \
         "$env_bin"/libiomp*.dll "$env_bin"/vcomp*.dll "$env_bin"/tbb*.dll \
         "$env_bin"/sleef*.dll "$env_bin"/uv*.dll "$env_bin"/libomp*.dll \
         "$env_bin"/libprotobuf*.dll "$env_bin"/utf8_validity*.dll "$env_bin"/abseil_dll*.dll
+    for file in "$torch_lib"/*.dll; do
+        [ -f "$file" ] || continue
+        case "$(basename -- "$file")" in
+            python*.dll|torch_python*.dll) continue ;;
+        esac
+        cp -f -- "$file" "$destination/"
+    done
     [ -f "$destination/c10.dll" ] || { echo "c10.dll was not bundled" >&2; exit 1; }
     [ -f "$destination/torch_cpu.dll" ] || { echo "torch_cpu.dll was not bundled" >&2; exit 1; }
 fi
 
 forbidden=$(find "$destination" -type f \( \
-    -iname 'python*.dll' -o -iname 'PySide*' -o -iname 'qtawesome*' \
+    -iname 'python*.dll' -o -iname 'torch_python*.dll' -o -iname 'PySide*' -o -iname 'qtawesome*' \
     -o -path '*/site-packages/*' \) -print -quit)
 [ -z "$forbidden" ] || { echo "Python/PySide runtime leaked into deployment: $forbidden" >&2; exit 1; }
 
 run_smoke() {
     argument=$1
-    windows_destination=$(cygpath -w "$destination")
+    windows_destination=$(cygpath -w "$PWD/$destination")
     windows_root=${SystemRoot:-C:\\Windows}
     env -i \
         MSYS2_ARG_CONV_EXCL='*' \
@@ -178,12 +187,18 @@ run_smoke() {
         "$destination/diamond_qt.exe" "$argument"
 }
 
-for argument in --smoke --game-smoke --worker-smoke --rotation-smoke \
-    --analysis-smoke --failure-smoke --sound-smoke
-do
-    run_smoke "$argument"
-done
-if [ "$with_soo" -eq 1 ]; then run_smoke --soo-smoke; fi
+if [ "$runtime_smoke" -eq 1 ]; then
+    for argument in --smoke --game-smoke --worker-smoke --rotation-smoke \
+        --analysis-smoke --failure-smoke --sound-smoke
+    do
+        run_smoke "$argument"
+    done
+    if [ "$with_soo" -eq 1 ]; then run_smoke --soo-smoke; fi
+fi
 
-echo "Native Qt deployment created at: $destination"
-echo "Packaged runtime smoke checks passed."
+echo "Native Qt deployment created at: $repo/$destination"
+if [ "$runtime_smoke" -eq 1 ]; then
+    echo "Packaged runtime smoke checks passed."
+else
+    echo "Packaged runtime smoke checks were explicitly skipped."
+fi
