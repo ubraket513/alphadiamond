@@ -90,6 +90,7 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(batcher_test)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
+    diamond_add_native_test(selfplay_3p_test "${DIAMOND_GOLDEN_DIR}")
 endif()
 
 if(DIAMOND_BUILD_LIBTORCH_PROBE)

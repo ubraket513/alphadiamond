@@ -119,6 +119,42 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The v1 target-distance prior stalls after repeatedly choosing its
+    // deterministic best move.  Keep the v2 fixture in the native gate: the
+    // legal-action order is part of the evaluator boundary, and the softmax
+    // aggregate is sensitive to both the highest score and its position.
+    const soo::Match& vacancy_match = golden.match(2);
+    const soo_test::GoldenCase* vacancy_case = nullptr;
+    for (const soo_test::GoldenCase& entry : golden.cases) {
+        if (entry.tag == "walk-s0-d50" && entry.player_count == 2) {
+            vacancy_case = &entry;
+            break;
+        }
+    }
+    REQUIRE(vacancy_case != nullptr, "golden file has no vacancy-prior fixture");
+    std::vector<int32_t> vacancy_actions;
+    soo::canonical_legal_action_ids(vacancy_case->state, vacancy_match, vacancy_actions);
+    CHECK_EQ(hash_actions(vacancy_actions), 0xbca9fca91900643cULL);
+    std::vector<double> vacancy_priors;
+    soo::vacancy_prior(vacancy_actions,
+                       soo::canonical_self_occupancy(vacancy_case->state, vacancy_match),
+                       vacancy_priors);
+    double vacancy_maximum = 0.0;
+    double vacancy_dot = 0.0;
+    std::size_t maximum_count = 0;
+    for (std::size_t index = 0; index < vacancy_priors.size(); ++index) {
+        if (vacancy_priors[index] > vacancy_maximum + kPriorTolerance) {
+            vacancy_maximum = vacancy_priors[index];
+            maximum_count = 1;
+        } else if (std::fabs(vacancy_priors[index] - vacancy_maximum) <= kPriorTolerance) {
+            ++maximum_count;
+        }
+        vacancy_dot += static_cast<double>(index) * vacancy_priors[index];
+    }
+    CHECK_EQ(maximum_count, 1U);
+    CHECK(std::fabs(vacancy_maximum - 0.39189554828732387) <= kPriorTolerance);
+    CHECK(std::fabs(vacancy_dot - 70.389737170273051) <= kPriorTolerance);
+
     std::fprintf(stderr, "checked %zu golden positions\n", golden.cases.size());
     return soo_test::report("rules_golden_test");
 }
