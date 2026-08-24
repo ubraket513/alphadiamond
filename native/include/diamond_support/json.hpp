@@ -19,4 +19,9 @@ struct JsonValue {
 // remain int64_t, while decimal/exponent numbers are finite doubles.
 JsonValue parse_json(std::string_view text);
 
+// Canonical JSON matches the frozen Python v1 store: sorted object keys,
+// compact separators, ASCII-only strings, and finite numeric values.
+std::string canonical_json(const JsonValue& value);
+std::string sha256(std::string_view bytes);
+
 }  // namespace diamond_support

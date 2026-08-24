@@ -52,6 +52,22 @@ target_compile_options(soo_search PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
+add_library(diamond_pipeline STATIC
+    src/json.cpp
+    src/replay.cpp
+    src/replay_store.cpp
+)
+add_library(alphadiamond::diamond_pipeline ALIAS diamond_pipeline)
+target_include_directories(diamond_pipeline PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_compile_features(diamond_pipeline PUBLIC cxx_std_20)
+target_compile_options(diamond_pipeline PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
+
 if(DIAMOND_BUILD_PYBIND)
     find_package(pybind11 CONFIG REQUIRED)
 
@@ -90,6 +106,10 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(batcher_test)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
+    diamond_add_native_test(replay_schema_test "${DIAMOND_GOLDEN_DIR}/replay-v1")
+    diamond_add_native_test(replay_store_test "${CMAKE_CURRENT_BINARY_DIR}/replay-store-scratch")
+    target_link_libraries(replay_schema_test PRIVATE alphadiamond::diamond_pipeline)
+    target_link_libraries(replay_store_test PRIVATE alphadiamond::diamond_pipeline)
 endif()
 
 if(DIAMOND_BUILD_LIBTORCH)
