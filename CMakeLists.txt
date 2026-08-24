@@ -12,9 +12,20 @@ endif()
 option(DIAMOND_BUILD_QT "Build the native Qt/QML shell" OFF)
 option(DIAMOND_BUILD_QT_SOO "Build Qt shell with native LibTorch Soo search" OFF)
 
-set(CMAKE_CXX_STANDARD 20)
+# CMake cannot yet model CXX26 for the installed MSVC toolset.  Keep its
+# known-feature baseline at C++23, then require each compiler's next-standard
+# dialect explicitly below.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    add_compile_options(/std:c++latest)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-std=c++2c)
+else()
+    message(FATAL_ERROR "AlphaDiamond requires a compiler with a C++26 dialect mode")
+endif()
 
 include(GNUInstallDirs)
 include(CTest)
