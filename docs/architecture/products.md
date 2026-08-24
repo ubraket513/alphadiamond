@@ -9,10 +9,10 @@ around. It is not a plan to rewrite Python in C++.
 | **Python trainer** | Training loop, experiments, arena statistics, reports, release tooling. | Python |
 | **Bridge** | The pybind extension and the cross-language parity gates. Exists for the migration and for feeding the native core to the trainer. | both |
 
-The core rules, encoder, search and self-play are one implementation in C++.
-Python reaches them through the bridge. The Python `src/diamond/game/`
-implementation stays as the oracle until the native golden tests have taken
-over each contract it currently proves, and is deleted only then.
+The core rules, encoder, search, self-play **and board geometry** are one
+implementation, in C++. Python reaches them through the bridge. There is no
+second implementation: `src/diamond/game/` was deleted once the native golden
+tests had taken over every contract it proved (decision 3).
 
 ```text
           C++ core (rules, encoder, MCTS, self-play, inference)
@@ -35,8 +35,10 @@ A C++ test that calls one C++ function and compares it with another C++
 function proves nothing about the port. So the Python oracle's answers are
 frozen into a language-neutral file:
 
-* `tools/build_golden.py` regenerates `tests/golden/` from the Python oracle
-  and the frozen corpus in `tests/native/fixtures/positions.jsonl`.
+* `tests/golden/` and `tests/native/fixtures/positions.jsonl` are frozen. The
+  Python oracle that produced them is preserved in Git history and is not in
+  the source tree; regenerating them is a deliberate contract change, not a
+  build step (decision 3).
 * `tests/golden/topology/*` are the exported board tables — the same five files
   the deployment artifact ships. Nothing in `native/` transcribes them.
 * `tests/golden/rules-v1.txt` holds, per corpus position, the legal actions
@@ -54,7 +56,8 @@ frozen into a language-neutral file:
 | Test | Proves |
 |---|---|
 | `action_codec_test` | every source/destination pair round-trips; out-of-range ids throw |
-| `topology_test` | loader rejects malformed input; neighbour symmetry, camp structure, distance metric, canonical rotation is a distance-preserving bijection |
+| `topology_test` | the core's *generated* geometry equals the frozen tables; loader rejects malformed input; neighbour symmetry, camp structure, distance metric, canonical rotation is a distance-preserving bijection |
+| `budget_test` | the wall-clock search budget: unlimited is not spent, a spent budget still returns a move, a live one cuts the search short |
 | `rules_golden_test` | Gate A: ordered legal actions, every successor, the encoding, the prior |
 | `mcts_golden_test` | Gate B: root statistics *and* the evaluator request sequence, q values bit-exact |
 | `batcher_test` | no minimum batch, batch cap, arrival order, `stop()` drains |

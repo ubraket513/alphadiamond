@@ -66,6 +66,36 @@ history; it does not have to stay in the shipped source to remain recoverable.
 
 ---
 
+---
+
+## 3. The Python engine and its oracle are deleted
+
+*2026-08-24.*
+
+`src/diamond/game`, `src/diamond/alphazero/mcts`, the Python board
+(`contract/board.py`, `contract/coordinates.py`), `tools/build_golden.py` and
+`tools/build_native_corpus.py` are gone. So is `src/diamond/agents`, the Python
+agent layer for the PySide GUI that was deleted upstream -- the shipped
+application's agent is `native/qt/ai_worker.cpp`.
+
+**Why now.** Decisions 1 and 2 left the engine with two jobs: oracle and bridge
+half. Both ended. The corpus is frozen and normative, so the oracle has nothing
+to generate; the bridge gates that compared two rule implementations were
+retired against the evidence they existed to produce.
+
+**What it costs, stated plainly.** The corpus cannot be regenerated from the
+source tree, and there is no second implementation to check the first against.
+That is the point of freezing a contract, but it is a real loss and it is
+one-way: restoring the oracle means restoring it from Git history, deliberately,
+as part of a `game_contract_version` change.
+
+**What replaces the coverage.** CTest, with no interpreter: `rules_golden_test`,
+`mcts_golden_test`, `mcts3p_golden_test`, `mcts_stochastic_test`,
+`topology_test`, `budget_test`, `batcher_test`, `selfplay_test`,
+`action_codec_test`. The Python tests that remain test Python.
+
+---
+
 ## Phases these two open
 
 ```text

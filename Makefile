@@ -5,7 +5,7 @@
 # does too:  cmake --preset native-ci && cmake --build --preset native-ci
 #            && ctest --preset native-ci
 .PHONY: help configure build test test-native test-native-asan test-qt \
-        test-python test-parity test-hygiene golden-regenerate golden-freeze package clean \
+        test-python test-parity test-hygiene golden-freeze package clean \
         data-push data-push-dry-run data-pull data-pull-dry-run
 
 PRESET ?= native-ci
@@ -15,10 +15,10 @@ DATA   ?= ./TrainAlphaDiamond
 help:
 	@echo "make test-native   native C++ tests, no Python required"
 	@echo "make test-python   Python training/research suite"
-	@echo "make test-parity   Python<->C++ bridge parity (needs pybind build)"
+	@echo "make test-parity   pybind boundary tests (needs pybind build)"
 	@echo "make package       release package from the native-release preset"
 	@echo "make data-push / data-pull (add -dry-run to preview)"
-	@echo "make golden-regenerate + golden-freeze  deliberate game-contract change"
+	@echo "make golden-freeze   re-record tests/golden provenance (contract change)"
 
 configure:
 	cmake --preset $(PRESET)
@@ -46,12 +46,11 @@ test-parity:
 test-hygiene:
 	python -m pytest tests/test_repo_hygiene.py -v
 
-# The golden corpus is frozen as the normative game contract, not regenerated
-# each run (docs/architecture/decisions.md). Rebuilding it is a deliberate
-# contract change: generate, then re-freeze with a new contract version.
-golden-regenerate:
-	python tools/build_golden.py
-
+# The golden corpus is the normative game contract (docs/architecture/decisions.md).
+# There is no regenerate target any more: the Python oracle that produced the
+# corpus was deleted with the rest of the Python engine, and a deliberate
+# contract change starts by restoring it from Git history, on purpose, and
+# raising game_contract_version.
 golden-freeze:
 	python tools/freeze_golden.py
 

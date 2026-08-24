@@ -250,56 +250,6 @@ def test_value_only_is_bit_identical_to_the_full_forward() -> None:
     assert bool((full == trunk_only).all()), "trunk-only value differs from the full forward"
 
 
-@pytest.mark.parametrize(("simulations", "moves"), [(32, 20), (64, 12)])
-def test_native_plays_the_same_game_as_the_python_backend(simulations: int, moves: int) -> None:
-    """Gate D's correctness claim, on the immutable checkpoint.
-
-    The native backend computes the vacancy prior itself and takes only values
-    across the boundary; the Python backend runs ``VacancyPriorEvaluator`` over
-    ``TorchEvaluator``.  Same weights, same simulations, epsilon and temperature
-    at 0 -- so the two must select the same move every time.
-
-    A single lane is used deliberately: both sides then evaluate at batch 1.
-    Batch size perturbs the model's own output by ~3e-8 (measured), which is far
-    larger than the <=1e-12 the native and Python priors differ by, so comparing
-    across different batch shapes would be testing the model's numerics rather
-    than the backend.
-    """
-    pytest.importorskip("torch")
-    from diamond.alphazero.bootstrap.evaluator import VacancyPriorEvaluator
-    from diamond.alphazero.config import MCTSConfig
-    from diamond.alphazero.evaluator.torch import TorchEvaluator
-    from diamond.alphazero.mcts.search_2p import MCTS2P
-    from diamond.alphazero.native.backend import value_only_callback
-
-    harness = _harness()
-    model = _model()
-
-    evaluator = VacancyPriorEvaluator(TorchEvaluator(model, value_size=1, device="cpu"))
-    state = harness.game.initial_state()
-    expected = []
-    for _ in range(moves):
-        result = MCTS2P(
-            harness.search,
-            evaluator,
-            MCTSConfig(simulations=simulations, dirichlet_epsilon=0.0),
-        ).run(state, temperature=0.0)
-        expected.append(result.selected_action)
-        state = harness.search.apply_action(state, result.selected_action)
-
-    actual = harness.run(
-        value_only_callback(model, device="cpu"),
-        games=1,
-        threads=1,
-        max_batch=1,
-        max_wait_us=200,
-        simulations=simulations,
-        trace_moves=True,
-        stop_after_moves=moves,
-    )
-    assert list(actual["lane_moves"][0]) == expected
-
-
 def test_policy_value_mode_returns_usable_priors() -> None:
     """The reference path stays compiled and exercised, per section 4."""
     pytest.importorskip("torch")

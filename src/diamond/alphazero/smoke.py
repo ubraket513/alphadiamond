@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from ..contract.board import standard_board
+from ..contract.camps import PLAYABLE_HOLES
 from ..contract.state import EMPTY, GameState, PlayerSpec, build_players
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, save_checkpoint
@@ -21,6 +21,7 @@ from .evaluator.dummy import DummyEvaluator
 from .game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from .identity import CheckpointCompatibilitySpec
 from .native import native_game, require_native
+from .native.topology import camp_positions, neighbour_table
 from .network import MinModel, SooModel
 from .replay import ReplayBatch
 from .selfplay.runner_2p import SooSelfPlayRunner
@@ -52,12 +53,11 @@ class _PreferredActionEvaluator:
 def _near_terminal_game(
     players: tuple[PlayerSpec, ...], finishers: int
 ) -> tuple[DiamondSearchAdapter, dict[int, int]]:
-    board = standard_board()
-    occupied = [EMPTY] * len(board)
+    occupied = [EMPTY] * PLAYABLE_HOLES
     reserved_targets = {
         position
         for player in players[:finishers]
-        for position in board.camp_positions(player.target_camp)
+        for position in camp_positions(player.target_camp)
     }
     physical_actions: dict[int, int] = {}
     used_entries: set[int] = set()
@@ -65,12 +65,12 @@ def _near_terminal_game(
     entries: dict[int, int] = {}
 
     for player in players[:finishers]:
-        target = board.camp_positions(player.target_camp)
+        target = camp_positions(player.target_camp)
         choice: tuple[int, int] | None = None
         for destination in target:
-            for neighbour in board.neighbours(destination):
+            for neighbour in neighbour_table()[destination]:
                 if (
-                    neighbour is not None
+                    neighbour >= 0
                     and neighbour not in reserved_targets
                     and neighbour not in used_entries
                 ):
@@ -94,7 +94,7 @@ def _near_terminal_game(
         current_player_id=players[0].id,
         turn_number=40,
     )
-    game = AlphaZeroGameAdapter(players, board=board, initial=state)
+    game = AlphaZeroGameAdapter(players, initial=state)
     module = require_native()
     native = native_game(players)
     for player in players[:finishers]:

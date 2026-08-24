@@ -29,7 +29,7 @@ import torch
 from torch import Tensor
 
 from diamond.alphazero.network.trunk import DirectionalResidualBlock, directional_adjacency
-from diamond.contract.board import standard_board
+from diamond.contract.camps import PLAYABLE_HOLES
 
 
 def current_forward(block: DirectionalResidualBlock, nodes: Tensor, adjacency: Tensor) -> Tensor:
@@ -74,8 +74,7 @@ def main() -> int:
 
     device = torch.device(args.device)
     torch.manual_seed(7)
-    board = standard_board()
-    adjacency = directional_adjacency(board).to(device)
+    adjacency = directional_adjacency().to(device)
     block = DirectionalResidualBlock(args.width).to(device).eval()
 
     print(f"[env] {torch.cuda.get_device_name(0)}, adjacency {tuple(adjacency.shape)}")
@@ -84,7 +83,7 @@ def main() -> int:
     print("--- numerical parity (fp32, same parameters) ---")
     worst = 0.0
     for batch in (1, 12, 32):
-        nodes = torch.randn(batch, len(board), args.width, device=device)
+        nodes = torch.randn(batch, PLAYABLE_HOLES, args.width, device=device)
         with torch.inference_mode():
             reference = current_forward(block, nodes, adjacency)
             candidate = vectorized_forward(block, nodes, adjacency)
@@ -98,7 +97,7 @@ def main() -> int:
     print("--- single-block launch cost ---")
     print(f"{'batch':>6} {'current_ms':>11} {'vector_ms':>10} {'speedup':>8}")
     for batch in (1, 12, 32, 64):
-        nodes = torch.randn(batch, len(board), args.width, device=device)
+        nodes = torch.randn(batch, PLAYABLE_HOLES, args.width, device=device)
 
         def run_current():
             with torch.inference_mode():
@@ -114,7 +113,7 @@ def main() -> int:
 
     print()
     print("--- projected full-trunk effect (6 blocks) ---")
-    nodes = torch.randn(12, len(board), args.width, device=device)
+    nodes = torch.randn(12, PLAYABLE_HOLES, args.width, device=device)
 
     def run_current():
         with torch.inference_mode():

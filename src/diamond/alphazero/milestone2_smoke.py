@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
-from ..contract.board import standard_board
+from ..contract.camps import PLAYABLE_HOLES
 from ..contract.state import EMPTY, GameState, PlayerSpec, build_players
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, load_inference_checkpoint, save_checkpoint
@@ -22,6 +22,7 @@ from .identity import MIN_MODEL_NAME, SOO_MODEL_NAME, CheckpointCompatibilitySpe
 from .inference.coordinator import InferenceConfig, InferenceCoordinator
 from .inference.protocol import InferenceRequest, InferenceResponse, ModelKey
 from .native import native_game, require_native
+from .native.topology import camp_positions, neighbour_table
 from .network import MinModel, SooModel
 from .orchestration.coordinator import (
     CandidateArtifact,
@@ -52,22 +53,21 @@ def _near_terminal_state(
     finishers: int,
 ) -> tuple[GameState, tuple[tuple[int, int], ...]]:
     """Build an authoritative state one move from each required placement."""
-    board = standard_board()
-    occupied = [EMPTY] * len(board)
+    occupied = [EMPTY] * PLAYABLE_HOLES
     reserved_targets = {
         position
         for player in players[:finishers]
-        for position in board.camp_positions(player.target_camp)
+        for position in camp_positions(player.target_camp)
     }
     used_entries: set[int] = set()
     entries: dict[int, int] = {}
     destinations: dict[int, int] = {}
     for player in players[:finishers]:
         choice: tuple[int, int] | None = None
-        for destination in board.camp_positions(player.target_camp):
-            for neighbour in board.neighbours(destination):
+        for destination in camp_positions(player.target_camp):
+            for neighbour in neighbour_table()[destination]:
                 if (
-                    neighbour is not None
+                    neighbour >= 0
                     and neighbour not in reserved_targets
                     and neighbour not in used_entries
                 ):
@@ -81,13 +81,13 @@ def _near_terminal_state(
         used_entries.add(entry)
         entries[player.id] = entry
         destinations[player.id] = destination
-        for position in board.camp_positions(player.target_camp):
+        for position in camp_positions(player.target_camp):
             if position != destination:
                 occupied[position] = player.id
         occupied[entry] = player.id
 
     state = GameState(tuple(occupied), players[0].id, 40)
-    adapter = AlphaZeroGameAdapter(players, board=board, initial=state)
+    adapter = AlphaZeroGameAdapter(players, initial=state)
     module = require_native()
     native = native_game(players)
     actions: list[tuple[int, int]] = []
@@ -726,24 +726,23 @@ def _arena_game_factory(player_count: int):
 
 def _forced_terminal_game(players: tuple[PlayerSpec, ...]) -> DiamondSearchAdapter:
     """Return a game where every legal action completes the current placement."""
-    board = standard_board()
     already_finished = players[: len(players) - 2]
     active = players[len(players) - 2]
-    occupancy = [EMPTY] * len(board)
+    occupancy = [EMPTY] * PLAYABLE_HOLES
     for player in already_finished:
-        for position in board.camp_positions(player.target_camp):
+        for position in camp_positions(player.target_camp):
             occupancy[position] = player.id
-    active_target = board.camp_positions(active.target_camp)
+    active_target = camp_positions(active.target_camp)
     reserved_targets = {
         position
         for player in (*already_finished, active)
-        for position in board.camp_positions(player.target_camp)
+        for position in camp_positions(player.target_camp)
     }
     entry: int | None = None
     destination: int | None = None
     for candidate in active_target:
-        for neighbour in board.neighbours(candidate):
-            if neighbour is not None and neighbour not in reserved_targets:
+        for neighbour in neighbour_table()[candidate]:
+            if neighbour >= 0 and neighbour not in reserved_targets:
                 entry, destination = neighbour, candidate
                 break
         if entry is not None:
@@ -765,7 +764,7 @@ def _forced_terminal_game(players: tuple[PlayerSpec, ...]) -> DiamondSearchAdapt
         finish_order=tuple(player.id for player in already_finished),
     )
     game = DiamondSearchAdapter(
-        AlphaZeroGameAdapter(players, board=board, initial=forced)
+        AlphaZeroGameAdapter(players, initial=forced)
     )
     legal = game.legal_action_ids(forced)
     if not legal or any(

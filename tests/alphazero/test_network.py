@@ -10,8 +10,7 @@ from diamond.alphazero.network.trunk import (
     DirectionalResidualBlock,
     directional_adjacency,
 )
-from diamond.contract.board import standard_board
-from diamond.contract.coordinates import NUM_DIRECTIONS
+from diamond.contract.camps import NUM_DIRECTIONS, PLAYABLE_HOLES
 
 
 @pytest.mark.parametrize("batch_size", [1, 4])
@@ -83,10 +82,9 @@ def test_directional_block_matches_the_per_direction_loop(batch_size: int) -> No
     exactly what the loop did, so the loop is retained here as the oracle.
     """
     torch.manual_seed(7)
-    board = standard_board()
-    adjacency = directional_adjacency(board)
+    adjacency = directional_adjacency()
     block = DirectionalResidualBlock(width=16).eval()
-    nodes = torch.randn(batch_size, len(board), 16)
+    nodes = torch.randn(batch_size, PLAYABLE_HOLES, 16)
 
     with torch.no_grad():
         expected = _loop_reference(block, nodes, adjacency)
@@ -113,10 +111,9 @@ def test_directional_block_keeps_its_per_direction_parameters() -> None:
 
 def test_directional_block_still_propagates_gradients_to_every_direction() -> None:
     """The stacked contraction must not detach any direction's weight."""
-    board = standard_board()
-    adjacency = directional_adjacency(board)
+    adjacency = directional_adjacency()
     block = DirectionalResidualBlock(width=8)
-    nodes = torch.randn(2, len(board), 8)
+    nodes = torch.randn(2, PLAYABLE_HOLES, 8)
 
     block(nodes, adjacency).mean().backward()
 

@@ -56,28 +56,26 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --preset native-asan
 
-  # The trainer and the control plane, across every supported interpreter.
-  # Torch is CPU-only here: nothing in this job trains on a GPU.
+  # The trainer and the control plane. Torch is CPU-only here: nothing in this
+  # job trains on a GPU.
   #
-  # This job used to prove the tree was green with no compiler and no pybind11.
-  # Decision 1 retired that guarantee for anything that executes a game: the
-  # trainer requires the native extension, so testing it without one would be
-  # testing a configuration nobody supports. The extension is built here for
-  # that reason, and the job keeps its own purpose -- the Python side, on every
-  # interpreter -- rather than folding into bridge-parity.
+  # One interpreter, not three. The matrix ran the whole suite on 3.11, 3.12 and
+  # 3.13 -- three extension builds and three full pytest runs for a suite whose
+  # failures are almost never version-specific, and which now takes minutes
+  # because every game it plays goes through C++. The game's own contract is
+  # proven by CTest with no interpreter at all, so what this job covers is the
+  # trainer's Python: one supported version is enough to catch its breakage, and
+  # a version-specific problem is worth a deliberate matrix rather than a
+  # standing 3x tax on every push.
   core:
-    name: core (py${{ matrix.python-version }})
+    name: core (py3.12)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
           cache: pip
 
       - name: Install (no GUI extras)
@@ -106,14 +104,12 @@ jobs:
           print("no Qt in the AlphaZero import path")
           PY
 
-  # The native self-play backend is optional, so it gets its own job rather
-  # than being folded into `core`: `core` must keep proving the tree builds and
-  # tests green with no compiler and no pybind11. This job is the standing Gate
-  # A regression -- risk 1 in docs/native_selfplay_phase0.md is two
-  # authoritative rule implementations drifting apart, and the committed corpus
-  # is the only thing that catches it.
-  bridge-parity:
-    name: bridge-parity (Gate A-F)
+  # The pybind boundary itself: the callback ABI, the GIL contract, the
+  # self-play pool and the search paths Python drives. It no longer compares two
+  # rule implementations -- there is one, and `native-core` proves it against
+  # the frozen corpus without an interpreter. What is left here is the crossing.
+  bridge:
+    name: bridge (pybind boundary)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,12 +135,11 @@ jobs:
       - name: Build the extension
         run: python tools/build_native.py
 
-      # Gate D's end-to-end tests skip themselves without torch or the
+      # The end-to-end callback tests skip themselves without torch or the
       # checkpoint. That is right on a developer machine and wrong here, where a
-      # skip would quietly retire the only test that proves the native backend
-      # plays the same game as the Python one. Same reasoning as the gui job's
-      # QtMultimedia check.
-      - name: Confirm the Gate D fixtures are present
+      # skip would quietly retire the only tests that exercise the callback
+      # against real weights.
+      - name: Confirm the callback fixtures are present
         run: |
           python - <<'PY'
           import hashlib
@@ -160,7 +155,7 @@ jobs:
           print("torch, numpy and the immutable step-80 checkpoint are present")
           PY
 
-      - name: Gate A-F
+      - name: Bridge tests
         run: pytest tests/native -v --durations=10
 
   # The shipped application, built and exercised headless. This replaces the

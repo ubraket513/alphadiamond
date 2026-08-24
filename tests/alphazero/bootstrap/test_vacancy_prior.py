@@ -21,7 +21,8 @@ from diamond.alphazero.bootstrap.heuristic import (
 )
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from diamond.contract.board import Board, Camp
+from diamond.alphazero.native.topology import camp_positions
+from diamond.contract.camps import Camp
 from diamond.contract.state import build_players
 
 
@@ -30,8 +31,8 @@ def best_of(priors):
 
 
 @pytest.fixture(scope="module")
-def board() -> Board:
-    return Board()
+def board():
+    return None
 
 
 @pytest.fixture(scope="module")
@@ -40,13 +41,13 @@ def codec() -> ActionCodec:
 
 
 @pytest.fixture(scope="module")
-def pairwise(board: Board):
-    return pairwise_distance_table(board)
+def pairwise(board):
+    return pairwise_distance_table()
 
 
 @pytest.fixture(scope="module")
-def target(board: Board) -> frozenset:
-    return frozenset(board.camp_positions(Camp.Z_NEG))
+def target(board) -> frozenset:
+    return frozenset(camp_positions(Camp.Z_NEG))
 
 
 @pytest.fixture(scope="module")

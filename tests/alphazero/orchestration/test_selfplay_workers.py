@@ -15,6 +15,8 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.inference.coordinator import InferenceConfig
 from diamond.alphazero.inference.protocol import ModelKey
+from diamond.alphazero.native import native_game, require_native
+from diamond.alphazero.native.topology import camp_positions, neighbour_table
 from diamond.alphazero.orchestration.selfplay_workers import (
     EpisodeResult,
     SelfPlayJob,
@@ -25,7 +27,7 @@ from diamond.alphazero.orchestration.selfplay_workers import (
     derive_game_seed,
     run_selfplay_job,
 )
-from diamond.contract.board import standard_board
+from diamond.contract.camps import PLAYABLE_HOLES
 from diamond.contract.state import (
     EMPTY,
     GameState,
@@ -33,7 +35,6 @@ from diamond.contract.state import (
     build_players,
     initial_state,
 )
-from diamond.game.rules import find_legal_move
 
 
 def _soo_key(digest: str = "a" * 64) -> ModelKey:
@@ -43,12 +44,11 @@ def _soo_key(digest: str = "a" * 64) -> ModelKey:
 def _near_terminal_setup(
     players: tuple[PlayerSpec, ...], finishers: int
 ) -> tuple[GameState, tuple[tuple[int, int], ...]]:
-    board = standard_board()
-    occupied = [EMPTY] * len(board)
+    occupied = [EMPTY] * PLAYABLE_HOLES
     reserved_targets = {
         position
         for player in players[:finishers]
-        for position in board.camp_positions(player.target_camp)
+        for position in camp_positions(player.target_camp)
     }
     used_entries: set[int] = set()
     actions: list[tuple[int, int]] = []
@@ -56,12 +56,12 @@ def _near_terminal_setup(
     destinations: dict[int, int] = {}
 
     for player in players[:finishers]:
-        target = board.camp_positions(player.target_camp)
+        target = camp_positions(player.target_camp)
         choice: tuple[int, int] | None = None
         for destination in target:
-            for neighbour in board.neighbours(destination):
+            for neighbour in neighbour_table()[destination]:
                 if (
-                    neighbour is not None
+                    neighbour >= 0
                     and neighbour not in reserved_targets
                     and neighbour not in used_entries
                 ):
@@ -80,20 +80,20 @@ def _near_terminal_setup(
         occupied[entry] = player.id
 
     state = GameState(tuple(occupied), players[0].id, 40)
-    game = AlphaZeroGameAdapter(players, board=board, initial=state)
+    game = AlphaZeroGameAdapter(players, initial=state)
+    module = require_native()
+    native = native_game(players)
     for player in players[:finishers]:
-        move = find_legal_move(
-            board,
-            state,
-            entries[player.id],
-            destinations[player.id],
-            player_id=player.id,
+        physical = game.codec.encode(entries[player.id], destinations[player.id])
+        canonical = game.encoder.to_canonical_action(physical, players, player.id)
+        # Legality is the core's answer, asked with this seat to move.
+        probe = module.State(
+            occupancy=list(state.occupancy),
+            current_player=player.id,
+            turn_number=state.turn_number,
         )
-        assert move is not None
-        physical = game.codec.encode(move.source, move.destination)
-        actions.append(
-            (player.id, game.encoder.to_canonical_action(physical, players, player.id))
-        )
+        assert canonical in native.canonical_legal_action_ids(probe)
+        actions.append((player.id, canonical))
     return state, tuple(actions)
 
 

@@ -7,11 +7,10 @@ off once a learned policy can finish games on its own.
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from math import exp
 
-from ...contract.board import Board, Camp
+from ...contract.camps import Camp
 from ..action_codec import ActionCodec
 from ..config import (
     BOOTSTRAP_PRIOR_NONE,
@@ -23,33 +22,25 @@ TEMPERATURE_V1 = 1.0
 """Part of the ``canonical-target-distance-v1`` identity, not a tuning knob."""
 
 
-def target_distance_table(board: Board, target: Camp = Camp.Z_NEG) -> tuple[int, ...]:
+def target_distance_table(board=None, target: Camp = Camp.Z_NEG) -> tuple[int, ...]:
     """Shortest neighbour-graph distance from every hole to ``target``.
 
     Canonicalisation always rotates the acting player's home camp to ``z+``, so
-    that player's target camp is canonical ``z-``.  The table therefore depends
+    that player's target camp is canonical ``z-``. The table therefore depends
     only on board topology and is identical for every player and every state.
+
+    Derived from the core's tables rather than by walking a Python board: the
+    distance is a minimum over the camp's ten holes, and the core already
+    generated every pairwise distance. ``board`` is accepted and ignored --
+    there is one board, and callers that passed it were passing the only one.
     """
-    sources = board.camp_positions(target)
+    from ..native.topology import camp_positions, pairwise_distances
+
+    sources = camp_positions(target)
     if not sources:
         raise ValueError(f"camp {target} has no positions")
-
-    distance: list[int | None] = [None] * len(board)
-    queue: deque[int] = deque()
-    for position in sources:
-        distance[position] = 0
-        queue.append(position)
-
-    while queue:
-        current = queue.popleft()
-        for neighbour in board.neighbours(current):
-            if neighbour is not None and distance[neighbour] is None:
-                distance[neighbour] = distance[current] + 1  # type: ignore[operator]
-                queue.append(neighbour)
-
-    if any(value is None for value in distance):
-        raise ValueError("board graph is disconnected; distance table is undefined")
-    return tuple(value for value in distance)  # type: ignore[misc]
+    distances = pairwise_distances()
+    return tuple(min(row[position] for position in sources) for row in distances)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,24 +172,20 @@ class CanonicalTargetVacancyDistancePrior:
         }
 
 
-def pairwise_distance_table(board: Board) -> tuple[tuple[int, ...], ...]:
-    """All-pairs neighbour-graph distances; 73x73 BFS, computed once."""
-    size = len(board)
-    rows: list[tuple[int, ...]] = []
-    for origin in range(size):
-        distance: list[int | None] = [None] * size
-        distance[origin] = 0
-        queue: deque[int] = deque([origin])
-        while queue:
-            current = queue.popleft()
-            for neighbour in board.neighbours(current):
-                if neighbour is not None and distance[neighbour] is None:
-                    distance[neighbour] = distance[current] + 1  # type: ignore[operator]
-                    queue.append(neighbour)
-        if any(value is None for value in distance):
-            raise ValueError("board graph is disconnected; distances are undefined")
-        rows.append(tuple(value for value in distance))  # type: ignore[misc]
-    return tuple(rows)
+def pairwise_distance_table(board=None) -> tuple[tuple[int, ...], ...]:
+    """All-pairs neighbour-graph distances, as the core generated them.
+
+    This used to run a 73x73 breadth-first sweep over the Python board. The
+    core derives the same table (``native/src/topology_gen.cpp``) and the
+    trainer reads it, so the distance the prior ranks moves by and the distance
+    the native prior ranks them by are one table rather than two.
+
+    ``board`` is accepted and ignored: there is one board, and callers that
+    passed it were passing the only one there is.
+    """
+    from ..native.topology import pairwise_distances
+
+    return pairwise_distances()
 
 
 __all__ = [
