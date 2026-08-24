@@ -159,6 +159,31 @@ ERROR tests/alphazero/test_trainer.py - RuntimeError: native extension unavai...
 1 error in 4.82s
 ```
 
+## Native-extension repair and diagnostic
+
+The collection failure was traced to the mamba environment's editable
+`diamond-console` target being the user worktree rather than this PR worktree,
+and no `_diamond_native` extension being importable from the PR source. The user
+authorized the following repair using only the verified mamba interpreter and a
+process-local Visual Studio/MSVC environment:
+
+| Action | Status | Duration | Result |
+| --- | --- | --- | --- |
+| `python -m pip install -e '.[native]'` in this PR worktree | PASS | 15.7 s | Built and installed editable `diamond-console` from `C:\tmp\codex-alphadiamond-pr00`; no tracked source, test, or CI file changed. |
+| Minimal import: `from diamond.alphazero.native import _diamond_native` with `PYTHONPATH=C:\tmp\codex-alphadiamond-pr00\src` | **FAIL** | 7.9 s | `ImportError: cannot import name '_diamond_native' from 'diamond.alphazero.native'`. |
+| Restore original editable source: `python -m pip install -e C:\Users\dzk55\alphadiamond` | PASS | 12.6 s | `pip` exited successfully and reinstalled editable `diamond-console` from the original user worktree. |
+
+The import diagnostic was run once and was not retried. Because it failed, the
+authorized post-repair pytest rerun was not started. No test or import diagnostic
+was run after restoration; the recorded successful `pip` exit is the only restore
+verification.
+
+```text
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ImportError: cannot import name '_diamond_native' from 'diamond.alphazero.native' (C:\tmp\codex-alphadiamond-pr00\src\diamond\alphazero\native\__init__.py)
+```
+
 ## Benchmark baseline
 
 No benchmark subject was run. The correctness stop rule after the mamba pytest
@@ -190,9 +215,9 @@ where the pytest baseline can start.
 
 ## Required unblock conditions
 
-1. Make the native extension importable by the verified mamba environment, then
-   restart the prescribed baseline from its first pytest command; do not rerun the
-   successful native configure/build/CTest commands.
+1. Make the native extension importable by the verified mamba environment from
+   the PR worktree, then restart the prescribed baseline from the authorized
+   post-repair non-native pytest command; do not rerun successful commands.
 2. Add an approved tracked short-run benchmark manifest that pins the checkpoint
    SHA-256 and safe disposable commands for training, checkpoint/resume,
    self-play, and end-to-end measures.
