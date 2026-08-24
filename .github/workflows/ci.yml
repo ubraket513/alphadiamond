@@ -165,22 +165,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt 6
+      - name: Install the Qt runtime dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qt6-base-dev qt6-declarative-dev qt6-multimedia-dev \
-            libgl1-mesa-dev libegl1 libxkbcommon-x11-0 \
-            qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-            qml6-module-qtquick-window qml6-module-qtqml-workerscript \
-            qml6-module-qtquick-templates qml6-module-qtquick-dialogs \
+            libgl1-mesa-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-libav libpulse0
 
-      # Audio is optional in the application, but Qt Multimedia's GStreamer
-      # backend segfaults rather than degrading when it cannot create its
-      # elements at all, so the plugins have to be installed even on a
-      # runner with no sound device.
+      # The distribution's Qt is 6.4; the application's QML needs 6.6 (see
+      # native/qt/CMakeLists.txt). Only the toolchain comes from here -- the
+      # build and the tests themselves still run without Python.
+      - name: Install Qt 6.8
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+          modules: 'qtmultimedia'
+          cache: true
 
       - name: Configure
         run: cmake --preset native-qt

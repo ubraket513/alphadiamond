@@ -1,4 +1,7 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia)
+# 6.6 is a hard floor, not a preference: the QML uses Dial.startAngle and
+# Dial.endAngle, which do not exist before it. A too-old Qt otherwise builds
+# cleanly and fails when the application loads its interface.
+find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia)
 
 if(DIAMOND_BUILD_QT_SOO)
     find_package(Torch REQUIRED)
