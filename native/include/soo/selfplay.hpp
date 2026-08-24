@@ -30,6 +30,10 @@ struct BatchItem {
     const std::vector<int32_t>* actions = nullptr;
     uint64_t salt = 0;
     EvalOutcome* outcome = nullptr;   // to be filled
+    // How many value components the evaluator must return: 1 for Soo, 3 for
+    // Min. An evaluator that ignores this fills `value` and leaves a Min lane
+    // reading zeros for two of its seats.
+    int value_width = 1;
 };
 
 // Whatever answers a batch. The dummy is native and sleeps; the Gate D one

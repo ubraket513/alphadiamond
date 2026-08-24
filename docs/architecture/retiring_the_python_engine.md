@@ -90,7 +90,8 @@ arena on the native core            done (Soo and Min)
 GUI agent on native                 done (both seat counts)
 three-player native search          done (SearchSession3P)
 native wall-clock deadline          done (set_budget on both sessions)
-self-play runners on the pool       next: batching, not the per-node bridge
+Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
+Soo/Min training on native by default  done (selfplay_backend auto)
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last

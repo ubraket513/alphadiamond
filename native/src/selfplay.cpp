@@ -1,5 +1,7 @@
 #include "soo/selfplay.hpp"
 
+#include "soo/episode_search.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -393,7 +395,9 @@ namespace {
 struct EpisodeLane {
     EpisodeLane(const Match& match, const MCTSConfig& config) : session(match, config) {}
 
-    SearchSession session;
+    // Seat-agnostic: Soo's scalar search and Min's vector search behind one
+    // handle, because everything else about a lane is the same for both.
+    EpisodeSearch session;
     State state;
     int move_count = 0;
     uint64_t game_seed = 0;
@@ -481,7 +485,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             if (config.repeat_window > 0) {
                 lane.remember(key, static_cast<size_t>(config.repeat_window));
             }
-            lane.session.begin(lane.state, temperature_for(0), false);
+            lane.session.begin(lane.state, temperature_for(0));
             return true;
         }
     };
@@ -544,11 +548,12 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 const auto work_start = Clock::now();
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
 
-                const SearchSession::Status status = lane.session.advance();
-                if (status == SearchSession::Status::NeedsEvaluation) {
+                const EpisodeSearch::Status status = lane.session.advance();
+                if (status == EpisodeSearch::Status::NeedsEvaluation) {
                     BatchItem item{&lane.session.pending_state(),
                                    &lane.session.pending_features(),
-                                   &lane.session.pending_actions(), 0, &lane.outcome};
+                                   &lane.session.pending_actions(), 0, &lane.outcome,
+                                   lane.session.value_width()};
                     batch_evaluator.prepare(item);
                     busy[static_cast<size_t>(w)] += seconds_since(work_start);
                     batcher.submit(lane_id);
@@ -558,20 +563,19 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 // A move is ready.  Record it *before* applying it: a training
                 // sample is the position that was searched, paired with the
                 // visit distribution that search produced.
-                const SearchResult& result = lane.session.result();
                 Episode& episode = episodes[lane.job_index];
                 EpisodeMove move;
                 // root_features(), not pending_features(): see the comment on
                 // SearchSession::root_features.
                 move.features = lane.session.root_features();
-                move.root_actions = result.root_actions;
-                move.visit_counts = result.visit_counts;
-                move.selected_action = result.selected_action;
+                move.root_actions = lane.session.root_actions();
+                move.visit_counts = lane.session.visit_counts();
+                move.selected_action = lane.session.selected_action();
                 episode.moves.push_back(std::move(move));
 
                 lane.state = apply_action(
                     lane.state, match,
-                    to_physical_action(result.selected_action, match, lane.state.current_player));
+                    to_physical_action(move.selected_action, match, lane.state.current_player));
                 ++lane.move_count;
 
                 const bool finished = lane.state.status == kFinished;
@@ -609,7 +613,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 }
                 lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
                 lane.session.set_simulations(budget);
-                lane.session.begin(lane.state, temperature_for(lane.move_count), false);
+                lane.session.begin(lane.state, temperature_for(lane.move_count));
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);
             }
@@ -630,7 +634,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
                 items.push_back(BatchItem{&lane.session.pending_state(),
                                           &lane.session.pending_features(),
-                                          &lane.session.pending_actions(), 0, &lane.outcome});
+                                          &lane.session.pending_actions(), 0, &lane.outcome,
+                                          lane.session.value_width()});
             }
             const auto eval_start = Clock::now();
             batch_evaluator.evaluate(items);
@@ -643,8 +648,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 metrics.evaluator_seconds += eval_seconds;
             }
             for (const int lane_id : batch) {
-                lanes[static_cast<size_t>(lane_id)]->session.supply(
-                    lanes[static_cast<size_t>(lane_id)]->outcome);
+                EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
+                const double* values = lane.session.value_width() == 1
+                                           ? &lane.outcome.value
+                                           : lane.outcome.values.data();
+                lane.session.supply(lane.outcome.priors, values);
             }
             ready.push_many(batch);
         }

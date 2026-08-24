@@ -203,7 +203,16 @@ class PythonBatchEvaluator : public BatchEvaluator {
             }
             const auto priors = py::cast<py::array_t<float>>(pair[0]);
             const auto values = py::cast<py::array_t<float>>(pair[1]);
-            if (static_cast<size_t>(values.size()) != batch.size()) {
+            // Min answers with one value per seat, so the expected count is
+            // per row rather than one per row. Mixing the two is the mistake
+            // that would train Min on Soo's value and never say so.
+            const int width = batch.empty() ? 1 : batch[0].value_width;
+            for (const BatchItem& item : batch) {
+                if (item.value_width != width) {
+                    throw std::runtime_error("a batch mixes value widths");
+                }
+            }
+            if (static_cast<size_t>(values.size()) != batch.size() * static_cast<size_t>(width)) {
                 throw std::runtime_error("callback returned the wrong number of values");
             }
             if (static_cast<size_t>(priors.size()) != flat_actions_.size()) {
@@ -215,17 +224,38 @@ class PythonBatchEvaluator : public BatchEvaluator {
                 const size_t begin = static_cast<size_t>(offsets_[i]);
                 const size_t end = static_cast<size_t>(offsets_[i + 1]);
                 batch[i].outcome->priors.assign(prior_data + begin, prior_data + end);
-                batch[i].outcome->value = static_cast<double>(value_data[i]);
+                if (width == 1) {
+                    batch[i].outcome->value = static_cast<double>(value_data[i]);
+                    continue;
+                }
+                for (int seat = 0; seat < width; ++seat) {
+                    batch[i].outcome->values[static_cast<size_t>(seat)] =
+                        static_cast<double>(value_data[i * static_cast<size_t>(width) + seat]);
+                }
             }
             return;
         }
         const auto values = py::cast<py::array_t<float>>(answer);
-        if (static_cast<size_t>(values.size()) != batch.size()) {
+        // Min answers with one value per seat; the count is per row, not one
+        // per row. A width mismatch here would quietly train two of Min's three
+        // value heads on zeros.
+        const int width = batch.empty() ? 1 : batch[0].value_width;
+        for (const BatchItem& item : batch) {
+            if (item.value_width != width) throw std::runtime_error("a batch mixes value widths");
+        }
+        if (static_cast<size_t>(values.size()) != batch.size() * static_cast<size_t>(width)) {
             throw std::runtime_error("callback returned the wrong number of values");
         }
         const float* value_data = values.data();
         for (size_t i = 0; i < batch.size(); ++i) {
-            batch[i].outcome->value = static_cast<double>(value_data[i]);
+            if (width == 1) {
+                batch[i].outcome->value = static_cast<double>(value_data[i]);
+                continue;
+            }
+            for (int seat = 0; seat < width; ++seat) {
+                batch[i].outcome->values[static_cast<size_t>(seat)] =
+                    static_cast<double>(value_data[i * static_cast<size_t>(width) + seat]);
+            }
         }
     }
 

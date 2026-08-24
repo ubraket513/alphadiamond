@@ -7,6 +7,7 @@
 // tests/native/reference_evaluator.py is that implementation.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -17,6 +18,12 @@ namespace soo {
 struct EvalOutcome {
     std::vector<double> priors;  // aligned with the request's legal actions
     double value = 0.0;
+    // Min's value is one component per seat, in the request's canonical player
+    // order. Soo uses `value` and leaves this alone; the pool reads whichever
+    // the match calls for. Keeping both rather than making `value` a vector
+    // leaves the two-player search's hot path untouched, and Gate B pins that
+    // it stayed untouched.
+    std::array<double, 3> values{};
 };
 
 class Evaluator {

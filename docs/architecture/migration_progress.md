@@ -131,7 +131,8 @@ arena on the native core            done (Soo and Min)
 GUI agent on native                 done (both seat counts)
 three-player native search          done (SearchSession3P)
 native wall-clock deadline          done (set_budget on both sessions)
-self-play runners on the pool       next: batching, not the per-node bridge
+Python parity gates retired         done (five, on mutation evidence)
+Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last
@@ -200,10 +201,13 @@ Left, and deliberately unmeasured until someone needs them:
    to gain about 2x on the tree
    ([measured](../performance-profiling/bridge_search_findings.md)). The native
    pool already batches; that is where they go.
-3. **Min self-play still runs the Python pool.** `SearchSession3P` is the
-   single-search shape; the batched scheduler and `play_episodes` are 2P only,
-   so native Min self-play needs the vector value threaded through the pool as
-   well.
+3. **Resolved.** Min self-play runs on the native pool. `EpisodeSearch` holds
+   either session behind one handle -- the lanes, batching, job queue and move
+   recording were always seat-agnostic, and naming `SearchSession` directly was
+   the only thing that made the pool two-player. The callback ABI carries a
+   value per seat, in both `value_only` and `policy_value` modes, and the pool
+   builds Min's placement target ordered by `canonical_player_ids` rather than
+   by seat id -- the order the value head is trained in.
 4. **The `apps/` / `python/` restructure from section 4 of the brief has not
    been done.** It rewrites hundreds of documented command paths and deserves
    its own change; the boundaries it would express are already established in
