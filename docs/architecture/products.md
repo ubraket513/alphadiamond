@@ -75,13 +75,18 @@ Ordering is part of the contract, not cosmetic: `add_dirichlet_noise` draws one
 `gammavariate` per prior entry, so the same set in a different order is a
 different search.
 
-## Retiring a Python parity gate
+## Retiring a Python gate
 
-The Python gates in `tests/native/` are not deleted when a C++ test covering
-the same ground is written. A gate is retired only after its C++ replacement
-has been shown to catch the mutations that gate catches — the minimum
-demonstration is: mutate the golden expectation (or the native code) and watch
-the C++ test go red. Until then, `bridge-parity` keeps running in CI.
+**All of them are retired** — there is one rule implementation, so nothing in
+`tests/native/` compares two any more. The rule that got them there is worth
+keeping for the next time a Python test is replaced by a C++ one: a gate is
+retired only after its C++ replacement has been shown to catch the mutations
+that gate catches. The minimum demonstration is to mutate the golden
+expectation (or the native code) and watch the C++ test go red.
+
+`tools/mutation_check.py` is the record of that being done thirteen times. The
+same standard was applied to `topology_test` and `budget_test` when they took
+over from Python coverage.
 
 ## CI lanes
 
@@ -90,10 +95,17 @@ the C++ test go red. Until then, `bridge-parity` keeps running in CI.
 | `native-core` (Linux/macOS/Windows) | no | the shipped core builds and its tests pass |
 | `native-sanitizers` (Linux) | no | the same tests under ASan/UBSan |
 | `native-qt` (Linux) | no | the shipped Qt application builds and passes its contract headless |
-| `core` | yes (and the extension) | the trainer and control plane on every supported interpreter, plus repository hygiene. It no longer proves the tree is green without a compiled backend: decision 1 retired that guarantee for anything that executes a game |
-| `bridge-parity` | yes | Python and C++ still play the same game |
+| `core` (3.12) | yes (and the extension) | the trainer and control plane, plus repository hygiene |
+| `bridge` | yes | the pybind boundary: callback ABI, GIL contract, pool, selector |
 | `lint` | yes | ruff over changed files |
 
+`core` runs on one interpreter, not three. The suite's failures are almost
+never version-specific, the game's own contract is proven by CTest with no
+interpreter at all, and three extension builds plus three full runs on every
+push is a standing tax for a rare class of bug. A version-specific problem is
+worth a deliberate matrix when there is one.
+
 There is no `gui` lane: the PySide suite it ran was deleted with the last GUI
-test, so `pytest -m gui` collected nothing and exited 5. The Qt application
-under test now is the native one, and `native-qt` is its lane.
+test. The Qt application under test now is the native one, and `native-qt` is
+its lane. The `-m "not gui"` filter went with it — the marker selected nothing
+and was defined nowhere.

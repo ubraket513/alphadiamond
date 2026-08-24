@@ -61,7 +61,7 @@ make golden-freeze               # re-record tests/golden provenance (contract c
 
 ```bash
 python tools/build_native.py     # optional extension; absence must stay harmless
-pytest -m "not gui"              # the trainer's Python; the game is CTest's
+pytest                           # the trainer's Python; the game is CTest's
 ```
 
 ## Shipping a model

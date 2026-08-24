@@ -1,7 +1,9 @@
-"""Shared fixtures for the native parity gates.
+"""Shared fixtures for the pybind boundary tests.
 
-Every test here is skipped when the extension is not built: the Python backend
-is the default and must stay green on a host with no compiler.
+Every test here is skipped when the extension is not built. That is not a
+fallback -- there is nothing to fall back to (decision 1) -- it is so a
+developer without a compiler gets a clear skip rather than a wall of import
+errors. CI builds the extension, so nothing is silently skipped there.
 """
 
 from __future__ import annotations

@@ -38,7 +38,7 @@ test-qt:
 	$(MAKE) test-native PRESET=native-qt
 
 test-python:
-	python -m pytest -m "not gui" --durations=10
+	python -m pytest --durations=10
 
 test-parity:
 	python -m pytest tests/native -v --durations=10

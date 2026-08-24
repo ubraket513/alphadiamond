@@ -33,7 +33,7 @@ Last updated 2026-08-24.
   `native-qt`, `pybind`. CMake remains the build system; the Makefile is a
   façade holding no source lists, compiler flags or platform branches.
 * CI lanes: `native-core` (Linux/macOS/Windows, no Python), `native-sanitizers`
-  (ASan/UBSan), `native-qt`, `core`, `bridge-parity`, `lint`. The `gui` job is
+  (ASan/UBSan), `native-qt`, `core` (3.12), `bridge`, `lint`. The `gui` job is
   gone — its PySide suite was deleted upstream and it collected nothing.
 * Native test groups, against the brief's list:
 
@@ -60,8 +60,8 @@ Last updated 2026-08-24.
 
 * **All five Python parity gates are retired**, each on mutation evidence
   (`tools/mutation_check.py`, thirteen mutations, every one caught by the
-  gate named for it). `bridge-parity` now runs bridge tests only: the callback
-  ABI, the pool, and the search paths Python still drives.
+  gate named for it). `bridge` now runs boundary tests only: the callback ABI,
+  the pool, and the search paths Python still drives.
 
 ## Milestone 2 — storage and cleanup
 
