@@ -113,6 +113,23 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_options(diamond_model PRIVATE /bigobj)
     endif()
 
+    add_library(diamond_training STATIC
+        src/training_sample.cpp
+        src/trainer.cpp
+    )
+    add_library(alphadiamond::diamond_training ALIAS diamond_training)
+    target_link_libraries(diamond_training PUBLIC alphadiamond::diamond_model ${TORCH_LIBRARIES})
+    target_include_directories(diamond_training
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            ${TORCH_INCLUDE_DIRS}
+    )
+    target_compile_features(diamond_training PUBLIC cxx_std_20)
+    target_compile_definitions(diamond_training PUBLIC _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(diamond_training PRIVATE /bigobj)
+    endif()
+
     add_executable(soo_libtorch_probe src/soo_libtorch_probe.cpp)
     target_link_libraries(soo_libtorch_probe PRIVATE alphadiamond::diamond_model alphadiamond::soo_search ${TORCH_LIBRARIES})
     target_compile_features(soo_libtorch_probe PRIVATE cxx_std_20)
@@ -196,6 +213,26 @@ if(DIAMOND_BUILD_LIBTORCH)
         add_test(NAME training_vector_manifest_test
                  COMMAND training_vector_manifest_test
                          "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
+
+        add_executable(training_step_parity_test tests/training_step_parity_test.cpp)
+        target_link_libraries(training_step_parity_test PRIVATE alphadiamond::diamond_training)
+        target_include_directories(training_step_parity_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(training_step_parity_test PRIVATE cxx_std_20)
+        target_compile_definitions(training_step_parity_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        if(MSVC)
+            target_compile_options(training_step_parity_test PRIVATE /bigobj)
+        endif()
+        add_test(NAME training_step_parity_test
+                 COMMAND training_step_parity_test
+                         "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
+        set_tests_properties(training_step_parity_test PROPERTIES LABELS training)
+        if(WIN32)
+            list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
+            get_filename_component(DIAMOND_TORCH_PREFIX
+                "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
+            set_tests_properties(training_step_parity_test PROPERTIES
+                ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+        endif()
     endif()
 endif()
 
