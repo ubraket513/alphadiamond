@@ -75,8 +75,8 @@ CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& tr
     try {
         // Native LibTorch archives make this generation self-contained and
         // deliberately distinct from the legacy Python checkpoint reader.
-        torch::save(trainer.model(), staged / kState);
-        torch::save(trainer.optimizer(), staged / kOptimizer);
+        torch::save(trainer.model(), (staged / kState).string());
+        torch::save(trainer.optimizer(), (staged / kOptimizer).string());
         {
             std::ofstream step(staged / "training_step", std::ios::binary | std::ios::trunc);
             step << trainer.training_step();
@@ -107,7 +107,7 @@ CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
     const auto info = inspect_checkpoint_v2(root);
     if (!model) throw CheckpointError("checkpoint model destination is empty");
     try {
-        torch::load(model, info.generation / kState);
+        torch::load(model, (info.generation / kState).string());
         return info;
     } catch (const c10::Error& error) {
         throw CheckpointError(std::string("cannot load checkpoint model weights: ") + error.what());
@@ -117,7 +117,7 @@ CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
 CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer) {
     const auto info = load_checkpoint_v2_weights(root, trainer.model());
     try {
-        torch::load(trainer.optimizer(), info.generation / kOptimizer);
+        torch::load(trainer.optimizer(), (info.generation / kOptimizer).string());
         trainer.restore_checkpoint_state(trainer.config(), info.training_step);
         return info;
     } catch (const c10::Error& error) {
