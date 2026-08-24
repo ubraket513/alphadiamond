@@ -87,7 +87,7 @@ the C++ test go red. Until then, `bridge-parity` keeps running in CI.
 | `native-core` (Linux/macOS/Windows) | no | the shipped core builds and its tests pass |
 | `native-sanitizers` (Linux) | no | the same tests under ASan/UBSan |
 | `native-qt` (Linux) | no | the shipped Qt application builds and passes its contract headless |
-| `core` | yes | Python engine, AlphaZero stack, repository hygiene |
+| `core` | yes (and the extension) | the trainer and control plane on every supported interpreter, plus repository hygiene. It no longer proves the tree is green without a compiled backend: decision 1 retired that guarantee for anything that executes a game |
 | `bridge-parity` | yes | Python and C++ still play the same game |
 | `lint` | yes | ruff over changed files |
 
