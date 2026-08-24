@@ -82,7 +82,7 @@ class NativeSelfPlayPool:
             # ValueError, not TypeError: SelfPlayWorkerPool.run raises ValueError
             # for this exact check, and a drop-in replacement that raises a
             # different class is not a drop-in replacement.
-            raise ValueError("jobs must be a tuple")  # noqa: TRY004
+            raise ValueError("jobs must be a tuple")
         if not jobs:
             return ()
         if not all(isinstance(job, SelfPlayJob) for job in jobs):
@@ -177,10 +177,7 @@ class NativeSelfPlayPool:
             )
 
         final_order = tuple(int(seat) for seat in record["finish_order"])
-        winner = final_order[0]
-        samples = tuple(
-            self._sample(job, move, winner) for move in record["moves"]
-        )
+        samples = tuple(self._sample(job, move, final_order) for move in record["moves"])
         return EpisodeResult(
             game_id=job.game_id,
             seed=job.seed,
@@ -195,7 +192,22 @@ class NativeSelfPlayPool:
         )
 
     @staticmethod
-    def _sample(job: SelfPlayJob, move: dict, winner: int) -> TrainingSample:
+    def _value_target(players: tuple[int, ...], final_order: tuple[int, ...]) -> tuple[float, ...]:
+        """The outcome, in the sample's canonical seat order.
+
+        Soo is a scalar from the acting seat's view. Min is a placement utility
+        -- +1, 0, -1 by finishing position -- and it is ordered by
+        ``canonical_player_ids`` rather than by seat id, because that is the
+        order the network's value head is trained in. Getting that wrong trains
+        two of Min's three heads on somebody else's result.
+        """
+        if len(players) == 2:
+            return (1.0 if players[0] == final_order[0] else -1.0,)
+        placement = {seat: value for seat, value in zip(final_order, (1.0, 0.0, -1.0))}
+        return tuple(placement[seat] for seat in players)
+
+    @staticmethod
+    def _sample(job: SelfPlayJob, move: dict, final_order: tuple[int, ...]) -> TrainingSample:
         visits = move["visit_counts"]
         total = sum(visits)
         if total <= 0:
@@ -216,7 +228,7 @@ class NativeSelfPlayPool:
             node_features=tuple(tuple(float(x) for x in row) for row in move["node_features"]),
             canonical_player_ids=players,
             sparse_policy=policy,
-            value_target=(1.0 if players[0] == winner else -1.0,),
+            value_target=NativeSelfPlayPool._value_target(players, final_order),
         )
 
 
