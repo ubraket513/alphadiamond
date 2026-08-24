@@ -135,6 +135,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     endif()
 
     add_library(diamond_training STATIC
+        src/checkpoint.cpp
         src/training_sample.cpp
         src/trainer.cpp
     )
@@ -235,13 +236,48 @@ if(DIAMOND_BUILD_LIBTORCH)
                  COMMAND training_vector_manifest_test
                          "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
 
-        add_executable(training_step_parity_test tests/training_step_parity_test.cpp)
+    add_executable(training_step_parity_test tests/training_step_parity_test.cpp)
         target_link_libraries(training_step_parity_test PRIVATE alphadiamond::diamond_training)
         target_include_directories(training_step_parity_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
         target_compile_features(training_step_parity_test PRIVATE cxx_std_20)
         target_compile_definitions(training_step_parity_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
         if(MSVC)
             target_compile_options(training_step_parity_test PRIVATE /bigobj)
+        endif()
+
+        add_executable(checkpoint_v2_roundtrip_test tests/checkpoint_v2_roundtrip_test.cpp)
+        target_link_libraries(checkpoint_v2_roundtrip_test PRIVATE alphadiamond::diamond_training)
+        target_include_directories(checkpoint_v2_roundtrip_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(checkpoint_v2_roundtrip_test PRIVATE cxx_std_20)
+        target_compile_definitions(checkpoint_v2_roundtrip_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        add_test(NAME checkpoint_v2_roundtrip_test
+                 COMMAND checkpoint_v2_roundtrip_test "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-v2-roundtrip-scratch")
+        set_tests_properties(checkpoint_v2_roundtrip_test PROPERTIES LABELS checkpoint)
+
+        add_executable(checkpoint_v2_reject_test tests/checkpoint_v2_reject_test.cpp)
+        target_link_libraries(checkpoint_v2_reject_test PRIVATE alphadiamond::diamond_training)
+        target_include_directories(checkpoint_v2_reject_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(checkpoint_v2_reject_test PRIVATE cxx_std_20)
+        target_compile_definitions(checkpoint_v2_reject_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        add_test(NAME checkpoint_v2_reject_test
+                 COMMAND checkpoint_v2_reject_test "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-v2-reject-scratch")
+        set_tests_properties(checkpoint_v2_reject_test PROPERTIES LABELS checkpoint)
+
+        add_executable(checkpoint_v2_transaction_test tests/checkpoint_v2_transaction_test.cpp)
+        target_link_libraries(checkpoint_v2_transaction_test PRIVATE alphadiamond::diamond_training)
+        target_include_directories(checkpoint_v2_transaction_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(checkpoint_v2_transaction_test PRIVATE cxx_std_20)
+        target_compile_definitions(checkpoint_v2_transaction_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        add_test(NAME checkpoint_v2_transaction_test
+                 COMMAND checkpoint_v2_transaction_test "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-v2-transaction-scratch")
+        set_tests_properties(checkpoint_v2_transaction_test PROPERTIES LABELS checkpoint)
+        if(WIN32)
+            list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
+            get_filename_component(DIAMOND_TORCH_PREFIX
+                "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
+            set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
+                                 checkpoint_v2_transaction_test PROPERTIES
+                ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
         endif()
         add_test(NAME training_step_parity_test
                  COMMAND training_step_parity_test
