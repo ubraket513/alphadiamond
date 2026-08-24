@@ -30,9 +30,16 @@ Deletion is not one commit. In rough dependency order:
    extension is importable. Remaining Python-engine runtime users: `arena`,
    `orchestration/benchmark`, `selfplay/runner_2p`, `runner_3p`,
    `agents/alphazero_agent`.
-2. **Arena runs on the native core.** It plays whole games and is the largest
-   remaining consumer of the Python rules. Statistics and reports stay in
-   Python -- the review is explicit that rewriting them buys nothing.
+2. **Arena runs on the native core.** Done for Soo: `Game.search_with_callback`
+   suspends the C++ tree on every node and asks the Python evaluator for that
+   node's answer, so two different networks can alternate moves inside one game
+   without the tree leaving C++. `tests/native/test_arena_search_parity.py`
+   holds both engines to the same selected action, the same visit distribution
+   and the same evaluator request sequence; the q values agree to float32,
+   which is the precision of the callback ABI and of the network itself.
+   Statistics and reports stay in Python -- the review is explicit that
+   rewriting them buys nothing. `MinArena` is three-player and stays on the
+   Python search until a 3P native search exists.
 3. **The golden corpus has an independent generator.** Today the oracle *is*
    the Python engine. Options, in order of preference:
    - freeze the corpus and its expected answers permanently: the file is the
@@ -64,8 +71,8 @@ these are not on the shipped application's runtime path.
 ```text
 native self-play default            done (auto)
 dependent ratchet                   done (tests/test_engine_retirement.py)
-arena on the native core            next
-runners and agent on native         after arena
+arena on the native core            done (Soo; Min is 3P and stays)
+runners and agent on native         next
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last

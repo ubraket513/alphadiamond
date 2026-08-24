@@ -1,10 +1,19 @@
-"""Deterministic balanced Soo/Min candidate-versus-baseline arenas."""
+"""Deterministic balanced Soo/Min candidate-versus-baseline arenas.
+
+The Soo arena runs its searches on the C++ core wherever the extension is
+importable: the arena plays whole games, so it is one of the largest remaining
+consumers of the Python engine. It is the same search either way -- the native
+tree answers through the same Python evaluator, and
+``tests/native/test_arena_search_parity.py`` holds the two to the same selected
+action and the same visit counts.
+"""
 
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from typing import Any
 
 from .config import ArenaConfig, MCTSConfig
 from .evaluator.base import Evaluator
@@ -12,6 +21,31 @@ from .mcts.search_2p import MCTS2P
 from .mcts.search_3p import MCTS3P
 
 GameFactory = Callable[[tuple[int, ...]], Any]
+SearchFactory = Callable[[Any, Evaluator, MCTSConfig], Any]
+
+
+def default_search_2p() -> SearchFactory:
+    """The native search where it can play, the Python one where it cannot.
+
+    Resolved once per arena rather than per game: an arena that changed engines
+    halfway through would report a win rate over two different searches. The
+    per-game check below is a capability question, not a preference -- the C++
+    core is built around the 73-hole two-seat game, and reduced boards and test
+    doubles stay on the Python search.
+    """
+    from .native import is_available
+
+    if not is_available():
+        return MCTS2P
+
+    from .native.search import NativeSearch2P
+
+    def factory(game: Any, evaluator: Evaluator, config: MCTSConfig) -> Any:
+        if NativeSearch2P.can_drive(game):
+            return NativeSearch2P(game, evaluator, config)
+        return MCTS2P(game, evaluator, config)
+
+    return factory
 
 
 def _balanced_matchups(
@@ -61,6 +95,7 @@ class SooArena:
         baseline: Evaluator,
         mcts_config: MCTSConfig,
         arena_config: ArenaConfig,
+        search_factory: SearchFactory | None = None,
     ) -> None:
         self.candidate = candidate
         self.baseline = baseline
@@ -68,6 +103,7 @@ class SooArena:
         if arena_config.games % len(_balanced_matchups((1, 2))) != 0:
             raise ValueError("Soo arena games must be a multiple of 4")
         self.arena_config = arena_config
+        self.search_factory = search_factory or default_search_2p()
 
     def run(self, game_factory: GameFactory) -> SooArenaResult:
         wins = losses = aborted = 0
@@ -87,7 +123,11 @@ class SooArena:
                     self.mcts_config,
                     seed=self.arena_config.seed + game_index * self.arena_config.max_moves + moves,
                 )
-                action = MCTS2P(game, evaluator, config).run(state, temperature=0.0).selected_action
+                action = (
+                    self.search_factory(game, evaluator, config)
+                    .run(state, temperature=0.0)
+                    .selected_action
+                )
                 state = game.apply_action(state, action)
                 moves += 1
             if not game.is_terminal(state):
