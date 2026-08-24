@@ -10,19 +10,18 @@ torch = pytest.importorskip("torch")
 from diamond.alphazero.checkpoint import save_checkpoint
 from diamond.alphazero.config import NetworkConfig, TrainingConfig
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
+from diamond.alphazero.inference.protocol import ModelKey
 from diamond.alphazero.network import SooModel
-from diamond.alphazero.orchestration.coordinator import TrainingStepArtifact
+from diamond.alphazero.orchestration.coordinator import TrainingStepArtifact, WorkerConfig
 from diamond.alphazero.orchestration.production import (
     ProductionArtifactStore,
     ProductionCheckpointStage,
     ProductionConfig,
     build_authoritative_selfplay_jobs,
 )
-from diamond.alphazero.orchestration.coordinator import WorkerConfig
 from diamond.alphazero.orchestration.run_state import RunStateStore
-from diamond.alphazero.inference.protocol import ModelKey
-from diamond.game.state import build_players, initial_state
 from diamond.alphazero.trainer import AlphaZeroTrainer
+from diamond.contract.state import build_players, initial_state
 
 
 def _compatibility() -> CheckpointCompatibilitySpec:

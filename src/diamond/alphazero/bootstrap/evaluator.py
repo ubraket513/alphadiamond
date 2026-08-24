@@ -6,7 +6,7 @@ satisfying the public ``Evaluator`` protocol, local or remote alike.
 
 from __future__ import annotations
 
-from ...game.board import Board, Camp
+from ...contract.board import Board, Camp
 from ..action_codec import ActionCodec, ActionSpaceSpec
 from ..evaluator.base import EvalRequest, EvalResult, Evaluator
 from .heuristic import (

@@ -89,8 +89,37 @@ jump path, and that path is already in the request's own legal moves, so the
 agent matches the chosen action against them instead of re-resolving through a
 second implementation.
 
-**The behaviour queue is empty. Phase A is done.** What `diamond.game` still
-supplies is definitions: the board, the seats, `GameState`. That is Phase B.
+**The behaviour queue is empty. Phase A is done.**
+
+## Phase B: the definitions moved rather than being rewritten
+
+The fourteen definition dependents never wanted the engine. They wanted
+`GameState`, `PlayerSpec`, `Board`, `Move` -- what a position *is*. Those were
+in the same package as the rules only because that is where they were written.
+
+So they moved, unchanged, to `diamond.contract`: `board.py`, `coordinates.py`,
+`move.py` and `state.py`, by `git mv`. `next_player_id` did not go with them --
+it decides whose turn it is, which is a rule, and it now lives in
+`diamond.game.rules` where the rest of the turn order is. `IllegalMoveError`
+did go: the type is vocabulary, and the C++ core raises it now too.
+
+`diamond.game` imports from `diamond.contract` and re-exports nothing from it.
+The dependency points away from the package being deleted, which is what makes
+the deletion a deletion rather than a rewrite. Both ledgers are now empty, and
+`src/diamond/game` is reachable from `tools/build_golden.py` and the bridge
+gates in `tests/` -- from nothing that ships.
+
+What is left before `src/diamond/game` can go:
+
+* **The board is still generated in Python.** `standard_board()` produces the
+  topology tables the extension is configured with at import and the deployment
+  artifact ships; `native/src/topology_io.cpp` only reads them. That generator
+  is in `diamond.contract` now, not in the engine, so it does not block the
+  deletion -- but it does mean the C++ core is not yet self-sufficient in
+  geometry, and that is the next thing to settle.
+* **The rules themselves.** `rules.py`, `session.py` and `history.py` are the
+  oracle. Decision 2's precedent applies: the generator moves to `tools/`, where
+  no shipped code imports it, and `src/diamond/game` is deleted.
 
 ## The behaviour queue was two decisions, not seven tasks
 

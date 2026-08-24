@@ -30,7 +30,7 @@ from ..alphazero.evaluator.dummy import DummyEvaluator
 from ..alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from ..alphazero.identity import MIN_MODEL_NAME, SOO_MODEL_NAME
 from ..alphazero.search_factory import three_player_search, two_player_search
-from ..game.state import PlayerSpec
+from ..contract.state import PlayerSpec
 from .base import Agent, MoveProposal, MoveRequest
 
 DEFAULT_SIMULATIONS = 128

@@ -28,16 +28,15 @@ import json
 import pickle
 import random
 import statistics
-import sys
 from pathlib import Path
 from time import perf_counter
 
 import torch
 
+from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.evaluator.base import EvalRequest
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
-from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.inference.coordinator import (
     InferenceConfig,
     InferenceCoordinator,
@@ -50,7 +49,7 @@ from diamond.alphazero.inference.protocol import (
     InferenceResponse,
     ModelKey,
 )
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 
 def build_requests(count: int, *, model_key: ModelKey, seed: int = 7) -> list[InferenceRequest]:

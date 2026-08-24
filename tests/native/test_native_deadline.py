@@ -19,7 +19,7 @@ from diamond.alphazero.evaluator.base import EvalResult
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.native.search import NativeSearch2P
 from diamond.alphazero.search_factory import two_player_search
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 SIMULATIONS = 20_000
 """Far more than a small budget can finish, so the cut is unambiguous."""

@@ -21,7 +21,8 @@ Two rules that are easy to get wrong and expensive to rediscover:
 
 | path | what |
 |---|---|
-| `src/diamond/game/` | authoritative rules, board, state — the oracle |
+| `src/diamond/contract/` | what a position *is*: board, seats, `GameState`, `Move` |
+| `src/diamond/game/` | the Python reading of the rules — the oracle, and nothing ships against it |
 | `src/diamond/alphazero/` | encoder, MCTS, evaluators, orchestration |
 | `src/diamond/alphazero/native/` | optional native backend: import guard, topology export, callback |
 | `native/` | the C++ extension (`_diamond_native`) |

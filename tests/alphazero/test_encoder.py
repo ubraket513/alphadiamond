@@ -6,9 +6,9 @@ import pytest
 
 from diamond.alphazero.action_codec import ActionCodec, ActionSpaceSpec
 from diamond.alphazero.encoder import CanonicalEncoder
-from diamond.game.board import Camp, standard_board
+from diamond.contract.board import Camp, standard_board
+from diamond.contract.state import GameState, build_players, initial_state
 from diamond.game.rules import legal_moves
-from diamond.game.state import GameState, build_players, initial_state
 
 
 @pytest.mark.parametrize("camp", list(Camp))

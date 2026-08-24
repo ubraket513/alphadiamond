@@ -49,6 +49,13 @@ addopts = "-q"
 line-length = 100
 src = ["src", "tests"]
 
+[tool.ruff.lint.per-file-ignores]
+# Profile scripts, out of production code. Their closures capture the loop
+# variable and are called inside the same iteration, which is what B023 cannot
+# see; rewriting measurement code to satisfy a linter is how a measurement
+# stops measuring what it did.
+"az-bench/profiles/*.py" = ["B023"]
+
 [tool.ruff.lint]
 # This codebase raises ValueError subclasses for invalid input by design --
 # DeploymentArtifactError, ReplayCompatibilityError and friends are all

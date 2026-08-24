@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
+from ..contract.board import standard_board
+from ..contract.coordinates import DIRECTIONS
+from ..contract.state import SEAT_LAYOUTS
 from .config import NetworkConfig, config_dict
-from ..game.board import standard_board
-from ..game.coordinates import DIRECTIONS
-from ..game.state import SEAT_LAYOUTS
 
 RULESET_VERSION = "diamond-authoritative-rules-v1"
 BOARD_TOPOLOGY_VERSION = "diamond73-v1"
@@ -83,7 +84,7 @@ class ModelIdentity:
             raise ValueError("model_version must be a semantic version such as 0.1.0")
 
     @classmethod
-    def soo(cls, model_version: str) -> "ModelIdentity":
+    def soo(cls, model_version: str) -> ModelIdentity:
         return cls(
             model_name=SOO_MODEL_NAME,
             model_version=model_version,
@@ -92,7 +93,7 @@ class ModelIdentity:
         )
 
     @classmethod
-    def min(cls, model_version: str) -> "ModelIdentity":
+    def min(cls, model_version: str) -> ModelIdentity:
         return cls(
             model_name=MIN_MODEL_NAME,
             model_version=model_version,
@@ -117,13 +118,13 @@ class CheckpointCompatibilitySpec:
     @classmethod
     def soo(
         cls, *, model_version: str, network_config: NetworkConfig
-    ) -> "CheckpointCompatibilitySpec":
+    ) -> CheckpointCompatibilitySpec:
         return cls(ModelIdentity.soo(model_version), network_config)
 
     @classmethod
     def min(
         cls, *, model_version: str, network_config: NetworkConfig
-    ) -> "CheckpointCompatibilitySpec":
+    ) -> CheckpointCompatibilitySpec:
         return cls(ModelIdentity.min(model_version), network_config)
 
     def to_metadata(self) -> dict[str, Any]:
@@ -157,15 +158,15 @@ class CheckpointCompatibilitySpec:
 __all__ = [
     "ACTION_SPACE_VERSION",
     "BOARD_TOPOLOGY_VERSION",
-    "CheckpointCompatibilityError",
-    "CheckpointCompatibilitySpec",
     "ENCODER_VERSION",
     "MIN_MODEL_NAME",
     "MIN_VALUE_SEMANTICS_VERSION",
-    "ModelIdentity",
     "RULESET_FINGERPRINT",
     "RULESET_VERSION",
     "SEAT_LAYOUT_VERSION",
     "SOO_MODEL_NAME",
     "SOO_VALUE_SEMANTICS_VERSION",
+    "CheckpointCompatibilityError",
+    "CheckpointCompatibilitySpec",
+    "ModelIdentity",
 ]

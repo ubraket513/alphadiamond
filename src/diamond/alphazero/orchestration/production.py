@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from ...game.state import build_players, initial_state
+from ...contract.state import build_players, initial_state
 from ..arena import MinArena, SooArena
 from ..checkpoint import load_checkpoint, load_inference_checkpoint, save_checkpoint
 from ..config import (

@@ -14,9 +14,9 @@ from diamond.agents.base import MoveRequest
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.native.search import NativeSearch2P
 from diamond.alphazero.search_factory import NativeSearchUnavailable, two_player_search
-from diamond.game.board import standard_board
+from diamond.contract.board import standard_board
+from diamond.contract.state import build_players, initial_state
 from diamond.game.rules import legal_moves
-from diamond.game.state import build_players, initial_state
 
 
 class _Evaluator:

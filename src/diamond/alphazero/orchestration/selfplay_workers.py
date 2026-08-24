@@ -12,6 +12,7 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 
+from ...contract.state import GameState, PlayerSpec
 from ..bootstrap.evaluator import bootstrap_evaluator
 from ..bootstrap.heuristic import BOOTSTRAP_PRIOR_NONE
 from ..config import BOOTSTRAP_PRIORS, MCTSConfig, SelfPlayConfig
@@ -27,7 +28,6 @@ from ..inference.remote import RemoteEvaluator, RequestCoordinator
 from ..replay import TrainingSample
 from ..selfplay.runner_2p import SooSelfPlayRunner
 from ..selfplay.runner_3p import MinSelfPlayRunner
-from ...game.state import GameState, PlayerSpec
 
 
 def _identity_digest(
@@ -373,7 +373,7 @@ def selfplay_worker_entry(
                 return
             try:
                 result = run_selfplay_job(job, coordinator)
-            except BaseException as error:
+            except BaseException as error:  # noqa: BLE001 - the envelope is the point
                 result_queue.put(
                     WorkerFailure(
                         worker_id=worker_id,
@@ -429,7 +429,7 @@ class _InferenceBridge:
             Thread(target=self._pump_responses, name="selfplay-bridge-responses", daemon=True),
         )
 
-    def start(self) -> "_InferenceBridge":
+    def start(self) -> _InferenceBridge:
         for thread in self._threads:
             thread.start()
         return self
@@ -469,7 +469,7 @@ class _InferenceBridge:
                 with self._routes_lock:
                     self._routes[request.correlation_id] = worker_id
                 self.coordinator.submit(request, self.parent_replies)
-            except BaseException as error:  # noqa: BLE001 - surfaced to the parent
+            except BaseException as error:  # noqa: BLE001 - the envelope is the point  # noqa: BLE001 - surfaced to the parent
                 self._fail(error)
                 return
 
@@ -489,7 +489,7 @@ class _InferenceBridge:
                     response,
                     timeout=self.coordinator.config.response_timeout_s,
                 )
-            except BaseException as error:  # noqa: BLE001 - surfaced to the parent
+            except BaseException as error:  # noqa: BLE001 - the envelope is the point  # noqa: BLE001 - surfaced to the parent
                 self._fail(error)
                 return
 

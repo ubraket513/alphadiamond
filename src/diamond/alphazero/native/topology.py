@@ -2,7 +2,7 @@
 
 Risk 1 in ``docs/native_selfplay_phase0.md`` is that a native port becomes a
 second authority on Diamond's rules.  Topology is the part that is pure data,
-so it is *generated* here from :mod:`diamond.game.board` and handed to the
+so it is *generated* here from :mod:`diamond.contract.board` and handed to the
 extension at import time rather than transcribed into C++.  Nothing in
 ``native/`` hard-codes a neighbour, a camp membership or a canonical rotation.
 """
@@ -12,8 +12,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from ...game.board import CAMP_SIZE, PLAYABLE_HOLES, Board, Camp, standard_board
-from ...game.coordinates import NUM_DIRECTIONS
+from ...contract.board import CAMP_SIZE, PLAYABLE_HOLES, Board, Camp, standard_board
+from ...contract.coordinates import NUM_DIRECTIONS
 from ..action_codec import ActionCodec, ActionSpaceSpec
 from ..bootstrap.heuristic import pairwise_distance_table
 from ..encoder import CanonicalEncoder

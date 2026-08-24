@@ -11,8 +11,8 @@ from typing import Any
 
 import torch
 
-from ..game.board import standard_board
-from ..game.state import EMPTY, GameState, PlayerSpec, build_players
+from ..contract.board import standard_board
+from ..contract.state import EMPTY, GameState, PlayerSpec, build_players
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ArenaConfig, MCTSConfig, NetworkConfig, SelfPlayConfig, TrainingConfig

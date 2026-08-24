@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from diamond.game.rules import IllegalMoveError
-from diamond.game.state import EMPTY, GameState, build_players, initial_state
+from diamond.contract.move import IllegalMoveError
+from diamond.contract.state import EMPTY, GameState, build_players, initial_state
 
 
 @pytest.mark.parametrize("player_count", [2, 3])

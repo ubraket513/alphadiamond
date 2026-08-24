@@ -423,7 +423,7 @@ def _corpus_features(corpus: Path) -> list[torch.Tensor]:
     import json
 
     from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
-    from diamond.game.state import GameState, GameStatus, build_players
+    from diamond.contract.state import GameState, GameStatus, build_players
 
     players = build_players(2)
     game = AlphaZeroGameAdapter(players)

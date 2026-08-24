@@ -64,7 +64,7 @@ from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.network import SooModel
 from diamond.alphazero.rating.openings import BenchmarkOpening
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 SUITE_VERSION = "arena-openings-v2"
 

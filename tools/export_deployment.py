@@ -43,7 +43,7 @@ from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.native.topology import player_table, topology_tables
 from diamond.alphazero.network.min import MinModel
 from diamond.alphazero.network.soo import SooModel
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 MODEL_VERSIONS = {"soo": "2.0.0", "min": "0.1.0"}
 MODEL_CLASSES = {"soo": SooModel, "min": MinModel}

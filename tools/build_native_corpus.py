@@ -35,10 +35,10 @@ from diamond.alphazero.bootstrap.heuristic import (
     pairwise_distance_table,
 )
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from diamond.game.board import Camp, standard_board
-from diamond.game.move import MoveKind
+from diamond.contract.board import Camp, standard_board
+from diamond.contract.move import MoveKind
+from diamond.contract.state import GameState, build_players
 from diamond.game.rules import moves_from
-from diamond.game.state import GameState, build_players
 
 OUTPUT = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 MAX_MOVES = 400

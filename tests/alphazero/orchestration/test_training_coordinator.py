@@ -27,7 +27,7 @@ from diamond.alphazero.rating.participants import CheckpointParticipant
 from diamond.alphazero.rating.protocol import BenchmarkProtocol, EloConfig
 from diamond.alphazero.rating.registry import RatingRegistry
 from diamond.alphazero.replay import TrainingSample
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 
 def _compatibility() -> CheckpointCompatibilitySpec:

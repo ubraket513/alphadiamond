@@ -60,7 +60,7 @@ class Move:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Move":
+    def from_dict(cls, data: dict) -> Move:
         return cls(
             player_id=int(data["player_id"]),
             source=int(data["source"]),
@@ -68,3 +68,11 @@ class Move:
             path=tuple(int(p) for p in data["path"]),
             kind=MoveKind(data.get("kind", MoveKind.STEP.value)),
         )
+
+
+class IllegalMoveError(ValueError):
+    """Raised when a move is rejected, by whichever implementation rejected it.
+
+    The type is vocabulary rather than a rule: callers catch "you cannot play
+    that" without caring whether the C++ core or the Python oracle said so.
+    """

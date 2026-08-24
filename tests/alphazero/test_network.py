@@ -10,8 +10,8 @@ from diamond.alphazero.network.trunk import (
     DirectionalResidualBlock,
     directional_adjacency,
 )
-from diamond.game.board import standard_board
-from diamond.game.coordinates import NUM_DIRECTIONS
+from diamond.contract.board import standard_board
+from diamond.contract.coordinates import NUM_DIRECTIONS
 
 
 @pytest.mark.parametrize("batch_size", [1, 4])

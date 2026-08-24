@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from diamond.game.board import standard_board
-from diamond.game.state import EMPTY, GameState
+from diamond.contract.board import standard_board
+from diamond.contract.state import EMPTY, GameState
 
 
 @pytest.fixture(scope="session")

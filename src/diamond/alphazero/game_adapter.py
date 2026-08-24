@@ -19,9 +19,9 @@ both this adapter and the Python engine and requires identical successors.
 
 from __future__ import annotations
 
-from ..game.board import Board, standard_board
-from ..game.rules import IllegalMoveError
-from ..game.state import GameState, GameStatus, PlayerSpec, initial_state
+from ..contract.board import Board, standard_board
+from ..contract.move import IllegalMoveError
+from ..contract.state import GameState, GameStatus, PlayerSpec, initial_state
 from .action_codec import ActionCodec, ActionSpaceSpec
 from .encoder import CanonicalEncoder
 from .evaluator.base import EvalRequest

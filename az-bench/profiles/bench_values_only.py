@@ -37,7 +37,7 @@ from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.inference.model_pool import InferenceModelPool
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 
 def sample_eval_requests(count: int, seed: int = 11):

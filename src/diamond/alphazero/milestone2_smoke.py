@@ -10,8 +10,8 @@ from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
-from ..game.board import standard_board
-from ..game.state import EMPTY, GameState, PlayerSpec, build_players
+from ..contract.board import standard_board
+from ..contract.state import EMPTY, GameState, PlayerSpec, build_players
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, load_inference_checkpoint, save_checkpoint
 from .config import ArenaConfig, MCTSConfig, NetworkConfig, SelfPlayConfig, TrainingConfig
@@ -19,9 +19,9 @@ from .evaluator.base import EvalRequest, EvalResult
 from .evaluator.torch import TorchEvaluator
 from .game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from .identity import MIN_MODEL_NAME, SOO_MODEL_NAME, CheckpointCompatibilitySpec
-from .native import native_game, require_native
 from .inference.coordinator import InferenceConfig, InferenceCoordinator
 from .inference.protocol import InferenceRequest, InferenceResponse, ModelKey
+from .native import native_game, require_native
 from .network import MinModel, SooModel
 from .orchestration.coordinator import (
     CandidateArtifact,

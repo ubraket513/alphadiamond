@@ -24,7 +24,7 @@ from diamond.alphazero.evaluator.base import EvalRequest, EvalResult
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.native.search import NativeSearch2P
-from diamond.game.state import GameState, GameStatus, build_players
+from diamond.contract.state import GameState, GameStatus, build_players
 
 FIXTURE = Path(__file__).parent / "fixtures" / "positions.jsonl"
 SIMULATIONS = (1, 2, 16, 64)

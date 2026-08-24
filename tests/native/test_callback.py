@@ -19,7 +19,7 @@ import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.native import native_game, require_native
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 np = pytest.importorskip("numpy")
 

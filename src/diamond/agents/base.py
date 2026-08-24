@@ -11,9 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from ..game.board import Board
-from ..game.move import Move, MoveKind
-from ..game.state import GameState
+from ..contract.board import Board
+from ..contract.move import Move, MoveKind
+from ..contract.state import GameState
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +62,7 @@ class MoveProposal:
         )
 
     @classmethod
-    def from_move(cls, move: Move, metadata: dict[str, Any] | None = None) -> "MoveProposal":
+    def from_move(cls, move: Move, metadata: dict[str, Any] | None = None) -> MoveProposal:
         return cls(
             player_id=move.player_id,
             source=move.source,

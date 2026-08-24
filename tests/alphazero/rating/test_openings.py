@@ -6,7 +6,7 @@ import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.rating.openings import OpeningSuite
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 def _suite(player_count: int = 2) -> OpeningSuite:

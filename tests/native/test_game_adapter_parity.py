@@ -24,9 +24,9 @@ from pathlib import Path
 import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
+from diamond.contract.state import GameState, GameStatus, build_players
 from diamond.game.rules import find_legal_move, legal_moves
 from diamond.game.session import GameSession
-from diamond.game.state import GameState, GameStatus, build_players
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "positions.jsonl"
 

@@ -21,8 +21,8 @@ from diamond.alphazero.bootstrap.heuristic import (
 )
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from diamond.game.board import Board, Camp
-from diamond.game.state import build_players
+from diamond.contract.board import Board, Camp
+from diamond.contract.state import build_players
 
 
 def best_of(priors):

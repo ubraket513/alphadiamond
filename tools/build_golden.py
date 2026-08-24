@@ -58,10 +58,11 @@ from diamond.alphazero.game_adapter import DiamondSearchAdapter
 from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.mcts.search_3p import MCTS3P as PythonMCTS3P
 from diamond.alphazero.native.topology import player_table, topology_tables
-from diamond.game.board import Camp, standard_board
-from diamond.game.rules import IllegalMoveError, find_legal_move, legal_moves
+from diamond.contract.board import Camp, standard_board
+from diamond.contract.move import IllegalMoveError
+from diamond.contract.state import GameState, GameStatus, build_players, initial_state
+from diamond.game.rules import find_legal_move, legal_moves
 from diamond.game.session import GameSession
-from diamond.game.state import GameState, GameStatus, build_players, initial_state
 
 CORPUS = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 GOLDEN = ROOT / "tests" / "golden"

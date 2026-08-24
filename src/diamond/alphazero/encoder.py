@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
+from ..contract.board import Board, Camp
+from ..contract.coordinates import Cube
+from ..contract.move import Move
+from ..contract.state import EMPTY, GameState, PlayerSpec, player_by_id
 from .action_codec import ActionCodec
-from ..game.board import Board, Camp
-from ..game.coordinates import Cube
-from ..game.move import Move
-from ..game.state import EMPTY, GameState, PlayerSpec, player_by_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +46,7 @@ class CanonicalEncoder:
         self.board = board
         self.codec = codec
 
-    @lru_cache(maxsize=6)
+    @lru_cache(maxsize=6)  # noqa: B019 - one encoder per board, six camps, process lifetime
     def position_mapping(self, home_camp: Camp) -> PositionMapping:
         physical_to_canonical = tuple(
             self.board.id_of(self._canonical_cube(position.cube, home_camp))

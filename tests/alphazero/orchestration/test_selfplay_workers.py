@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from multiprocessing import active_children
 from pathlib import Path
 from queue import Queue
-import os
-import subprocess
-import sys
 
 import pytest
 
@@ -25,15 +25,15 @@ from diamond.alphazero.orchestration.selfplay_workers import (
     derive_game_seed,
     run_selfplay_job,
 )
-from diamond.game.board import standard_board
-from diamond.game.rules import find_legal_move
-from diamond.game.state import (
+from diamond.contract.board import standard_board
+from diamond.contract.state import (
     EMPTY,
     GameState,
     PlayerSpec,
     build_players,
     initial_state,
 )
+from diamond.game.rules import find_legal_move
 
 
 def _soo_key(digest: str = "a" * 64) -> ModelKey:

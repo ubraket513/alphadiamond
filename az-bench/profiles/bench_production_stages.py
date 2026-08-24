@@ -195,7 +195,7 @@ def main() -> int:
     from diamond.alphazero.inference.model_pool import InferenceModelPool
     from diamond.alphazero.inference.summary import summarize_metrics
     from diamond.alphazero.orchestration.selfplay_workers import SelfPlayJob, SelfPlayWorkerPool
-    from diamond.game.state import build_players, initial_state
+    from diamond.contract.state import build_players, initial_state
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)

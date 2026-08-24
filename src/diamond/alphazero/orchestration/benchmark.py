@@ -8,9 +8,10 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TypeAlias
 
+from ...contract.state import build_players
 from ..config import MCTSConfig
 from ..game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from ..identity import MIN_MODEL_NAME, SOO_MODEL_NAME, CheckpointCompatibilitySpec
+from ..identity import SOO_MODEL_NAME, CheckpointCompatibilitySpec
 from ..inference.coordinator import InferenceConfig, InferenceCoordinator
 from ..inference.model_pool import InferenceModelPool
 from ..inference.remote import RemoteEvaluator
@@ -28,7 +29,6 @@ from ..rating.schedule import (
     validate_soo_rated_batch,
 )
 from ..search_factory import SearchFactory, three_player_search, two_player_search
-from ...game.state import build_players
 from .coordinator import CandidateArtifact
 
 RatingEvent: TypeAlias = SooRatingEvent | MinRatingEvent
