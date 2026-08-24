@@ -7,12 +7,13 @@ exactly like one that does.
 
 from __future__ import annotations
 
+import pytest
+
 from diamond.agents.alphazero_agent import AlphaZeroAgent
 from diamond.agents.base import MoveRequest
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.native.search import NativeSearch2P
-from diamond.alphazero.search_factory import two_player_search
+from diamond.alphazero.search_factory import NativeSearchUnavailable, two_player_search
 from diamond.game.board import standard_board
 from diamond.game.rules import legal_moves
 from diamond.game.state import build_players, initial_state
@@ -40,11 +41,12 @@ def test_the_real_game_goes_to_the_native_core() -> None:
     assert isinstance(search, NativeSearch2P)
 
 
-def test_a_three_seat_game_stays_on_python() -> None:
-    """The native search is two-player; Min has no native counterpart yet."""
+def test_a_three_seat_game_is_refused_by_the_two_seat_search() -> None:
+    """There is no Python fallback to receive it: it is an unsupported input,
+    not a slower path (decision 1 in docs/architecture/decisions.md)."""
     assert not NativeSearch2P.can_drive(_adapter(3))
-    search = two_player_search()(_adapter(3), _Evaluator(), _Config())
-    assert isinstance(search, MCTS2P)
+    with pytest.raises(NativeSearchUnavailable, match="two-seat"):
+        two_player_search()(_adapter(3), _Evaluator(), _Config())
 
 
 def test_a_deadline_no_longer_forces_the_python_search() -> None:

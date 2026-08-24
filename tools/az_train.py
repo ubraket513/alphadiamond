@@ -200,36 +200,58 @@ def throughput_summary(
 
 
 
-SELFPLAY_BACKENDS = ("python", "native", "auto")
-"""``auto`` is the default: the C++ core is the authority, and a run should use
-it wherever it is available rather than only when told to.
+SELFPLAY_BACKENDS = ("native",)
+"""Training game execution requires the native extension.
 
-That does not weaken the rule this setting has always enforced -- a run's data
-must be attributable to the engine that produced it. ``auto`` resolves to a
-concrete backend before the run starts, prints the choice and the reason, and
-records the resolved value; ``auto`` itself never reaches a run config.
+Decision 1 in docs/architecture/decisions.md: the pure-Python search and
+self-play backend are no longer supported fallbacks. Keeping a second
+implementation of rules, search and self-play alive for the case where the
+extension is missing costs more than it returns -- both families already train
+on the native pool, and every Python parity gate has been replaced by a C++ one
+proven on mutation evidence.
 
-``auto`` is the migration setting: it takes the native backend when the
-extension is importable and the run does not need something the native runner
-lacks, and falls back to Python otherwise.  It never guesses silently -- the
-choice it made is printed and recorded in the run config, so a run's data can
-always be attributed to the engine that produced it."""
+What is required is the compiled extension, not a compiler: a wheel or prebuilt
+artifact lets a user train without a toolchain.
+
+``python`` and ``auto`` are still recognised, and both fail with that
+explanation rather than silently doing something else. A config that asked for
+the Python backend was asking for a specific engine, and quietly giving it
+another one would break the rule this setting has always enforced -- that a
+run's data is attributable to the engine that produced it."""
+
+
+class NativeExtensionRequired(SystemExit):
+    """Raised when a training command cannot execute games."""
 
 
 def resolve_selfplay_backend(requested: str, *, max_game_seconds: float | None) -> str:
-    """Turn ``auto`` into a concrete backend, with the reason on stdout."""
-    if requested != "auto":
-        return requested
-    if max_game_seconds:
-        # The native runner bounds a game by moves, not by wall clock.
-        print("selfplay backend: python (max_game_seconds is set)")
-        return "python"
+    """Check the contract, and return the only backend there is."""
+    if requested in ("python", "auto"):
+        raise NativeExtensionRequired(
+            f"selfplay_backend={requested!r} is no longer supported: training game "
+            "execution requires the native extension (decision 1 in "
+            "docs/architecture/decisions.md). Set selfplay_backend to 'native', "
+            "and build the extension with `python tools/build_native.py`."
+        )
+    if requested != "native":
+        raise NativeExtensionRequired(f"unknown selfplay_backend: {requested!r}")
+
     from diamond.alphazero.native import is_available, native_error
 
     if not is_available():
-        print(f"selfplay backend: python (native unavailable: {native_error()})")
-        return "python"
-    print("selfplay backend: native")
+        raise NativeExtensionRequired(
+            "training game execution requires the native extension, which is not "
+            f"importable: {native_error()}. Build it with "
+            "`python tools/build_native.py`."
+        )
+    if max_game_seconds:
+        # The native runner bounds a game by moves, not by wall clock. Dropping
+        # a configured budget silently would let a run exceed a limit its own
+        # config says it respects.
+        raise NativeExtensionRequired(
+            "self_play.max_game_seconds is not implemented by the native runner; "
+            "bound the game by max_moves instead"
+        )
     return "native"
 
 
@@ -483,9 +505,9 @@ def main() -> int:
         args.workers if args.workers is not None else workers.get("worker_count")
     )
 
-    # The C++ core is the authority, so the default is "auto": native where it
-    # is available, Python where it is not. Both remain selectable explicitly.
-    selfplay_backend = args.selfplay_backend or workers.get("selfplay_backend", "auto")
+    # Training game execution requires the native extension; the resolver
+    # refuses anything else rather than quietly substituting an engine.
+    selfplay_backend = args.selfplay_backend or workers.get("selfplay_backend", "native")
     if selfplay_backend not in SELFPLAY_BACKENDS:
         raise SystemExit(f"unknown selfplay_backend: {selfplay_backend}")
     selfplay_backend = resolve_selfplay_backend(

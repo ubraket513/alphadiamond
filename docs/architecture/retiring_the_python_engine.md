@@ -33,7 +33,18 @@ a dataclass in a type hint:
 The criterion is whether rules are applied. `initial_state` is a definition by
 that test: it fills each seat's home camp and applies nothing.
 
-## The behaviour queue is two decisions, not seven tasks
+## Both decisions are taken
+
+`docs/architecture/decisions.md` records them: training game execution requires
+the native extension, and the golden corpus is frozen as the normative game
+contract. What follows is the queue those decisions drain, kept for the record
+of why each entry was there.
+
+Phase A is under way. `search_factory` has already left the behaviour queue --
+it no longer names a Python search to fall back to -- taking the count from 7
+to 6.
+
+## The behaviour queue was two decisions, not seven tasks
 
 Reading the seven, none is independent work:
 
@@ -67,9 +78,9 @@ they are recorded here rather than taken unilaterally.
 
 Deletion is not one commit. In rough dependency order:
 
-1. **The runtime path is native everywhere it matters.** Self-play defaults to
-   `auto`, which resolves to the native backend wherever the extension is
-   importable. The Soo arena and the GUI agent's two-seat path now go through
+1. **The runtime path is native.** `selfplay_backend` accepts `native` only;
+   `python` and `auto` are recognised and refused with the reason, because a
+   config that named an engine should not silently receive another. The Soo arena and the GUI agent's two-seat path now go through
    `diamond.alphazero.search_factory.two_player_search()`, which prefers the
    native search and falls back per game.
 

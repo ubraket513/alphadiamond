@@ -6,10 +6,14 @@ import json
 import math
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any
 
 import torch
 
+from ..game.board import standard_board
+from ..game.rules import find_legal_move
+from ..game.state import EMPTY, GameState, PlayerSpec, build_players
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ArenaConfig, MCTSConfig, NetworkConfig, SelfPlayConfig, TrainingConfig
@@ -22,9 +26,6 @@ from .replay import ReplayBatch
 from .selfplay.runner_2p import SooSelfPlayRunner
 from .selfplay.runner_3p import MinSelfPlayRunner
 from .trainer import AlphaZeroTrainer
-from ..game.board import standard_board
-from ..game.rules import find_legal_move
-from ..game.state import EMPTY, GameState, PlayerSpec, build_players
 
 
 class _PreferredActionEvaluator:
@@ -299,6 +300,29 @@ class _ArenaGame:
         return self._final_order
 
 
+class _FirstLegalSearch:
+    """Plays the first legal action of a scripted arena game.
+
+    The arena smoke checks the arena's bookkeeping -- balanced matchups, abort
+    accounting, promotion -- over a one-move scripted game. It used to get a
+    search by accident, because a fake game fell back to the Python one; there
+    is no fallback now (decision 1), so the stub is stated. Absorbing this smoke
+    into the native path is the next step of phase A.
+    """
+
+    def __init__(self, game, evaluator, config, **kwargs) -> None:
+        self.game = game
+
+    def run(self, state, temperature: float = 0.0):
+        action = self.game.legal_action_ids(state)[0]
+        return SimpleNamespace(
+            selected_action=action,
+            visit_counts={action: 1},
+            policy={action: 1.0},
+            q_values={action: 0.0},
+        )
+
+
 def run_arena_smoke() -> dict[str, dict[str, int]]:
     search = MCTSConfig(simulations=2, dirichlet_epsilon=0.0)
     soo = SooArena(
@@ -306,12 +330,14 @@ def run_arena_smoke() -> dict[str, dict[str, int]]:
         baseline=DummyEvaluator(0.0),
         mcts_config=search,
         arena_config=ArenaConfig(games=4),
+        search_factory=_FirstLegalSearch,
     ).run(lambda order: _ArenaGame(order, (1, 2)))
     min_result = MinArena(
         candidate=DummyEvaluator((0.0, 0.0, 0.0)),
         baseline=DummyEvaluator((0.0, 0.0, 0.0)),
         mcts_config=search,
         arena_config=ArenaConfig(games=18),
+        search_factory=_FirstLegalSearch,
     ).run(lambda order: _ArenaGame(order, (1, 2, 3)))
     return {
         "Soo": {

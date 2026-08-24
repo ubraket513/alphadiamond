@@ -1,9 +1,14 @@
-"""`auto` picks a self-play backend without ever guessing silently.
+"""Training game execution requires the native extension, and says so.
 
-The rule the training loop has always held is that a run's data can be
-attributed to the engine that produced it. `auto` keeps that: it resolves to a
-concrete backend before the run starts, prints why, and the resolved value is
-what gets recorded in the run config.
+Decision 1 in docs/architecture/decisions.md. The rule this setting has always
+enforced is that a run's data is attributable to the engine that produced it;
+with one engine left, enforcing it means refusing the settings that used to name
+another rather than quietly substituting.
+
+`python` and `auto` are still *recognised* on purpose. A config asking for the
+Python backend was asking for a specific engine, and the useful answer is an
+error that says what happened to it -- not `unknown backend`, and certainly not
+a silent switch.
 """
 
 from __future__ import annotations
@@ -23,37 +28,42 @@ sys.modules["az_train_module"] = az_train
 _spec.loader.exec_module(az_train)
 
 resolve = az_train.resolve_selfplay_backend
+NativeExtensionRequired = az_train.NativeExtensionRequired
 
 
-def test_explicit_choices_are_never_overridden():
-    assert resolve("python", max_game_seconds=None) == "python"
+def test_native_is_the_only_backend() -> None:
+    assert az_train.SELFPLAY_BACKENDS == ("native",)
     assert resolve("native", max_game_seconds=None) == "native"
-    # Even a request the native runner cannot honour is left alone: an explicit
-    # backend must fail loudly later, not be silently swapped here.
-    assert resolve("native", max_game_seconds=900.0) == "native"
 
 
-def test_auto_falls_back_when_the_run_needs_a_wall_clock_bound():
-    """The native runner bounds a game by moves, not by seconds."""
-    assert resolve("auto", max_game_seconds=900.0) == "python"
+def test_the_retired_backends_explain_themselves() -> None:
+    for retired in ("python", "auto"):
+        with pytest.raises(NativeExtensionRequired, match="native extension"):
+            resolve(retired, max_game_seconds=None)
 
 
-def test_auto_follows_extension_availability(monkeypatch: pytest.MonkeyPatch):
+def test_an_unknown_backend_is_refused() -> None:
+    with pytest.raises(NativeExtensionRequired, match="unknown"):
+        resolve("cuda-telepathy", max_game_seconds=None)
+
+
+def test_a_missing_extension_is_a_clear_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The contract is the compiled extension, so its absence is the error."""
     from diamond.alphazero import native
-
-    monkeypatch.setattr(native, "is_available", lambda: True)
-    assert resolve("auto", max_game_seconds=None) == "native"
 
     monkeypatch.setattr(native, "is_available", lambda: False)
     monkeypatch.setattr(native, "native_error", lambda: "not built here")
-    assert resolve("auto", max_game_seconds=None) == "python"
+    with pytest.raises(NativeExtensionRequired, match="not built here"):
+        resolve("native", max_game_seconds=None)
 
 
-def test_auto_is_an_accepted_backend():
-    assert "auto" in az_train.SELFPLAY_BACKENDS
+def test_a_wall_clock_budget_is_refused_rather_than_dropped() -> None:
+    """The native runner bounds a game by moves. Ignoring a configured budget
+    would let a run exceed a limit its own config says it respects."""
+    with pytest.raises(NativeExtensionRequired, match="max_game_seconds"):
+        resolve("native", max_game_seconds=900.0)
 
 
-def test_auto_is_the_default():
-    """The C++ core is the authority, so a run reaches for it unprompted."""
+def test_the_default_is_native() -> None:
     source = (ROOT / "tools" / "az_train.py").read_text(encoding="utf-8")
-    assert 'workers.get("selfplay_backend", "auto")' in source
+    assert 'workers.get("selfplay_backend", "native")' in source

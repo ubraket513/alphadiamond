@@ -143,16 +143,15 @@ fails, and removing one requires deleting its line. It now counts in two piles,
 because "30 dependents" could not distinguish running the rules from naming a
 dataclass in a type hint:
 
-* **behaviour: 7** -- the work queue, and it must reach zero before
-  `diamond.game` can be deleted.
+* **behaviour: 6** -- the work queue, and it must reach zero before
+  `diamond.game` can be deleted. `search_factory` left it with decision 1.
 * **definitions and types: 14** -- the board, the seats and the position
   shapes, which survive until the trainer speaks the native `State`.
 
-Reading the seven, none is independent work: they wait on two product
-decisions, recorded in
-[`retiring_the_python_engine.md`](retiring_the_python_engine.md) -- whether the
-trainer keeps a no-extension fallback, and whether the golden corpus is
-frozen.
+Both product decisions are taken and recorded in
+[`decisions.md`](decisions.md): training game execution requires the native
+extension, and the golden corpus is frozen as the normative game contract.
+Phase A is draining the queue.
 
 `tests/native/test_search_factory.py` proves the choice is real rather than
 nominal, including end to end: the agent's two-seat move actually constructs

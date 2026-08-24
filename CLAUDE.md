@@ -38,7 +38,10 @@ code between them -- it defines what the golden fixtures are for and the rule
 for retiring a Python parity gate.
 
 **The C++ core is the source of truth** for rules, encoding, search and
-self-play. `src/diamond/game` and `src/diamond/alphazero/mcts` are the oracle
+self-play, and training game execution requires the native extension --
+`selfplay_backend` accepts `native` only. `tests/golden/` is the frozen,
+normative game contract rather than a regenerated fixture. Both are recorded in
+[docs/architecture/decisions.md](docs/architecture/decisions.md). `src/diamond/game` and `src/diamond/alphazero/mcts` are the oracle
 behind `tests/golden/` and the other half of the bridge gates, and nothing
 else; `tests/test_engine_retirement.py` fails if new code depends on them. See
 [docs/architecture/retiring_the_python_engine.md](docs/architecture/retiring_the_python_engine.md),
@@ -54,7 +57,7 @@ a command facade over the presets in `CMakePresets.json`.
 make test-native                 # C++ core + tests; needs NO Python at all
 make test-python                 # engine, AlphaZero, repository hygiene
 make test-parity                 # bridge: Python <-> C++ gates (needs pybind)
-make golden                      # regenerate tests/golden from the Python oracle
+make golden-freeze               # re-record tests/golden provenance (contract change)
 ```
 
 ```bash

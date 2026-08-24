@@ -1,0 +1,17 @@
+{
+  "corpus_sha256": "c095c3a7f54cc0878978554accf548655768c6b6f60eba6e0c656bbe3c65da4f",
+  "game_contract_version": "diamond73-v1",
+  "golden_format_version": 1,
+  "note": "Normative game contract, not a regenerated fixture. CI verifies these digests; it does not rebuild the corpus from the Python engine. A deliberate rules change raises game_contract_version and creates a new corpus on purpose. See docs/architecture/decisions.md.",
+  "oracle_commit": "713d2ba241fcf31ddb7c919de660608e68fe1925",
+  "payload_sha256": {
+    "mcts-v1.txt": "8dd2f3409c4ebdd7df2651b3d5b74e92ea36a6025bc244992a0076d4e3d402d9",
+    "mcts3p-v1.txt": "6deb92c6cf7f0ba6e1d6895b9452faedc6b50d45f2baa8310a4d3957b9fec05e",
+    "rules-v1.txt": "726f000edd50a33d439cfcb79f1b7cfed60c8dd2757153af23f6490f3b0a1ecd",
+    "topology/topology_camp_positions.i32": "25af94ca469420e8700e49d292843192397826c8a69eae10fdf1d04b388b9d37",
+    "topology/topology_canonical_to_physical.i32": "a98b825d70e9caa557ac7b0d47d2f54f2072ac48dc5672292c127f626ad4bbcb",
+    "topology/topology_neighbour.i8": "bc5cea34bdd4a72f595d0b58eadc24df8f6ee92d1b7eae6bd7bc6d8ba4d0a413",
+    "topology/topology_pairwise_distance.i32": "785314a9d155776e38d87d41dab40b3cb24965efde4095ebcbce46e6ca35d5e2",
+    "topology/topology_physical_to_canonical.i32": "2a019cdce62a3bd5f79cca660bc4f1ac709f278f5b11fcc0ba87cf1b84c687bb"
+  }
+}

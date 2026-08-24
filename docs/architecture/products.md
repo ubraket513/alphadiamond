@@ -43,8 +43,11 @@ frozen into a language-neutral file:
   (ordered), every successor state, the canonical encoding and the bootstrap
   prior — folded into FNV-1a 64 digests, except the prior, which is floating
   point and is compared as max and an order-sensitive dot product.
-* `tests/test_golden_is_current.py` regenerates the file in CI and fails if it
-  no longer matches the oracle. That is what keeps the frozen answers honest.
+* `tests/golden/MANIFEST.json` records the corpus's provenance and
+  `tests/test_golden_contract.py` verifies it. CI no longer regenerates the
+  corpus from Python: doing so declared C++ the authority while leaving the
+  Python implementation holding the back door to the specification. See
+  [decisions.md](decisions.md), decision 2.
 
 ### What each native test covers
 
