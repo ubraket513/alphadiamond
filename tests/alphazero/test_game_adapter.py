@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
+from diamond.alphazero.native.topology import camp_positions, neighbour_table
+from diamond.contract.camps import PLAYABLE_HOLES
 from diamond.contract.move import IllegalMoveError
 from diamond.contract.state import EMPTY, GameState, build_players, initial_state
 
@@ -63,21 +65,20 @@ def test_adapter_can_start_from_an_authoritative_setup_state() -> None:
 
 def test_soo_terminal_search_perspective_advances_to_the_loser() -> None:
     players = build_players(2)
-    board = AlphaZeroGameAdapter(players).board
     winner = players[0]
-    target = board.camp_positions(winner.target_camp)
+    target = camp_positions(winner.target_camp)
     destination = target[-1]
     entry = next(
         neighbour
-        for neighbour in board.neighbours(destination)
-        if neighbour is not None and neighbour not in target
+        for neighbour in neighbour_table()[destination]
+        if neighbour >= 0 and neighbour not in target
     )
-    occupancy = [EMPTY] * len(board)
+    occupancy = [EMPTY] * PLAYABLE_HOLES
     for position in target[:-1]:
         occupancy[position] = winner.id
     occupancy[entry] = winner.id
     setup = GameState(tuple(occupancy), winner.id, 40)
-    game = AlphaZeroGameAdapter(players, board=board, initial=setup)
+    game = AlphaZeroGameAdapter(players, initial=setup)
     search = DiamondSearchAdapter(game)
     physical = game.codec.encode(entry, destination)
     canonical = game.encoder.to_canonical_action(physical, players, winner.id)

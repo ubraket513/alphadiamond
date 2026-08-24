@@ -7,17 +7,27 @@ from collections.abc import Iterable
 import torch
 from torch import Tensor, nn
 
-from ...contract.board import Board, standard_board
-from ...contract.coordinates import NUM_DIRECTIONS
+from ...contract.camps import NUM_DIRECTIONS, PLAYABLE_HOLES
 from ..config import NetworkConfig
 
 
-def directional_adjacency(board: Board) -> Tensor:
-    """Return ``[direction, node, neighbour]`` connectivity."""
-    adjacency = torch.zeros(NUM_DIRECTIONS, len(board), len(board), dtype=torch.float32)
-    for node in range(len(board)):
-        for direction, neighbour in enumerate(board.neighbours(node)):
-            if neighbour is not None:
+def directional_adjacency(board=None) -> Tensor:
+    """Return ``[direction, node, neighbour]`` connectivity, from the core.
+
+    ``board`` is accepted and ignored: the neighbour lattice comes from the
+    tables the core generates, and there is one board. The tensor is the same
+    one this used to build by walking a Python board -- it is a network input
+    buffer, so a different tensor would be a different network.
+    """
+    from ..native.topology import neighbour_table
+
+    neighbours = neighbour_table()
+    adjacency = torch.zeros(
+        NUM_DIRECTIONS, PLAYABLE_HOLES, PLAYABLE_HOLES, dtype=torch.float32
+    )
+    for node, row in enumerate(neighbours):
+        for direction, neighbour in enumerate(row):
+            if neighbour >= 0:
                 adjacency[direction, node, neighbour] = 1.0
     return adjacency
 
@@ -83,7 +93,7 @@ class DiamondGraphTrunk(nn.Module):
         self,
         input_features: int,
         config: NetworkConfig,
-        board: Board | None = None,
+        board=None,
         *,
         gated_blocks: Iterable[int] | None = None,
     ) -> None:
@@ -92,7 +102,7 @@ class DiamondGraphTrunk(nn.Module):
             raise ValueError("input_features must be positive")
         if config.width <= 0 or config.residual_blocks <= 0:
             raise ValueError("network width and residual_blocks must be positive")
-        self.board = board or standard_board()
+        self.board_size = PLAYABLE_HOLES
         self.input_features = input_features
         self.width = config.width
         self.input_projection = nn.Linear(input_features, config.width)
@@ -110,14 +120,14 @@ class DiamondGraphTrunk(nn.Module):
             for index in range(config.residual_blocks)
         )
         self.output_norm = nn.LayerNorm(config.width)
-        self.register_buffer("adjacency", directional_adjacency(self.board))
+        self.register_buffer("adjacency", directional_adjacency())
 
     def forward(self, features: Tensor) -> Tensor:
         if features.ndim != 3:
             raise ValueError("features must have shape [batch, board, features]")
-        if features.shape[1:] != (len(self.board), self.input_features):
+        if features.shape[1:] != (self.board_size, self.input_features):
             raise ValueError(
-                f"expected features [B,{len(self.board)},{self.input_features}], "
+                f"expected features [B,{self.board_size},{self.input_features}], "
                 f"got {tuple(features.shape)}"
             )
         nodes = self.input_projection(features)

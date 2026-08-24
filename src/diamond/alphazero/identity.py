@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..contract.board import standard_board
-from ..contract.coordinates import DIRECTIONS
-from ..contract.state import SEAT_LAYOUTS
 from .config import NetworkConfig, config_dict
 
 RULESET_VERSION = "diamond-authoritative-rules-v1"
@@ -26,28 +21,27 @@ SOO_VALUE_SEMANTICS_VERSION = "current-player-scalar-winloss-v1"
 MIN_VALUE_SEMANTICS_VERSION = "canonical-placement-utility-1-0-minus1-v1"
 
 
-def _derive_ruleset_fingerprint() -> str:
-    board = standard_board()
-    payload = {
-        "positions": [
-            {
-                "cube": [position.cube.x, position.cube.y, position.cube.z],
-                "camps": [camp.value for camp in position.camps],
-                "neighbours": list(board.neighbours(position.id)),
-            }
-            for position in board.positions
-        ],
-        "directions": [[direction.x, direction.y, direction.z] for direction in DIRECTIONS],
-        "seat_layouts": {
-            str(player_count): [camp.value for camp, _color in layout]
-            for player_count, layout in sorted(SEAT_LAYOUTS.items())
-        },
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+RULESET_FINGERPRINT = "sha256:02fff0c9c9436f247c4a2b5fb6b01903f658aae1c752377073011d0d150ba7a1"
+"""The board and seat layout every existing checkpoint was trained against.
 
+Frozen, not derived. It used to be a SHA-256 over the Python board's cube
+coordinates, camp memberships, neighbours, lattice directions and seat layouts;
+that board is gone, and re-deriving the same string from the core's tables is
+impossible anyway -- they carry no cube coordinates, which were half the hash's
+input.
 
-RULESET_FINGERPRINT = _derive_ruleset_fingerprint()
+**Changing this value invalidates every checkpoint in the bucket**, because a
+checkpoint carries the fingerprint it was trained under and compatibility is
+checked against it. So it behaves the same way as `game_contract_version`: a
+deliberate change to the board or the seat layouts means bumping this on
+purpose, in the same commit, and knowing what it strands. What guards the
+geometry itself is `topology_test`, which compares the core's construction with
+the frozen tables.
+
+The derivation is preserved in Git history (see
+docs/architecture/retiring_the_python_engine.md).
+"""
+
 
 _SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"

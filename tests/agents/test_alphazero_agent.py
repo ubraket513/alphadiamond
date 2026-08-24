@@ -156,7 +156,7 @@ def test_non_positive_simulations_are_rejected() -> None:
 def test_the_agent_finishes_a_two_player_game(board) -> None:
     """The default settings must actually terminate, not just look busy."""
     players = build_players(2)
-    adapter = AlphaZeroGameAdapter(players, board=board)
+    adapter = AlphaZeroGameAdapter(players)
     agent = AlphaZeroAgent(players)
     state = initial_state(players, board)
     moves = 0

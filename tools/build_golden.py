@@ -146,7 +146,7 @@ class PythonRulesGame:
                 version=f"diamond{len(self.board)}-srcdst-v1",
             )
         )
-        self.encoder = CanonicalEncoder(self.board, self.codec)
+        self.encoder = CanonicalEncoder(self.codec)
 
     def initial_state(self) -> GameState:
         return self._initial

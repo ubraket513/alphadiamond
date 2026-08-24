@@ -19,7 +19,7 @@ both this adapter and the Python engine and requires identical successors.
 
 from __future__ import annotations
 
-from ..contract.board import Board, standard_board
+from ..contract.camps import PLAYABLE_HOLES
 from ..contract.move import IllegalMoveError
 from ..contract.state import GameState, GameStatus, PlayerSpec, initial_state
 from .action_codec import ActionCodec, ActionSpaceSpec
@@ -35,33 +35,31 @@ class AlphaZeroGameAdapter:
     def __init__(
         self,
         players: tuple[PlayerSpec, ...],
-        board: Board | None = None,
         initial: GameState | None = None,
     ) -> None:
         if len(players) not in (2, 3):
             raise ValueError("AlphaZero supports exactly 2 or 3 players")
         self.players = tuple(players)
-        self.board = board or standard_board()
-        self._initial = initial if initial is not None else initial_state(self.players, self.board)
-        if len(self._initial.occupancy) != len(self.board):
-            raise ValueError("initial state does not match board topology")
+        # What `NativeSearch2P.can_drive` looks for: a test double has no board
+        # size, and the core plays one board.
+        self.board_size = PLAYABLE_HOLES
+        self._initial = initial if initial is not None else initial_state(self.players)
+        if len(self._initial.occupancy) != PLAYABLE_HOLES:
+            raise ValueError("initial state does not match the board")
         # Imported here rather than at module scope: ``native`` reaches the
         # bootstrap heuristic for its topology tables, and that package imports
         # this one back.
         from .native import native_game, require_native
 
         self._module = require_native()
-        # No board-size check: ``Board()`` takes no arguments and there is one
-        # board. If a reduced board ever exists, the core will reject it and
-        # that rejection is the right answer, not a fallback.
         self._native = native_game(self.players)
         self.codec = ActionCodec(
             ActionSpaceSpec(
-                board_size=len(self.board),
-                version=f"diamond{len(self.board)}-srcdst-v1",
+                board_size=PLAYABLE_HOLES,
+                version=f"diamond{PLAYABLE_HOLES}-srcdst-v1",
             )
         )
-        self.encoder = CanonicalEncoder(self.board, self.codec)
+        self.encoder = CanonicalEncoder(self.codec)
 
     def initial_state(self) -> GameState:
         return self._initial

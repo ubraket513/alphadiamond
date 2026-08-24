@@ -78,9 +78,13 @@ class NativeSearch2P:
         players = getattr(game, "players", None)
         if players is None or len(players) != 2:
             return False
-        # The search adapter wraps the game adapter, which owns the board.
-        board = getattr(game, "board", None) or getattr(getattr(game, "game", None), "board", None)
-        return board is not None and len(board) == 73
+        # The search adapter wraps the game adapter, which knows the board it
+        # plays. A test double knows nothing about a board, which is the point:
+        # it is not a game this can play.
+        size = getattr(game, "board_size", None) or getattr(
+            getattr(game, "game", None), "board_size", None
+        )
+        return size == 73
 
     def __init__(
         self, game: Any, evaluator: Evaluator, config: Any, *, deadline: Any = None
@@ -181,8 +185,10 @@ class NativeSearch3P:
         players = getattr(game, "players", None)
         if players is None or len(players) != 3:
             return False
-        board = getattr(game, "board", None) or getattr(getattr(game, "game", None), "board", None)
-        return board is not None and len(board) == 73
+        size = getattr(game, "board_size", None) or getattr(
+            getattr(game, "game", None), "board_size", None
+        )
+        return size == 73
 
     def __init__(
         self, game: Any, evaluator: Evaluator, config: Any, *, deadline: Any = None

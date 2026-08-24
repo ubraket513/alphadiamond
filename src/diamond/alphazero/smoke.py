@@ -94,7 +94,7 @@ def _near_terminal_game(
         current_player_id=players[0].id,
         turn_number=40,
     )
-    game = AlphaZeroGameAdapter(players, board=board, initial=state)
+    game = AlphaZeroGameAdapter(players, initial=state)
     module = require_native()
     native = native_game(players)
     for player in players[:finishers]:

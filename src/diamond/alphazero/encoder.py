@@ -1,13 +1,18 @@
-"""Geometry-derived player-relative encoding for Diamond states."""
+"""Player-relative encoding for Diamond states, on the core's geometry.
+
+The rotation that puts the acting seat's home camp at canonical ``z+`` used to
+be computed here from cube coordinates. The C++ core generates those tables
+(``native/src/topology_gen.cpp``); this reads them. What stays here is the
+encoding itself -- which occupancy channel a seat gets, and that finished seats
+keep theirs -- because that is the network's input contract rather than geometry.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
 
-from ..contract.board import Board, Camp
-from ..contract.coordinates import Cube
-from ..contract.move import Move
+from ..contract.camps import Camp
 from ..contract.state import EMPTY, GameState, PlayerSpec, player_by_id
 from .action_codec import ActionCodec
 
@@ -40,34 +45,17 @@ class CanonicalEncoder:
     even after the authoritative turn rotation starts skipping them.
     """
 
-    def __init__(self, board: Board, codec: ActionCodec) -> None:
-        if len(board) != codec.board_size:
-            raise ValueError("board and action codec sizes differ")
-        self.board = board
+    def __init__(self, codec: ActionCodec) -> None:
         self.codec = codec
 
-    @lru_cache(maxsize=6)  # noqa: B019 - one encoder per board, six camps, process lifetime
+    @lru_cache(maxsize=6)  # noqa: B019 - one encoder per codec, six camps, process lifetime
     def position_mapping(self, home_camp: Camp) -> PositionMapping:
-        physical_to_canonical = tuple(
-            self.board.id_of(self._canonical_cube(position.cube, home_camp))
-            for position in self.board.positions
-        )
-        inverse = [0] * len(self.board)
-        for physical, canonical in enumerate(physical_to_canonical):
-            inverse[canonical] = physical
-        return PositionMapping(physical_to_canonical, tuple(inverse))
+        from .native.topology import canonical_to_physical, physical_to_canonical
 
-    @staticmethod
-    def _canonical_cube(cube: Cube, home_camp: Camp) -> Cube:
-        axis, sign = home_camp.value
-        if axis == "x":
-            values = (cube.y, cube.z, cube.x)
-        elif axis == "y":
-            values = (cube.z, cube.x, cube.y)
-        else:
-            values = (cube.x, cube.y, cube.z)
-        factor = 1 if sign == "+" else -1
-        return Cube(*(factor * value for value in values))
+        forward = physical_to_canonical(home_camp)
+        if len(forward) != self.codec.board_size:
+            raise ValueError("the core's board and this action codec differ in size")
+        return PositionMapping(forward, canonical_to_physical(home_camp))
 
     @staticmethod
     def canonical_player_ids(
@@ -90,7 +78,7 @@ class CanonicalEncoder:
             1.0 if player_id in state.finish_order else 0.0
             for player_id in canonical_players
         )
-        rows: list[tuple[float, ...] | None] = [None] * len(self.board)
+        rows: list[tuple[float, ...] | None] = [None] * self.codec.board_size
         for physical_id, occupant in enumerate(state.occupancy):
             occupancy = [0.0] * len(canonical_players)
             if occupant != EMPTY:
@@ -135,13 +123,12 @@ class CanonicalEncoder:
 
     def legal_action_mask(
         self,
-        physical_moves: tuple[Move, ...],
+        physical_action_ids: tuple[int, ...],
         players: tuple[PlayerSpec, ...],
         current_player_id: int,
     ) -> tuple[bool, ...]:
         mask = [False] * self.codec.action_size
-        for move in physical_moves:
-            physical = self.codec.encode(move.source, move.destination)
+        for physical in physical_action_ids:
             mask[self.to_canonical_action(physical, players, current_player_id)] = True
         return tuple(mask)
 

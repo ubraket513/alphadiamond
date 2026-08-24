@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
+from diamond.contract.board import standard_board
 from diamond.contract.state import GameState, GameStatus, build_players
 from diamond.game.rules import find_legal_move, legal_moves
 from diamond.game.session import GameSession
@@ -60,7 +61,7 @@ def _positions() -> list[GameState]:
 def _python_legal_action_ids(adapter: AlphaZeroGameAdapter, state: GameState) -> tuple[int, ...]:
     return tuple(
         adapter.codec.encode(move.source, move.destination)
-        for move in legal_moves(adapter.board, state)
+        for move in legal_moves(standard_board(), state)
     )
 
 
@@ -69,10 +70,10 @@ def _python_successor(
 ) -> GameState:
     source, destination = adapter.codec.decode(action_id)
     move = find_legal_move(
-        adapter.board, state, source, destination, player_id=state.current_player_id
+        standard_board(), state, source, destination, player_id=state.current_player_id
     )
     assert move is not None, f"the Python engine calls {action_id} illegal"
-    session = GameSession(adapter.players, board=adapter.board, initial=state)
+    session = GameSession(adapter.players, board=standard_board(), initial=state)
     session.commit(move)
     return session.state
 

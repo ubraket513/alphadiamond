@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from .board import CAMP_SIZE, Board, Camp, standard_board
+from .camps import CAMP_SIZE, PLAYABLE_HOLES, Camp
 from .move import Move
 
 EMPTY = 0
@@ -189,13 +189,20 @@ class GameState:
 
 def initial_state(
     players: tuple[PlayerSpec, ...] = DEFAULT_PLAYERS,
-    board: Board | None = None,
+    board=None,
 ) -> GameState:
-    """Fill every player's home camp with their ten pieces."""
-    board = board or standard_board()
-    occupancy = [EMPTY] * len(board)
+    """Fill every player's home camp with their ten pieces.
+
+    A definition, not a rule: it places the opening and applies nothing. The
+    camp positions come from the core's tables -- imported here rather than at
+    module scope, because the native package describes its seats with the types
+    in this module. ``board`` is accepted and ignored; there is one board.
+    """
+    from ..alphazero.native.topology import camp_positions
+
+    occupancy = [EMPTY] * PLAYABLE_HOLES
     for spec in players:
-        camp = board.camp_positions(spec.camp)
+        camp = camp_positions(spec.camp)
         if len(camp) != CAMP_SIZE:
             raise AssertionError(f"camp {spec.camp} has {len(camp)} holes, expected {CAMP_SIZE}")
         for pid in camp:

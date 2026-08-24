@@ -87,7 +87,7 @@ def _near_terminal_state(
         occupied[entry] = player.id
 
     state = GameState(tuple(occupied), players[0].id, 40)
-    adapter = AlphaZeroGameAdapter(players, board=board, initial=state)
+    adapter = AlphaZeroGameAdapter(players, initial=state)
     module = require_native()
     native = native_game(players)
     actions: list[tuple[int, int]] = []
@@ -765,7 +765,7 @@ def _forced_terminal_game(players: tuple[PlayerSpec, ...]) -> DiamondSearchAdapt
         finish_order=tuple(player.id for player in already_finished),
     )
     game = DiamondSearchAdapter(
-        AlphaZeroGameAdapter(players, board=board, initial=forced)
+        AlphaZeroGameAdapter(players, initial=forced)
     )
     legal = game.legal_action_ids(forced)
     if not legal or any(

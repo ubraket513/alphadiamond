@@ -80,7 +80,7 @@ def _near_terminal_setup(
         occupied[entry] = player.id
 
     state = GameState(tuple(occupied), players[0].id, 40)
-    game = AlphaZeroGameAdapter(players, board=board, initial=state)
+    game = AlphaZeroGameAdapter(players, initial=state)
     for player in players[:finishers]:
         move = find_legal_move(
             board,

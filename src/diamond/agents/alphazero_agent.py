@@ -116,7 +116,7 @@ class AlphaZeroAgent(Agent):
 
         state = request.state
         game = DiamondSearchAdapter(
-            AlphaZeroGameAdapter(self._players, board=request.board, initial=state)
+            AlphaZeroGameAdapter(self._players, initial=state)
         )
         if game.is_terminal(state):
             return None

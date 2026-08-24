@@ -10,6 +10,12 @@ from collections.abc import Callable
 from dataclasses import replace
 from time import monotonic
 
+from ..config import MCTSConfig, SelfPlayConfig
+from ..deadline import MAX_GAME_TIME_EXCEEDED, Deadline
+from ..evaluator.base import Evaluator
+from ..identity import MIN_MODEL_NAME, CheckpointCompatibilitySpec
+from ..replay import TrainingSample
+from ..search_factory import SearchFactory, three_player_search
 from .common import (
     MAX_GAME_MOVES_EXCEEDED,
     PendingSample,
@@ -17,12 +23,6 @@ from .common import (
     SelfPlayGame,
     sparse_policy,
 )
-from ..config import MCTSConfig, SelfPlayConfig
-from ..deadline import MAX_GAME_TIME_EXCEEDED, Deadline
-from ..evaluator.base import Evaluator
-from ..identity import CheckpointCompatibilitySpec, MIN_MODEL_NAME
-from ..replay import TrainingSample
-from ..search_factory import SearchFactory, three_player_search
 
 
 class MinSelfPlayRunner:

@@ -8,10 +8,8 @@ down is not a diagnosis.
 
 The extension derives its own board tables at import (``ensure_topology_configured``
 in ``native/src/topology_gen.cpp``), so a handle is always topology-configured
-without Python handing it anything. :mod:`.topology` still generates the same
-tables from the Python board -- that is the export the deployment artifact ships
-and the golden corpus pins, and ``tests/native/test_topology_generation.py``
-holds the two constructions to the same answer.
+without Python handing it anything. :mod:`.topology` reads those tables back out;
+it is where every geometric answer in the trainer comes from.
 """
 
 from __future__ import annotations
@@ -40,12 +38,14 @@ def _load() -> None:
         except ImportError as exc:  # not built on this host
             _MODULE, _ERROR = None, f"native extension unavailable: {exc}"
         else:
-            try:
-                if not module.is_configured():
-                    # An older extension that does not configure itself.
-                    module.configure(topology_tables())
-            except Exception as exc:  # noqa: BLE001 - the guard must never raise
-                _MODULE, _ERROR = None, f"native extension failed to configure: {exc}"
+            if not module.is_configured():
+                # The extension derives its tables at import. One that did not
+                # is an old build, and every call through it would fail deeper
+                # down with a topology error instead of here.
+                _MODULE, _ERROR = None, (
+                    "native extension imported without configuring its topology; "
+                    "rebuild it with `python tools/build_native.py`"
+                )
             else:
                 _MODULE, _ERROR = module, None
         _LOADED = True

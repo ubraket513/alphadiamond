@@ -42,9 +42,9 @@ stable across runs and safe to persist in saved games.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from functools import lru_cache
 
+from .camps import CAMP_SIZE, PLAYABLE_HOLES, Camp
 from .coordinates import DIRECTIONS, NUM_DIRECTIONS, Cube
 
 HEX_RADIUS = 3
@@ -56,26 +56,6 @@ CAMP_THRESHOLD = HEX_RADIUS
 Equal to :data:`HEX_RADIUS`, not one past it: in Diamond the camp triangle
 includes the hexagon side it stands on.
 """
-
-CAMP_SIZE = 10
-PLAYABLE_HOLES = 73
-
-
-class Camp(Enum):
-    """The six star points, named after the axis that peaks there."""
-
-    X_POS = "x+"
-    Y_POS = "y+"
-    Z_POS = "z+"
-    X_NEG = "x-"
-    Y_NEG = "y-"
-    Z_NEG = "z-"
-
-    @property
-    def opposite(self) -> Camp:
-        axis, sign = self.value[0], self.value[1]
-        return Camp(axis + ("-" if sign == "+" else "+"))
-
 
 @dataclass(frozen=True, slots=True)
 class BoardPosition:
