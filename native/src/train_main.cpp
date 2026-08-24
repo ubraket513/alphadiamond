@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -64,8 +65,18 @@ diamond_model::DiamondModel model(const ProductionConfig& config) {
 }
 diamond_pipeline::ModelKey checkpoint_key(const ProductionConfig& config,
                                           const std::filesystem::path& checkpoint) {
-    return {config.model_name, config.model_version,
-            diamond_support::sha256(checkpoint.lexically_normal().string())};
+    try {
+        const auto info = diamond_training::inspect_checkpoint_v2(checkpoint);
+        std::ifstream state(info.generation / "state.pt", std::ios::binary);
+        if (!state) throw CommandArtifactError("cannot read checkpoint model state");
+        const std::string bytes((std::istreambuf_iterator<char>(state)), {});
+        if (bytes.empty()) throw CommandArtifactError("checkpoint model state is empty");
+        return {config.model_name, config.model_version, diamond_support::sha256(bytes)};
+    } catch (const CommandArtifactError&) {
+        throw;
+    } catch (const diamond_training::CheckpointError& error) {
+        throw CommandArtifactError(error.what());
+    }
 }
 soo::Match ordered_match(const ProductionConfig& config, const auto& turn_order) {
     auto match = game_match(config);
@@ -275,15 +286,30 @@ Object evaluate(const CommandRequest& request, const ProductionConfig& config) {
     }
     diamond_orchestration::save_rating_registry(registry_path, registry);
     result.emplace("candidate_checkpoint", Json{candidate_path.string()});
+    result.emplace("candidate_sha256", Json{candidate_key.checkpoint_sha256});
     result.emplace("champion_checkpoint", Json{request.checkpoint_path.string()});
+    result.emplace("champion_sha256", Json{champion_key.checkpoint_sha256});
     result.emplace("registry_path", Json{registry_path.string()});
     write_json(root(request) / "arena.json", Json{result});
     return result;
 }
 Object report(const CommandRequest& request) {
-    const auto path = root(request) / "rating-registry.json";
-    const auto registry = diamond_orchestration::load_rating_registry(path);
-    return {{"rating", registry.report_json()}, {"registry_path", Json{path.string()}}};
+    const auto registry_path = root(request) / "rating-registry.json";
+    const auto evaluation_path = root(request) / "arena.json";
+    try {
+        const auto registry = diamond_orchestration::load_rating_registry(registry_path);
+        std::ifstream evaluation(evaluation_path, std::ios::binary);
+        if (!evaluation) throw CommandArtifactError("cannot open evaluation report: " + evaluation_path.string());
+        const std::string contents((std::istreambuf_iterator<char>(evaluation)), {});
+        return {{"evaluation", diamond_support::parse_json(contents)},
+                {"evaluation_path", Json{evaluation_path.string()}},
+                {"rating", registry.report_json()},
+                {"registry_path", Json{registry_path.string()}}};
+    } catch (const CommandArtifactError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw CommandArtifactError(error.what());
+    }
 }
 Object service(const CommandRequest& request, const ProductionConfig& config) {
     if (request.command == "train") return train(request, config, false);

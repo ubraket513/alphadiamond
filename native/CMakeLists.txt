@@ -197,6 +197,8 @@ if(DIAMOND_BUILD_LIBTORCH)
         alphadiamond::diamond_orchestration
         alphadiamond::diamond_native_pipeline)
     target_compile_features(alphadiamond-train PRIVATE cxx_std_20)
+    install(TARGETS alphadiamond-train
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
     add_executable(alphadiamond-pipeline src/pipeline_main.cpp)
     target_link_libraries(alphadiamond-pipeline PRIVATE alphadiamond::diamond_native_pipeline)
