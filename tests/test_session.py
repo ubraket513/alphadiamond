@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from diamond.game.rules import IllegalMoveError
+from diamond.contract.move import IllegalMoveError
+from diamond.contract.state import initial_state
 from diamond.game.session import SCHEMA_VERSION, GameSession
-from diamond.game.state import initial_state
 
 
 def play(session: GameSession, count: int) -> None:
@@ -161,9 +161,8 @@ def one_move_from_winning(board, spec):
 
 def test_first_finisher_does_not_end_a_three_player_match(board):
     """Play continues past first place so second and third get decided."""
-    from diamond.game.state import DEFAULT_PLAYERS, GameStatus
-
     from conftest import make_state
+    from diamond.contract.state import DEFAULT_PLAYERS, GameStatus
 
     spec = DEFAULT_PLAYERS[0]
     pieces, entry, last = one_move_from_winning(board, spec)
@@ -185,9 +184,8 @@ def test_first_finisher_does_not_end_a_three_player_match(board):
 
 def test_first_finisher_ends_a_two_player_match(board):
     """With two seats there is nothing left to decide, so first place ends it."""
-    from diamond.game.state import GameStatus, build_players
-
     from conftest import make_state
+    from diamond.contract.state import GameStatus, build_players
 
     players = build_players(2)
     spec = players[0]
@@ -206,9 +204,8 @@ def test_first_finisher_ends_a_two_player_match(board):
 
 
 def test_a_finished_player_is_skipped_in_the_turn_rotation(board):
-    from diamond.game.state import DEFAULT_PLAYERS
-
     from conftest import make_state
+    from diamond.contract.state import DEFAULT_PLAYERS
 
     spec = DEFAULT_PLAYERS[0]
     others = [p for p in DEFAULT_PLAYERS if p.id != spec.id]
@@ -234,9 +231,8 @@ def test_a_finished_player_is_skipped_in_the_turn_rotation(board):
 
 
 def test_no_further_moves_are_accepted_after_the_game_ends(board):
-    from diamond.game.state import build_players
-
     from conftest import make_state
+    from diamond.contract.state import build_players
 
     players = build_players(2)
     spec = players[0]

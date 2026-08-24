@@ -43,7 +43,7 @@ from diamond.alphazero.inference.protocol import InferenceResponse, ModelKey
 from diamond.alphazero.inference.summary import summarize_metrics
 from diamond.alphazero.orchestration.selfplay_workers import SelfPlayJob, SelfPlayWorkerPool
 from diamond.alphazero.selfplay.runner_2p import SooSelfPlayRunner
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 MODEL_KEY = ModelKey(model_name="Soo", model_version="2.0.0", checkpoint_sha256="0" * 64)
 PRIOR = "canonical-target-vacancy-distance-v2"

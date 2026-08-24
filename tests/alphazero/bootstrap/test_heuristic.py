@@ -11,7 +11,7 @@ from diamond.alphazero.bootstrap.heuristic import (
     CanonicalTargetDistancePrior,
     target_distance_table,
 )
-from diamond.game.board import Board, Camp
+from diamond.contract.board import Board, Camp
 
 
 @pytest.fixture(scope="module")

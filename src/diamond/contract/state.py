@@ -161,7 +161,7 @@ class GameState:
     def positions_of(self, player_id: int) -> tuple[int, ...]:
         return tuple(i for i, v in enumerate(self.occupancy) if v == player_id)
 
-    def apply(self, move: Move, *, next_player_id: int, advance_turn: bool) -> "GameState":
+    def apply(self, move: Move, *, next_player_id: int, advance_turn: bool) -> GameState:
         """Return a new state with ``move`` applied.  Never mutates ``self``."""
         occupancy = list(self.occupancy)
         if occupancy[move.source] != move.player_id:
@@ -177,13 +177,13 @@ class GameState:
             turn_number=self.turn_number + (1 if advance_turn else 0),
         )
 
-    def placed(self, player_id: int) -> "GameState":
+    def placed(self, player_id: int) -> GameState:
         """Record ``player_id`` as taking the next place on the podium."""
         if player_id in self.finish_order:
             return self
         return replace(self, finish_order=self.finish_order + (player_id,))
 
-    def finished(self) -> "GameState":
+    def finished(self) -> GameState:
         return replace(self, status=GameStatus.FINISHED)
 
 
@@ -205,29 +205,6 @@ def initial_state(
         current_player_id=players[0].id,
         turn_number=1,
     )
-
-
-def next_player_id(
-    players: tuple[PlayerSpec, ...],
-    current_id: int,
-    *,
-    skip: tuple[int, ...] = (),
-) -> int:
-    """The next seat to act, skipping any player already on the podium.
-
-    Seat order in ``players`` *is* the turn order.  ``skip`` normally comes from
-    :attr:`GameState.finish_order`: a player who is home stops taking turns
-    while the rest play on for the remaining places.  If everyone is skipped the
-    current player is returned unchanged, which only happens once the match is
-    already over.
-    """
-    ids = [p.id for p in players]
-    start = ids.index(current_id)
-    for offset in range(1, len(ids) + 1):
-        candidate = ids[(start + offset) % len(ids)]
-        if candidate not in skip:
-            return candidate
-    return current_id
 
 
 def player_by_id(players: tuple[PlayerSpec, ...], player_id: int) -> PlayerSpec:

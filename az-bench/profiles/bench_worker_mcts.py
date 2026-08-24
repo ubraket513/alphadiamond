@@ -36,7 +36,7 @@ from diamond.alphazero.config import MCTSConfig
 from diamond.alphazero.evaluator.base import EvalRequest, EvalResult
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.mcts.search_2p import MCTS2P
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 
 class DeterministicEvaluator:

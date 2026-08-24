@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from conftest import make_state
-
-from diamond.game.coordinates import DIRECTIONS, Cube
-from diamond.game.move import MoveKind
+from diamond.contract.coordinates import DIRECTIONS, Cube
+from diamond.contract.move import MoveKind
+from diamond.contract.state import initial_state
 from diamond.game.rules import find_legal_move, legal_moves, moves_from
-from diamond.game.state import initial_state
 
 
 def cid(board, x, y, z):

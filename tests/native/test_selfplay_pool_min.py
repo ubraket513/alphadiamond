@@ -30,7 +30,7 @@ from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.native.selfplay_pool import NativeSelfPlayPool
 from diamond.alphazero.network.min import MinModel
 from diamond.alphazero.orchestration.selfplay_workers import ModelKey, SelfPlayJob
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 SIMULATIONS = 4
 NETWORK = NetworkConfig(width=16, residual_blocks=1)

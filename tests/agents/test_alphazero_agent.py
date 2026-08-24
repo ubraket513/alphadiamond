@@ -13,10 +13,10 @@ from diamond.alphazero.config import (
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.identity import MIN_MODEL_NAME, SOO_MODEL_NAME
-from diamond.game.board import standard_board
+from diamond.contract.board import standard_board
+from diamond.contract.state import build_players, initial_state
 from diamond.game.rules import legal_moves
 from diamond.game.session import GameSession
-from diamond.game.state import build_players, initial_state
 
 
 @pytest.fixture(scope="module")

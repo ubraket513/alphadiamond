@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable
 
 import pytest
 
@@ -29,7 +29,7 @@ from diamond.alphazero.rating.participants import CheckpointParticipant
 from diamond.alphazero.rating.protocol import BenchmarkProtocol, EloConfig
 from diamond.alphazero.rating.registry import RatingRegistry
 from diamond.alphazero.replay import TrainingSample
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 
 class _Interrupted(RuntimeError):
@@ -206,9 +206,8 @@ def _harness(
         run_seed=17,
         protocol_ids={"promotion": promotion_protocol, "rating": protocol.protocol_id},
         champion_checkpoint=str(tmp_path / "champion.pt"),
-        champion_model_key=job.model_key if "job" in locals() else ModelKey(
-            "Soo", "2.0.0", "a" * 64
-        ),
+        # `job` is created below, so this never read anything else.
+        champion_model_key=ModelKey("Soo", "2.0.0", "a" * 64),
     )
     job = _job(compatibility)
     episode = _episode(job)

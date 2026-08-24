@@ -30,10 +30,10 @@ class Cube:
         if self.x + self.y + self.z != 0:
             raise ValueError(f"cube coordinates must sum to 0: {self!r}")
 
-    def __add__(self, other: "Cube") -> "Cube":
+    def __add__(self, other: Cube) -> Cube:
         return Cube(self.x + other.x, self.y + other.y, self.z + other.z)
 
-    def scaled(self, factor: int) -> "Cube":
+    def scaled(self, factor: int) -> Cube:
         return Cube(self.x * factor, self.y * factor, self.z * factor)
 
     def unit_xy(self) -> tuple[float, float]:

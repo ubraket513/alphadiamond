@@ -15,7 +15,7 @@ Last updated 2026-08-24.
 | 1 — native build and CI | **done** |
 | 2 — storage and cleanup | **mostly done** (fixture fetch and history rewrite left) |
 | 3 — release-grade model artifacts | **done** |
-| 4 — remove duplicate runtime Python | **in progress** |
+| 4 — remove duplicate runtime Python | **both ledgers 0** (nothing shipped imports the engine; deletion is what is left) |
 | 5 — measured additional ports | **first measurement done** |
 
 ## Milestone 0 — contracts and boundaries
@@ -143,14 +143,15 @@ fails, and removing one requires deleting its line. It now counts in two piles,
 because "30 dependents" could not distinguish running the rules from naming a
 dataclass in a type hint:
 
-* **behaviour: 1** -- the work queue, and it must reach zero before
-  `diamond.game` can be deleted. `search_factory` left it with decision 1;
-  `orchestration/benchmark` and both self-play runners followed, each by taking
-  its search from the selector instead of naming `MCTS2P`/`MCTS3P`; the two
-  smokes followed by asking the native core for legality rather than
-  `find_legal_move`. `game_adapter` is the last one.
-* **definitions and types: 14** -- the board, the seats and the position
-  shapes, which survive until the trainer speaks the native `State`.
+* **behaviour: 0** -- drained, which is Phase A. `search_factory` left with
+  decision 1; `orchestration/benchmark` and both self-play runners followed by
+  taking their search from the selector; the two smokes by asking the core for
+  legality; and `game_adapter` -- the last and the only real port -- now applies
+  moves through the native `Game`, pinned by
+  `tests/native/test_game_adapter_parity.py` over 61,139 successors.
+* **definitions and types: 0** -- the board, the seats and the position shapes
+  moved to `diamond.contract` by `git mv`. They were never rules, and they now
+  live in a package nothing plans to delete.
 
 Both product decisions are taken and recorded in
 [`decisions.md`](decisions.md): training game execution requires the native
@@ -241,10 +242,20 @@ make test-parity      # bridge: Python <-> C++ (needs the pybind build)
 make golden           # regenerate tests/golden from the Python oracle
 ```
 
-The next concrete task is the last behaviour entry, `game_adapter`. It is not a
-one-line swap like the others: it *is* the Python rules adapter that arena,
-benchmark, probe and the worker path apply moves through, so retiring it means a
-native-backed adapter behind the same interface -- and its oracle role ends with
-decision 2's frozen corpus. Each one ends
+The next concrete task is what stands between here and deleting
+`src/diamond/game`:
+
+1. **The board is generated in Python.** `standard_board()` builds the topology
+   tables that configure the extension and that the deployment artifact ships;
+   the C++ side only reads them (`native/src/topology_io.cpp`). The generator is
+   in `diamond.contract` now, so it does not block deletion, but the core is not
+   self-sufficient in geometry until either C++ generates the tables and the
+   Python export becomes a check, or the tables ship as frozen data with the
+   generator kept as oracle tooling.
+2. **The rules move to `tools/`.** `rules.py`, `session.py` and `history.py`
+   exist for `tools/build_golden.py` and the bridge gates. Decision 2 set the
+   precedent for exactly this: an oracle lives in `tools/`, imported by no
+   shipped code. Then `src/diamond/game` is deleted, and the bridge gates that
+   compare against it go with it. Each one ends
 with a line struck from `BEHAVIOUR_ALLOWED` in
 `tests/test_engine_retirement.py`; that deletion is the unit of progress.

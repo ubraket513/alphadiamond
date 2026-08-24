@@ -52,13 +52,17 @@ from diamond.alphazero.bootstrap.heuristic import (
     pairwise_distance_table,
 )
 from diamond.alphazero.config import MCTSConfig
+from diamond.alphazero.encoder import CanonicalEncoder
 from diamond.alphazero.evaluator.base import EvalResult
-from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
+from diamond.alphazero.game_adapter import DiamondSearchAdapter
 from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.mcts.search_3p import MCTS3P as PythonMCTS3P
 from diamond.alphazero.native.topology import player_table, topology_tables
-from diamond.game.board import Camp, standard_board
-from diamond.game.state import GameState, GameStatus, build_players
+from diamond.contract.board import Camp, standard_board
+from diamond.contract.move import IllegalMoveError
+from diamond.contract.state import GameState, GameStatus, build_players, initial_state
+from diamond.game.rules import find_legal_move, legal_moves
+from diamond.game.session import GameSession
 
 CORPUS = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 GOLDEN = ROOT / "tests" / "golden"
@@ -118,12 +122,67 @@ def _write_topology(topology: Path) -> None:
     (topology / "topology_neighbour.i8").write_bytes(struct.pack(f"<{len(flat)}b", *flat))
 
 
+class PythonRulesGame:
+    """The oracle's own rules, applied by the Python engine.
+
+    ``AlphaZeroGameAdapter`` used to be this. It is not any more -- it asks the
+    native core (docs/architecture/retiring_the_python_engine.md), and a golden
+    corpus generated from the implementation it is meant to pin would prove
+    nothing. So the generator keeps its own adapter, here, where no shipped code
+    imports it. It is deliberately the plainest possible reading of the rules:
+    ``legal_moves``, ``find_legal_move`` and ``GameSession.commit``.
+
+    ``DiamondSearchAdapter`` wraps it unchanged -- it only ever needed these
+    methods, the codec and the encoder.
+    """
+
+    def __init__(self, players) -> None:
+        self.players = tuple(players)
+        self.board = standard_board()
+        self._initial = initial_state(self.players, self.board)
+        self.codec = ActionCodec(
+            ActionSpaceSpec(
+                board_size=len(self.board),
+                version=f"diamond{len(self.board)}-srcdst-v1",
+            )
+        )
+        self.encoder = CanonicalEncoder(self.board, self.codec)
+
+    def initial_state(self) -> GameState:
+        return self._initial
+
+    def legal_action_ids(self, state: GameState) -> tuple[int, ...]:
+        return tuple(
+            self.codec.encode(move.source, move.destination)
+            for move in legal_moves(self.board, state)
+        )
+
+    def apply_action(self, state: GameState, action_id: int) -> GameState:
+        source, destination = self.codec.decode(action_id)
+        move = find_legal_move(
+            self.board, state, source, destination, player_id=state.current_player_id
+        )
+        if move is None:
+            raise IllegalMoveError(f"action {action_id} ({source} -> {destination}) is not legal")
+        session = GameSession(self.players, board=self.board, initial=state)
+        session.commit(move)
+        return session.state
+
+    def is_terminal(self, state: GameState) -> bool:
+        return state.status is GameStatus.FINISHED
+
+    def final_order(self, state: GameState) -> tuple[int, ...]:
+        if not self.is_terminal(state) or len(state.finish_order) != len(self.players):
+            raise ValueError("final order is only available for a completed match")
+        return state.finish_order
+
+
 class Oracle:
     """One seat count's worth of Python authority."""
 
     def __init__(self, player_count: int) -> None:
         self.players = build_players(player_count)
-        self.game = AlphaZeroGameAdapter(self.players)
+        self.game = PythonRulesGame(self.players)
         self.search = DiamondSearchAdapter(self.game)
         self.codec = ActionCodec(ActionSpaceSpec.diamond73())
         self.prior = CanonicalTargetVacancyDistancePrior()

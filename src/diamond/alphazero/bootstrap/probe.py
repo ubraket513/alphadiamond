@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import median
 
-from ...game.state import build_players
+from ...contract.state import build_players
 from ..config import MCTSConfig, NetworkConfig, SelfPlayConfig
 from ..evaluator.base import Evaluator
 from ..evaluator.dummy import DummyEvaluator

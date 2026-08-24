@@ -33,7 +33,7 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.native import native_game, require_native
 from diamond.alphazero.native.backend import policy_value_callback, value_only_callback
 from diamond.alphazero.network.soo import SooModel
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 CHECKPOINT = ROOT / "runtime" / "runs" / "soo" / "cpu8h-soo-20260819" / "latest.pt"
 

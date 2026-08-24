@@ -33,8 +33,8 @@ from diamond.alphazero.bootstrap.heuristic import (
 )
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.native import native_game, require_native
-from diamond.game.board import Camp, standard_board
-from diamond.game.state import GameState, GameStatus, build_players
+from diamond.contract.board import Camp, standard_board
+from diamond.contract.state import GameState, GameStatus, build_players
 
 FIXTURE = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 

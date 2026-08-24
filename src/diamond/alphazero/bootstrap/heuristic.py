@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 from math import exp
 
-from ...game.board import Board, Camp
+from ...contract.board import Board, Camp
 from ..action_codec import ActionCodec
 from ..config import (
     BOOTSTRAP_PRIOR_NONE,

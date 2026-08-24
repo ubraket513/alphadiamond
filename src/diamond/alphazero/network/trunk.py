@@ -7,8 +7,8 @@ from collections.abc import Iterable
 import torch
 from torch import Tensor, nn
 
-from ...game.board import Board, standard_board
-from ...game.coordinates import NUM_DIRECTIONS
+from ...contract.board import Board, standard_board
+from ...contract.coordinates import NUM_DIRECTIONS
 from ..config import NetworkConfig
 
 

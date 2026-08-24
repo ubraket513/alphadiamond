@@ -30,7 +30,7 @@ from ..alphazero.evaluator.dummy import DummyEvaluator
 from ..alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from ..alphazero.identity import MIN_MODEL_NAME, SOO_MODEL_NAME
 from ..alphazero.search_factory import three_player_search, two_player_search
-from ..game.state import PlayerSpec
+from ..contract.state import PlayerSpec
 from .base import Agent, MoveProposal, MoveRequest
 
 DEFAULT_SIMULATIONS = 128
@@ -131,12 +131,28 @@ class AlphaZeroAgent(Agent):
         )
 
         action = self._respecting_avoid(result, game, state, request)
-        move = game.game.resolve_action(
-            state,
-            game.game.encoder.to_physical_action(
-                action, self._players, state.current_player_id
-            ),
+        # The move the caller must be handed carries its jump path, which an
+        # action id does not: the request's own legal moves are where that
+        # path lives, so the chosen action is matched against them rather than
+        # re-resolved through a second implementation of the rules.
+        physical = game.game.encoder.to_physical_action(
+            action, self._players, state.current_player_id
         )
+        source, destination = game.game.codec.decode(physical)
+        move = next(
+            (
+                candidate
+                for candidate in request.legal_moves
+                if (candidate.player_id, candidate.source, candidate.destination)
+                == (state.current_player_id, source, destination)
+            ),
+            None,
+        )
+        if move is None:
+            raise ValueError(
+                f"the search chose {source} -> {destination}, which is not among "
+                "the legal moves the request offered"
+            )
         return MoveProposal.from_move(
             move,
             metadata={

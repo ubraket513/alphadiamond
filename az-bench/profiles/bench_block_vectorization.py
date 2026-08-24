@@ -26,11 +26,10 @@ import argparse
 from time import perf_counter
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
-from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.network.trunk import DirectionalResidualBlock, directional_adjacency
-from diamond.game.board import standard_board
+from diamond.contract.board import standard_board
 
 
 def current_forward(block: DirectionalResidualBlock, nodes: Tensor, adjacency: Tensor) -> Tensor:

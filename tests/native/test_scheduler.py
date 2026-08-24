@@ -14,7 +14,7 @@ import pytest
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.native import native_game, require_native
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 WATCHDOG_SECONDS = 60.0
 """A hang must fail the test rather than wedge CI."""

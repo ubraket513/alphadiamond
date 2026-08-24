@@ -12,13 +12,17 @@ that names a dataclass in a type hint, and those retire at completely different
 times:
 
 * **behaviour** -- ``legal_moves``, ``GameSession``, ``MCTS2P``: what the C++
-  core replaced. This list must reach zero before ``diamond.game`` can be
-  deleted, and it is the work queue. ``search_factory`` left it when the
-  Python-search fallback was retired (decision 1).
+  core replaced. This list had to reach zero before ``diamond.game`` could be
+  deleted, and it is now empty: the searches come from ``search_factory`` and
+  ``game_adapter`` applies moves through the native ``Game``. It stays empty.
 * **definitions and types** -- ``standard_board``, ``build_players``,
   ``GameState``: the board, the seats, and the shapes that describe a position.
-  Not rules; C++ receives the same tables through the topology export, and they
-  survive until the trainer speaks the native ``State`` directly.
+  Also empty. They were never rules, and they now live in ``diamond.contract``,
+  which nothing plans to delete.
+
+Both lists being empty is the point: ``src/diamond/game`` is reachable from the
+oracle (``tools/build_golden.py``) and the bridge gates in ``tests/``, and from
+nothing that ships.
 
 Lumping the two together made "30 dependents" a number nobody could act on.
 
@@ -64,49 +68,38 @@ here: it fills each seat's home camp and applies nothing, so it is the opening's
 definition -- the same thing the topology export hands C++."""
 
 # ---------------------------------------------------------------------------
-# The work queue: modules that still run the Python engine. Every entry is debt
-# with a reason, and the reason decides when it goes.
+# The work queue, drained. An entry here is a module that runs the Python
+# engine; there are none, and adding one is what this file exists to refuse.
 # ---------------------------------------------------------------------------
-BEHAVIOUR_ALLOWED = {
-    # The oracle's adapter: what tools/build_golden.py drives to produce the
-    # frozen answers. Retires with the corpus generator.
-    "src/diamond/alphazero/game_adapter.py",
-}
+BEHAVIOUR_ALLOWED: set[str] = set()
+"""Empty, and it stays empty.
+
+Nothing shipped runs the Python engine any more: the searches come from
+``search_factory``, the smokes ask the core for legality, and ``game_adapter``
+-- the last entry -- applies moves through the native ``Game``
+(``tests/native/test_game_adapter_parity.py`` holds the two to the same
+successor for every legal action of every fixture position).
+
+Phase A is done. What ``diamond.game`` still supplies is definitions: the board,
+the seats, and ``GameState``. That is Phase B, below."""
 
 # ---------------------------------------------------------------------------
 # Not the work queue: the board, the seats, and the dataclasses that describe a
-# position.
+# position. Empty since those moved to ``diamond.contract`` -- the same classes,
+# a package that is not scheduled for deletion, and the dependency now points
+# away from the engine being retired rather than into it.
 # ---------------------------------------------------------------------------
-DEFINITIONS_ALLOWED = {
-    "src/diamond/agents/alphazero_agent.py",
-    "src/diamond/agents/base.py",
-    "src/diamond/agents/random_agent.py",
-    "src/diamond/alphazero/bootstrap/evaluator.py",
-    "src/diamond/alphazero/bootstrap/heuristic.py",
-    "src/diamond/alphazero/bootstrap/probe.py",
-    "src/diamond/alphazero/encoder.py",
-    "src/diamond/alphazero/identity.py",
-    "src/diamond/alphazero/milestone2_smoke.py",
-    "src/diamond/alphazero/native/__init__.py",
-    "src/diamond/alphazero/native/topology.py",
-    "src/diamond/alphazero/network/trunk.py",
-    "src/diamond/alphazero/orchestration/benchmark.py",
-    "src/diamond/alphazero/orchestration/production.py",
-    "src/diamond/alphazero/orchestration/selfplay_workers.py",
-    "src/diamond/alphazero/rating/openings.py",
-    "src/diamond/alphazero/smoke.py",
-}
+DEFINITIONS_ALLOWED: set[str] = set()
 
 ENGINE_ITSELF = {
     "src/diamond/game/__init__.py",
-    "src/diamond/game/board.py",
     "src/diamond/game/history.py",
     "src/diamond/game/rules.py",
     "src/diamond/game/session.py",
-    "src/diamond/game/state.py",
     "src/diamond/alphazero/mcts/__init__.py",
     "src/diamond/alphazero/mcts/search_2p.py",
     "src/diamond/alphazero/mcts/search_3p.py",
+    "src/diamond/alphazero/mcts/tree.py",
 }
 
 
@@ -145,6 +138,20 @@ def _engine_imports(path: str) -> set[str]:
     return imported
 
 
+def _engine_exports() -> set[str]:
+    """Every name the engine's modules define, so BEHAVIOUR cannot rot silently."""
+    names: set[str] = set()
+    for path in sorted(ENGINE_ITSELF):
+        try:
+            tree = ast.parse((ROOT / path).read_text(encoding="utf-8", errors="ignore"))
+        except (SyntaxError, OSError):  # pragma: no cover - unparseable source
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names.add(node.name)
+    return names
+
+
 def _classify() -> tuple[set[str], set[str]]:
     behaviour: set[str] = set()
     definitions: set[str] = set()
@@ -162,9 +169,16 @@ def _classify() -> tuple[set[str], set[str]]:
 
 
 def test_the_engine_is_still_here_to_measure() -> None:
+    """The measurement must stay wired up even now that both counts are zero."""
     assert _tracked_modules(), "no shipped modules found; every check below is vacuous"
-    behaviour, definitions = _classify()
-    assert behaviour or definitions, "nothing imports the engine: update or delete this test"
+    assert (ROOT / "src" / "diamond" / "game" / "rules.py").is_file(), (
+        "the Python engine is gone: delete this test with it, and the bridge "
+        "gates in tests/native that compare against it"
+    )
+    assert BEHAVIOUR & _engine_exports(), (
+        "BEHAVIOUR names nothing the engine exports; the list has gone stale "
+        "and would pass whatever shipped code did"
+    )
 
 
 def test_no_new_module_runs_the_python_engine() -> None:

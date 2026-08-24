@@ -72,7 +72,7 @@ class Camp(Enum):
     Z_NEG = "z-"
 
     @property
-    def opposite(self) -> "Camp":
+    def opposite(self) -> Camp:
         axis, sign = self.value[0], self.value[1]
         return Camp(axis + ("-" if sign == "+" else "+"))
 
@@ -140,7 +140,7 @@ def _generate_cubes() -> list[Cube]:
 class Board:
     """Immutable board topology.  Shared by every :class:`GameState`."""
 
-    __slots__ = ("_positions", "_index_by_cube", "_neighbours", "_camp_positions", "_edges")
+    __slots__ = ("_camp_positions", "_edges", "_index_by_cube", "_neighbours", "_positions")
 
     def __init__(self) -> None:
         cubes = _generate_cubes()
@@ -230,13 +230,13 @@ def standard_board() -> Board:
 
 
 __all__ = [
-    "Board",
-    "BoardPosition",
-    "Camp",
     "CAMP_SIZE",
     "CAMP_THRESHOLD",
     "HEX_RADIUS",
     "NUM_DIRECTIONS",
     "PLAYABLE_HOLES",
+    "Board",
+    "BoardPosition",
+    "Camp",
     "standard_board",
 ]

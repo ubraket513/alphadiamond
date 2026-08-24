@@ -26,7 +26,7 @@ from diamond.alphazero.evaluator.base import EvalResult
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.mcts.search_2p import MCTS2P
 from diamond.alphazero.native.search import NativeSearch2P
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 class Cheap:

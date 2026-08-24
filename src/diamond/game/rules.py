@@ -42,10 +42,10 @@ from __future__ import annotations
 
 from collections import deque
 
-from .board import Board, standard_board
-from .coordinates import NUM_DIRECTIONS
-from .move import Move, MoveKind
-from .state import EMPTY, CAMP_SIZE, GameState, GameStatus, PlayerSpec
+from ..contract.board import Board, standard_board
+from ..contract.coordinates import NUM_DIRECTIONS
+from ..contract.move import IllegalMoveError, Move, MoveKind
+from ..contract.state import CAMP_SIZE, EMPTY, GameState, GameStatus, PlayerSpec
 
 
 def moves_from(
@@ -184,12 +184,7 @@ def update_ranking(
     return state
 
 
-class IllegalMoveError(ValueError):
-    """Raised when a move is rejected by the rules layer."""
-
-
 __all__ = [
-    "IllegalMoveError",
     "find_legal_move",
     "find_winner",
     "has_finished",
@@ -201,3 +196,26 @@ __all__ = [
     "update_ranking",
     "validate_move",
 ]
+
+
+def next_player_id(
+    players: tuple[PlayerSpec, ...],
+    current_id: int,
+    *,
+    skip: tuple[int, ...] = (),
+) -> int:
+    """The next seat to act, skipping any player already on the podium.
+
+    Seat order in ``players`` *is* the turn order.  ``skip`` normally comes from
+    :attr:`GameState.finish_order`: a player who is home stops taking turns
+    while the rest play on for the remaining places.  If everyone is skipped the
+    current player is returned unchanged, which only happens once the match is
+    already over.
+    """
+    ids = [p.id for p in players]
+    start = ids.index(current_id)
+    for offset in range(1, len(ids) + 1):
+        candidate = ids[(start + offset) % len(ids)]
+        if candidate not in skip:
+            return candidate
+    return current_id

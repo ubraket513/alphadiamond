@@ -7,9 +7,9 @@ import json
 import random
 from dataclasses import dataclass, field
 
+from ...contract.state import GameState, build_players
 from ..game_adapter import AlphaZeroGameAdapter
 from ..identity import RULESET_FINGERPRINT, RULESET_VERSION
-from ...game.state import GameState, build_players
 
 
 def _sha256(payload: object) -> str:
@@ -132,7 +132,7 @@ class OpeningSuite:
         opening_count: int,
         max_depth: int,
         version: str = "benchmark-openings-v1",
-    ) -> "OpeningSuite":
+    ) -> OpeningSuite:
         """Generate a fixed-seed suite using only legal adapter action IDs."""
         _validate_player_count(player_count)
         if not isinstance(seed, int) or isinstance(seed, bool):

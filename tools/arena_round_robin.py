@@ -55,7 +55,7 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAd
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.network import SooModel
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 def _load(path: Path, config: dict):

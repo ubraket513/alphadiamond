@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from diamond.game.board import CAMP_SIZE, HEX_RADIUS, PLAYABLE_HOLES, Camp
-from diamond.game.coordinates import DIRECTIONS, Cube
+from diamond.contract.board import CAMP_SIZE, HEX_RADIUS, PLAYABLE_HOLES, Camp
+from diamond.contract.coordinates import DIRECTIONS, Cube
 
 
 def test_board_has_exactly_73_playable_holes(board):
@@ -14,7 +14,7 @@ def test_board_has_exactly_73_playable_holes(board):
 def test_position_ids_are_dense_and_stable(board):
     assert [p.id for p in board.positions] == list(range(PLAYABLE_HOLES))
     # IDs come from sorting by (z, x); rebuilding must give the same order.
-    from diamond.game.board import Board
+    from diamond.contract.board import Board
 
     assert [p.cube for p in Board().positions] == [p.cube for p in board.positions]
 

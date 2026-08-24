@@ -33,7 +33,7 @@ from diamond.alphazero.inference.protocol import ModelKey
 from diamond.alphazero.native import require_native
 from diamond.alphazero.native.selfplay_pool import NativeSelfPlayPool
 from diamond.alphazero.orchestration.selfplay_workers import SelfPlayJob
-from diamond.game.state import GameState, GameStatus, build_players
+from diamond.contract.state import GameState, GameStatus, build_players
 
 torch = pytest.importorskip("torch")
 

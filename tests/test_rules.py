@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from conftest import make_state
 
-from diamond.game.board import CAMP_SIZE
-from diamond.game.move import Move, MoveKind
+from conftest import make_state
+from diamond.contract.board import CAMP_SIZE
+from diamond.contract.move import Move, MoveKind
+from diamond.contract.state import DEFAULT_PLAYERS, EMPTY, initial_state
 from diamond.game.rules import (
     IllegalMoveError,
     find_winner,
@@ -12,7 +13,6 @@ from diamond.game.rules import (
     legal_moves,
     validate_move,
 )
-from diamond.game.state import DEFAULT_PLAYERS, EMPTY, initial_state
 
 
 def test_initial_state_gives_each_player_ten_pieces(board):
@@ -119,7 +119,7 @@ def test_no_winner_in_the_initial_position(board):
 def test_two_player_match_reuses_two_of_the_three_seats(board):
     """A 2-player match leaves the yellow seat empty rather than moving anyone,
     so the board geometry is identical whatever the seat count."""
-    from diamond.game.state import build_players
+    from diamond.contract.state import build_players
 
     two = build_players(2)
     three = build_players(3)
@@ -135,7 +135,7 @@ def test_two_player_match_reuses_two_of_the_three_seats(board):
 
 def test_two_player_targets_are_empty_of_the_owner_at_the_start(board):
     """Both aim at camps nobody starts in, so neither has to evict the other."""
-    from diamond.game.state import build_players, initial_state
+    from diamond.contract.state import build_players, initial_state
 
     players = build_players(2)
     state = initial_state(players, board)
@@ -145,7 +145,8 @@ def test_two_player_targets_are_empty_of_the_owner_at_the_start(board):
 
 
 def test_turn_order_is_the_seat_list_order(board):
-    from diamond.game.state import build_players, next_player_id
+    from diamond.contract.state import build_players
+    from diamond.game.rules import next_player_id
 
     players = build_players(3, order=(3, 1, 2))
     assert [p.id for p in players] == [3, 1, 2]
@@ -155,7 +156,7 @@ def test_turn_order_is_the_seat_list_order(board):
 
 
 def test_first_player_to_act_follows_the_chosen_order(board):
-    from diamond.game.state import build_players, initial_state
+    from diamond.contract.state import build_players, initial_state
 
     for order in ((1, 2, 3), (2, 3, 1), (3, 1, 2)):
         players = build_players(3, order=order)
@@ -163,7 +164,8 @@ def test_first_player_to_act_follows_the_chosen_order(board):
 
 
 def test_next_player_skips_players_already_home(board):
-    from diamond.game.state import build_players, next_player_id
+    from diamond.contract.state import build_players
+    from diamond.game.rules import next_player_id
 
     players = build_players(3)
     assert next_player_id(players, 1, skip=(2,)) == 3
@@ -173,7 +175,7 @@ def test_next_player_skips_players_already_home(board):
 
 
 def test_every_seat_count_places_ten_pieces_per_player(board):
-    from diamond.game.state import EMPTY, SUPPORTED_PLAYER_COUNTS, build_players, initial_state
+    from diamond.contract.state import EMPTY, SUPPORTED_PLAYER_COUNTS, build_players, initial_state
 
     for count in SUPPORTED_PLAYER_COUNTS:
         players = build_players(count)
@@ -184,7 +186,7 @@ def test_every_seat_count_places_ten_pieces_per_player(board):
 
 
 def test_build_players_rejects_a_bad_seat_count_or_order(board):
-    from diamond.game.state import build_players
+    from diamond.contract.state import build_players
 
     with pytest.raises(ValueError):
         build_players(4)
@@ -195,7 +197,7 @@ def test_build_players_rejects_a_bad_seat_count_or_order(board):
 
 
 def test_ai_seats_become_ai_players(board):
-    from diamond.game.state import PlayerKind, build_players
+    from diamond.contract.state import PlayerKind, build_players
 
     players = build_players(3, ai_seats=(2,))
     kinds = {p.id: p.kind for p in players}

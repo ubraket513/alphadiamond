@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 
-from ..game.move import Move
+from ..contract.move import Move
 from .base import Agent, MoveProposal, MoveRequest
 
 

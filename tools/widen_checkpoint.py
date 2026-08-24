@@ -74,7 +74,7 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.network import SooModel
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.state import GameState, GameStatus, build_players
+from diamond.contract.state import GameState, GameStatus, build_players
 
 POLICY_SCALE = 2.0 ** -0.25
 _MODE = "block-diagonal"

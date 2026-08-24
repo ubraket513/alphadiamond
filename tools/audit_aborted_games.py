@@ -55,7 +55,7 @@ from diamond.alphazero.native import native_game, require_native
 from diamond.alphazero.native.backend import policy_value_callback
 from diamond.alphazero.network import SooModel
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 def _position_key(move) -> str:

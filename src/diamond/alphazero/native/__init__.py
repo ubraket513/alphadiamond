@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from ...game.state import PlayerSpec
+from ...contract.state import PlayerSpec
 from .topology import CAMP_INDEX, CAMP_ORDER, player_table, topology_tables
 
 _LOCK = threading.Lock()

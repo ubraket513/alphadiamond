@@ -38,7 +38,7 @@ from diamond.alphazero.checkpoint import checkpoint_network_config
 from diamond.alphazero.config import NetworkConfig
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.network import SooModel
-from diamond.game.state import GameState, GameStatus, build_players
+from diamond.contract.state import GameState, GameStatus, build_players
 
 
 def _model(path: Path) -> tuple[SooModel, NetworkConfig, int]:

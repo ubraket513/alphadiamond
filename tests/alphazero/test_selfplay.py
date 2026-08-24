@@ -10,7 +10,7 @@ from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAd
 from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.selfplay.runner_2p import SooSelfPlayRunner
 from diamond.alphazero.selfplay.runner_3p import MinSelfPlayRunner
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 class ToySearch:

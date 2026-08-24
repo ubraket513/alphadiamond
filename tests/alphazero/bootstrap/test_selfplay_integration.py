@@ -21,7 +21,7 @@ from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.orchestration.selfplay_workers import EpisodeResult
 from diamond.alphazero.selfplay.runner_2p import SooSelfPlayRunner
 from diamond.alphazero.selfplay.runner_3p import MinSelfPlayRunner
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 def soo_compatibility() -> CheckpointCompatibilitySpec:

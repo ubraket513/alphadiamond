@@ -70,7 +70,7 @@ from diamond.alphazero.native.selfplay_pool import NativeSelfPlayPool
 from diamond.alphazero.network import SooModel
 from diamond.alphazero.orchestration.selfplay_workers import SelfPlayJob
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 SEEDS = (12345, 67890)
 """Fixed, so successive runs are comparable. A gate whose seed set moves cannot

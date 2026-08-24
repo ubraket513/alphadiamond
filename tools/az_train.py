@@ -61,7 +61,7 @@ from diamond.alphazero.orchestration.selfplay_workers import (
 )
 from diamond.alphazero.run_migrate import migrate_run_to_device
 from diamond.alphazero.trainer import AlphaZeroTrainer
-from diamond.game.state import build_players, initial_state
+from diamond.contract.state import build_players, initial_state
 
 ACTION_SIZE = 73 * 73
 

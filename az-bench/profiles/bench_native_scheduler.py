@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter
 from diamond.alphazero.native import native_game, require_native
-from diamond.game.state import build_players
+from diamond.contract.state import build_players
 
 
 def percentile(values: list[float], fraction: float) -> float:

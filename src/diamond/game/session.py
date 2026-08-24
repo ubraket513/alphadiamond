@@ -12,19 +12,24 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .board import Board, Camp, standard_board
-from .history import MoveRecord, utc_now_iso
-from .move import Move
-from .rules import legal_moves, moves_from, update_ranking, validate_move
-from .state import (
+from ..contract.board import Board, Camp, standard_board
+from ..contract.move import Move
+from ..contract.state import (
     DEFAULT_PLAYERS,
     GameState,
     GameStatus,
     PlayerKind,
     PlayerSpec,
     initial_state,
-    next_player_id,
     player_by_id,
+)
+from .history import MoveRecord, utc_now_iso
+from .rules import (
+    legal_moves,
+    moves_from,
+    next_player_id,
+    update_ranking,
+    validate_move,
 )
 
 SCHEMA_VERSION = 2
@@ -212,4 +217,4 @@ class GameSession:
         self.load_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-__all__ = ["GameSession", "SCHEMA_VERSION"]
+__all__ = ["SCHEMA_VERSION", "GameSession"]
