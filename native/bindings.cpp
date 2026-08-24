@@ -682,8 +682,13 @@ PYBIND11_MODULE(_diamond_native, m) {
     m.attr("ACTION_SIZE") = kActionSize;
     m.attr("PHASE") = 2;
 
+    // The core derives its own geometry, so a handle is usable the moment the
+    // module imports. `configure()` remains for a caller that wants to install
+    // tables from somewhere else -- an artifact, a test -- but nothing has to.
+    ensure_topology_configured();
+
     m.def("configure", &configure, py::arg("tables"),
-          "Install the authoritative board tables exported from Python.");
+          "Install board tables from elsewhere, replacing the generated ones.");
     m.def("is_configured", [] { return mutable_topology().configured; });
     m.def("export_tables", &export_tables,
           "Read the installed tables back, for the topology parity test.");

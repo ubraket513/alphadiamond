@@ -245,13 +245,20 @@ make golden           # regenerate tests/golden from the Python oracle
 The next concrete task is what stands between here and deleting
 `src/diamond/game`:
 
-1. **The board is generated in Python.** `standard_board()` builds the topology
-   tables that configure the extension and that the deployment artifact ships;
-   the C++ side only reads them (`native/src/topology_io.cpp`). The generator is
-   in `diamond.contract` now, so it does not block deletion, but the core is not
-   self-sufficient in geometry until either C++ generates the tables and the
-   Python export becomes a check, or the tables ship as frozen data with the
-   generator kept as oracle tooling.
+1. **Done: the core generates its own geometry.** `native/src/topology_gen.cpp`
+   performs the same construction the Python board does -- the two overlapping
+   triangles, the camp inequalities with their clip, the (z, x) ordering that
+   fixes position ids, the neighbour lattice, breadth-first distances and the
+   canonical rotation -- and the extension configures itself at import. Two
+   gates hold the constructions to one contract: `topology_test` compares the
+   generated tables with the frozen export, and
+   `tests/native/test_topology_generation.py` compares them with the live Python
+   board. Verified by mutation: reordering two lattice directions fails
+   `topology_test`.
+
+   The Python board is still what `tools/build_golden.py` freezes and what
+   `tools/export_deployment.py` ships, and the shipped encoder and bootstrap
+   heuristic still compute from it. Those are the remaining geometry callers.
 2. **The rules move to `tools/`.** `rules.py`, `session.py` and `history.py`
    exist for `tools/build_golden.py` and the bridge gates. Decision 2 set the
    precedent for exactly this: an oracle lives in `tools/`, imported by no

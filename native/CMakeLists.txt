@@ -3,6 +3,7 @@ set(SOO_CORE_SOURCES
     src/encoder.cpp
     src/prior.cpp
     src/rules.cpp
+    src/topology_gen.cpp
     src/topology_io.cpp
 )
 
