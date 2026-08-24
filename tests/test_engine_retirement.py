@@ -13,7 +13,8 @@ times:
 
 * **behaviour** -- ``legal_moves``, ``GameSession``, ``MCTS2P``: what the C++
   core replaced. This list must reach zero before ``diamond.game`` can be
-  deleted, and it is the work queue.
+  deleted, and it is the work queue. ``search_factory`` left it when the
+  Python-search fallback was retired (decision 1).
 * **definitions and types** -- ``standard_board``, ``build_players``,
   ``GameState``: the board, the seats, and the shapes that describe a position.
   Not rules; C++ receives the same tables through the topology export, and they
@@ -70,8 +71,6 @@ BEHAVIOUR_ALLOWED = {
     # The oracle's adapter: what tools/build_golden.py drives to produce the
     # frozen answers. Retires with the corpus generator.
     "src/diamond/alphazero/game_adapter.py",
-    # The selector names both searches because choosing between them is its job.
-    "src/diamond/alphazero/search_factory.py",
     # The Python self-play path, still reachable through selfplay_backend.
     "src/diamond/alphazero/selfplay/runner_2p.py",
     "src/diamond/alphazero/selfplay/runner_3p.py",

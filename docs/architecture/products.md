@@ -43,8 +43,11 @@ frozen into a language-neutral file:
   (ordered), every successor state, the canonical encoding and the bootstrap
   prior — folded into FNV-1a 64 digests, except the prior, which is floating
   point and is compared as max and an order-sensitive dot product.
-* `tests/test_golden_is_current.py` regenerates the file in CI and fails if it
-  no longer matches the oracle. That is what keeps the frozen answers honest.
+* `tests/golden/MANIFEST.json` records the corpus's provenance and
+  `tests/test_golden_contract.py` verifies it. CI no longer regenerates the
+  corpus from Python: doing so declared C++ the authority while leaving the
+  Python implementation holding the back door to the specification. See
+  [decisions.md](decisions.md), decision 2.
 
 ### What each native test covers
 
@@ -84,7 +87,7 @@ the C++ test go red. Until then, `bridge-parity` keeps running in CI.
 | `native-core` (Linux/macOS/Windows) | no | the shipped core builds and its tests pass |
 | `native-sanitizers` (Linux) | no | the same tests under ASan/UBSan |
 | `native-qt` (Linux) | no | the shipped Qt application builds and passes its contract headless |
-| `core` | yes | Python engine, AlphaZero stack, repository hygiene |
+| `core` | yes (and the extension) | the trainer and control plane on every supported interpreter, plus repository hygiene. It no longer proves the tree is green without a compiled backend: decision 1 retired that guarantee for anything that executes a game |
 | `bridge-parity` | yes | Python and C++ still play the same game |
 | `lint` | yes | ruff over changed files |
 

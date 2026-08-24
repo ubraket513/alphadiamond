@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 from collections import Counter
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,29 @@ from diamond.alphazero.evaluator.dummy import DummyEvaluator
 class State:
     terminal: bool
     player_id: int
+
+
+class _FirstLegalSearch:
+    """Plays the first legal action, and reports it as the whole distribution.
+
+    These tests exercise the arena's bookkeeping, not a search. Before the
+    Python search was retired they got one by accident: a fake game fell back to
+    it. Stating the stub is better than reintroducing an engine to satisfy a
+    test that never wanted one.
+    """
+
+    def __init__(self, game, evaluator, config, **kwargs) -> None:
+        self.game = game
+        self.config = config
+
+    def run(self, state, temperature: float = 0.0):
+        action = self.game.legal_action_ids(state)[0]
+        return SimpleNamespace(
+            selected_action=action,
+            visit_counts={action: 1},
+            policy={action: 1.0},
+            q_values={action: 0.0},
+        )
 
 
 class OneMoveArenaGame:
@@ -70,6 +94,7 @@ def test_soo_arena_balances_candidate_seat_and_turn_order() -> None:
         baseline=DummyEvaluator(0.0),
         mcts_config=MCTSConfig(simulations=2, dirichlet_epsilon=0.25),
         arena_config=ArenaConfig(games=4, seed=8),
+        search_factory=_FirstLegalSearch,
     ).run(factory)
 
     assert observed_orders == [(1, 2), (1, 2), (2, 1), (2, 1)]
@@ -91,6 +116,7 @@ def test_min_arena_rotates_candidate_and_all_turn_orders() -> None:
         baseline=DummyEvaluator((0.0, 0.0, 0.0)),
         mcts_config=MCTSConfig(simulations=2, dirichlet_epsilon=0.25),
         arena_config=ArenaConfig(games=18, seed=4),
+        search_factory=_FirstLegalSearch,
     ).run(factory)
 
     assert observed_orders == [
@@ -127,6 +153,7 @@ def test_arenas_reject_partial_balance_cycles() -> None:
             baseline=DummyEvaluator(0.0),
             mcts_config=MCTSConfig(),
             arena_config=ArenaConfig(games=3),
+            search_factory=_FirstLegalSearch,
         )
 
     with pytest.raises(ValueError, match="multiple of 18"):
@@ -135,4 +162,5 @@ def test_arenas_reject_partial_balance_cycles() -> None:
             baseline=DummyEvaluator((0.0, 0.0, 0.0)),
             mcts_config=MCTSConfig(),
             arena_config=ArenaConfig(games=5),
+            search_factory=_FirstLegalSearch,
         )

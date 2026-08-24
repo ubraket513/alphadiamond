@@ -1,12 +1,13 @@
-"""Which search engine to use, decided in one place.
+"""Which search engine to use.
 
-The C++ core is the authority, so callers should get it without asking. They
-should also not have to know when they cannot have it: the native search is
-built around the 73-hole two-seat game, so a three-player match, a reduced
-board or a test double falls back to the Python search rather than failing.
+There is one: the C++ core. Decision 1 in docs/architecture/decisions.md
+retired the pure-Python search as a fallback, so this no longer chooses between
+two engines -- it checks that the one engine is available and says plainly what
+is wrong when it is not.
 
-Resolved once per caller rather than per move -- an arena that changed engines
-halfway through would be reporting a win rate over two different searches.
+What it still does is decline games the native core cannot play. Those are not
+fallbacks, they are unsupported inputs, and a caller handed one gets an error
+naming the reason rather than a different engine's answer.
 """
 
 from __future__ import annotations
@@ -16,46 +17,59 @@ from typing import Any
 
 from .config import MCTSConfig
 from .evaluator.base import Evaluator
-from .mcts.search_2p import MCTS2P
-from .mcts.search_3p import MCTS3P
 
 SearchFactory = Callable[[Any, Evaluator, MCTSConfig], Any]
 
 
-def two_player_search() -> SearchFactory:
-    """A factory that prefers the native search and falls back per game."""
-    from .native import is_available
+class NativeSearchUnavailable(RuntimeError):
+    """The native extension is required to search and is not importable."""
+
+
+def _require_native() -> None:
+    from .native import is_available, native_error
 
     if not is_available():
-        return MCTS2P
+        raise NativeSearchUnavailable(
+            "searching requires the native extension, which is not importable: "
+            f"{native_error()}. Build it with `python tools/build_native.py`."
+        )
 
+
+def two_player_search() -> SearchFactory:
+    """The native two-seat search."""
+    _require_native()
     from .native.search import NativeSearch2P
 
     def factory(game: Any, evaluator: Evaluator, config: MCTSConfig, **kwargs: Any) -> Any:
-        # `deadline` is understood natively now; anything else the Python search
-        # grows stays with the Python search rather than being silently dropped.
-        if set(kwargs) <= {"deadline"} and NativeSearch2P.can_drive(game):
-            return NativeSearch2P(game, evaluator, config, **kwargs)
-        return MCTS2P(game, evaluator, config, **kwargs)
+        if not NativeSearch2P.can_drive(game):
+            raise NativeSearchUnavailable(
+                "the native search plays the 73-hole two-seat game; this game is "
+                "neither, and there is no Python search to fall back to"
+            )
+        return NativeSearch2P(game, evaluator, config, **kwargs)
 
     return factory
 
 
 def three_player_search() -> SearchFactory:
-    """The same rule for Min: native where it can play, Python where it cannot."""
-    from .native import is_available
-
-    if not is_available():
-        return MCTS3P
-
+    """The native three-seat search."""
+    _require_native()
     from .native.search import NativeSearch3P
 
-    def factory(game, evaluator, config, **kwargs):
-        if set(kwargs) <= {"deadline"} and NativeSearch3P.can_drive(game):
-            return NativeSearch3P(game, evaluator, config, **kwargs)
-        return MCTS3P(game, evaluator, config, **kwargs)
+    def factory(game: Any, evaluator: Evaluator, config: MCTSConfig, **kwargs: Any) -> Any:
+        if not NativeSearch3P.can_drive(game):
+            raise NativeSearchUnavailable(
+                "the native search plays the 73-hole three-seat game; this game is "
+                "neither, and there is no Python search to fall back to"
+            )
+        return NativeSearch3P(game, evaluator, config, **kwargs)
 
     return factory
 
 
-__all__ = ["SearchFactory", "three_player_search", "two_player_search"]
+__all__ = [
+    "NativeSearchUnavailable",
+    "SearchFactory",
+    "three_player_search",
+    "two_player_search",
+]

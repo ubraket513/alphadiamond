@@ -5,7 +5,7 @@
 # does too:  cmake --preset native-ci && cmake --build --preset native-ci
 #            && ctest --preset native-ci
 .PHONY: help configure build test test-native test-native-asan test-qt \
-        test-python test-parity test-hygiene golden package clean \
+        test-python test-parity test-hygiene golden-regenerate golden-freeze package clean \
         data-push data-push-dry-run data-pull data-pull-dry-run
 
 PRESET ?= native-ci
@@ -18,6 +18,7 @@ help:
 	@echo "make test-parity   Python<->C++ bridge parity (needs pybind build)"
 	@echo "make package       release package from the native-release preset"
 	@echo "make data-push / data-pull (add -dry-run to preview)"
+	@echo "make golden-regenerate + golden-freeze  deliberate game-contract change"
 
 configure:
 	cmake --preset $(PRESET)
@@ -45,8 +46,14 @@ test-parity:
 test-hygiene:
 	python -m pytest tests/test_repo_hygiene.py -v
 
-golden:
+# The golden corpus is frozen as the normative game contract, not regenerated
+# each run (docs/architecture/decisions.md). Rebuilding it is a deliberate
+# contract change: generate, then re-freeze with a new contract version.
+golden-regenerate:
 	python tools/build_golden.py
+
+golden-freeze:
+	python tools/freeze_golden.py
 
 package:
 	cmake --build --preset native-release --target package
