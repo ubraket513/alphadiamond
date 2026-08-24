@@ -692,6 +692,16 @@ PYBIND11_MODULE(_diamond_native, m) {
     m.def("is_configured", [] { return mutable_topology().configured; });
     m.def("export_tables", &export_tables,
           "Read the installed tables back, for the topology parity test.");
+    m.def("encode_action", &soo::encode_action, py::arg("source"), py::arg("destination"));
+    m.def(
+        "decode_action",
+        [](int32_t action_id) {
+            int source = 0;
+            int destination = 0;
+            soo::decode_action(action_id, source, destination);
+            return py::make_tuple(source, destination);
+        },
+        py::arg("action_id"));
 
     py::class_<State>(m, "State")
         .def(py::init(&make_state), py::arg("occupancy"), py::arg("current_player"),

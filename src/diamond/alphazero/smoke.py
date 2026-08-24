@@ -98,8 +98,6 @@ def _near_terminal_game(
     module = require_native()
     native = native_game(players)
     for player in players[:finishers]:
-        physical = game.codec.encode(entries[player.id], destinations[player.id])
-        canonical = game.encoder.to_canonical_action(physical, players, player.id)
         # Legality is the C++ core's answer, asked with this seat to move: each
         # finisher plays on its own turn, not on the state's current one.
         probe = module.State(
@@ -107,6 +105,8 @@ def _near_terminal_game(
             current_player=player.id,
             turn_number=state.turn_number,
         )
+        physical = module.encode_action(entries[player.id], destinations[player.id])
+        canonical = native.to_canonical_action(physical, probe)
         if canonical not in native.canonical_legal_action_ids(probe):
             raise RuntimeError("constructed smoke finishing move is not authoritative")
         physical_actions[player.id] = canonical

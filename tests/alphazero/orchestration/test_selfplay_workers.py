@@ -84,14 +84,14 @@ def _near_terminal_setup(
     module = require_native()
     native = native_game(players)
     for player in players[:finishers]:
-        physical = game.codec.encode(entries[player.id], destinations[player.id])
-        canonical = game.encoder.to_canonical_action(physical, players, player.id)
         # Legality is the core's answer, asked with this seat to move.
         probe = module.State(
             occupancy=list(state.occupancy),
             current_player=player.id,
             turn_number=state.turn_number,
         )
+        physical = module.encode_action(entries[player.id], destinations[player.id])
+        canonical = native.to_canonical_action(physical, probe)
         assert canonical in native.canonical_legal_action_ids(probe)
         actions.append((player.id, canonical))
     return state, tuple(actions)

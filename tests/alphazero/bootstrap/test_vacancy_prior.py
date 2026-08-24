@@ -6,7 +6,6 @@ import math
 
 import pytest
 
-from diamond.alphazero.action_codec import ActionCodec, ActionSpaceSpec
 from diamond.alphazero.bootstrap.evaluator import (
     BootstrapPriorEvaluator,
     VacancyPriorEvaluator,
@@ -21,6 +20,7 @@ from diamond.alphazero.bootstrap.heuristic import (
 )
 from diamond.alphazero.evaluator.dummy import DummyEvaluator
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
+from diamond.alphazero.native import require_native
 from diamond.alphazero.native.topology import camp_positions
 from diamond.contract.camps import Camp
 from diamond.contract.state import build_players
@@ -36,8 +36,8 @@ def board():
 
 
 @pytest.fixture(scope="module")
-def codec() -> ActionCodec:
-    return ActionCodec(ActionSpaceSpec.diamond73())
+def native():
+    return require_native()
 
 
 @pytest.fixture(scope="module")
@@ -97,27 +97,27 @@ def test_v1_stall_fixture_has_unfilled_target_holes(stall_state, target) -> None
 
 
 def test_v2_prefers_filling_a_target_hole_in_the_stall_fixture(
-    stall_state, codec, target, pairwise
+    stall_state, native, target, pairwise
 ) -> None:
     game, state = stall_state
     request = game.evaluation_request(state)
     priors = CanonicalTargetVacancyDistancePrior().priors(
-        request.legal_action_ids, codec, target, pairwise, request.node_features
+        request.legal_action_ids, target, pairwise, request.node_features
     )
     top = best_of(priors)
-    _, destination = codec.decode(top)
+    _, destination = native.decode_action(top)
     assert destination in target
     ties = [v for v in priors.values() if math.isclose(v, priors[top], rel_tol=1e-12)]
     assert len(ties) == 1, "v2 should express a strict preference, not a tie"
 
 
 def test_v2_breaks_the_v1_tie_into_distinct_scores(
-    stall_state, codec, target, pairwise
+    stall_state, target, pairwise
 ) -> None:
     game, state = stall_state
     request = game.evaluation_request(state)
     priors = CanonicalTargetVacancyDistancePrior().priors(
-        request.legal_action_ids, codec, target, pairwise, request.node_features
+        request.legal_action_ids, target, pairwise, request.node_features
     )
     assert len({round(v, 9) for v in priors.values()}) > 1
 
@@ -159,31 +159,31 @@ def test_potential_ignores_pieces_already_inside_the_target_camp(
 # -- invariants the design requires to hold for every prior ------------------
 
 
-def test_all_legal_actions_keep_strictly_positive_priors(codec, target, pairwise) -> None:
+def test_all_legal_actions_keep_strictly_positive_priors(native, target, pairwise) -> None:
     features = features_with_self_at({40, 41, 42})
-    actions = (codec.encode(40, 33), codec.encode(41, 48), codec.encode(42, 43))
+    actions = (native.encode_action(40, 33), native.encode_action(41, 48), native.encode_action(42, 43))
     priors = CanonicalTargetVacancyDistancePrior().priors(
-        actions, codec, target, pairwise, features
+        actions, target, pairwise, features
     )
     assert set(priors) == set(actions)
     assert all(v > 0.0 for v in priors.values())
     assert math.isclose(sum(priors.values()), 1.0, rel_tol=1e-12)
 
 
-def test_action_ordering_does_not_change_probabilities(codec, target, pairwise) -> None:
+def test_action_ordering_does_not_change_probabilities(native, target, pairwise) -> None:
     features = features_with_self_at({40, 41, 42})
-    actions = (codec.encode(40, 33), codec.encode(41, 48), codec.encode(42, 43))
+    actions = (native.encode_action(40, 33), native.encode_action(41, 48), native.encode_action(42, 43))
     prior = CanonicalTargetVacancyDistancePrior()
-    forward = prior.priors(actions, codec, target, pairwise, features)
-    backward = prior.priors(tuple(reversed(actions)), codec, target, pairwise, features)
+    forward = prior.priors(actions, target, pairwise, features)
+    backward = prior.priors(tuple(reversed(actions)), target, pairwise, features)
     for action in actions:
         assert math.isclose(forward[action], backward[action], rel_tol=1e-12)
 
 
-def test_empty_action_set_is_rejected(codec, target, pairwise) -> None:
+def test_empty_action_set_is_rejected(target, pairwise) -> None:
     with pytest.raises(ValueError):
         CanonicalTargetVacancyDistancePrior().priors(
-            (), codec, target, pairwise, features_with_self_at({0})
+            (), target, pairwise, features_with_self_at({0})
         )
 
 

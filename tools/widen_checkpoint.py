@@ -195,9 +195,8 @@ def _corpus_features(corpus: Path, limit: int) -> torch.Tensor:
             status=GameStatus(record["status"]),
             finish_order=tuple(record["finish_order"]),
         )
-        rows.append(
-            torch.tensor(game.encoder.encode(state, players).node_features, dtype=torch.float32)
-        )
+        encoded, _player_ids = game.encode(state)
+        rows.append(torch.tensor(encoded, dtype=torch.float32))
     if not rows:
         raise SystemExit(f"corpus {corpus} yielded no two-player positions")
     return torch.stack(rows)

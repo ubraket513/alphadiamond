@@ -7,7 +7,6 @@ satisfying the public ``Evaluator`` protocol, local or remote alike.
 from __future__ import annotations
 
 from ...contract.camps import Camp
-from ..action_codec import ActionCodec, ActionSpaceSpec
 from ..evaluator.base import EvalRequest, EvalResult, Evaluator
 from ..native.topology import camp_positions
 from .heuristic import (
@@ -34,13 +33,11 @@ class _BasePriorEvaluator:
         base: Evaluator,
         *,
         board=None,
-        codec: ActionCodec | None = None,
     ) -> None:
         if not hasattr(base, "evaluate"):
             raise TypeError("base must satisfy the Evaluator protocol")
         self.base = base
         # `board` is accepted and ignored: the tables come from the core.
-        self.codec = ActionCodec(ActionSpaceSpec.diamond73()) if codec is None else codec
 
     def _priors(self, request: EvalRequest) -> dict[int, float]:
         raise NotImplementedError
@@ -68,10 +65,9 @@ class BootstrapPriorEvaluator(_BasePriorEvaluator):
         base: Evaluator,
         *,
         board=None,
-        codec: ActionCodec | None = None,
         prior: CanonicalTargetDistancePrior | None = None,
     ) -> None:
-        super().__init__(base, board=board, codec=codec)
+        super().__init__(base, board=board)
         self.prior = CanonicalTargetDistancePrior() if prior is None else prior
         self.distance = target_distance_table()
 
@@ -80,7 +76,7 @@ class BootstrapPriorEvaluator(_BasePriorEvaluator):
         return self.prior.identity
 
     def _priors(self, request: EvalRequest) -> dict[int, float]:
-        return self.prior.priors(request.legal_action_ids, self.codec, self.distance)
+        return self.prior.priors(request.legal_action_ids, self.distance)
 
 
 class VacancyPriorEvaluator(_BasePriorEvaluator):
@@ -91,10 +87,9 @@ class VacancyPriorEvaluator(_BasePriorEvaluator):
         base: Evaluator,
         *,
         board=None,
-        codec: ActionCodec | None = None,
         prior: CanonicalTargetVacancyDistancePrior | None = None,
     ) -> None:
-        super().__init__(base, board=board, codec=codec)
+        super().__init__(base, board=board)
         self.prior = CanonicalTargetVacancyDistancePrior() if prior is None else prior
         self.pairwise = pairwise_distance_table()
         self.target = frozenset(camp_positions(Camp.Z_NEG))
@@ -106,7 +101,6 @@ class VacancyPriorEvaluator(_BasePriorEvaluator):
     def _priors(self, request: EvalRequest) -> dict[int, float]:
         return self.prior.priors(
             request.legal_action_ids,
-            self.codec,
             self.target,
             self.pairwise,
             request.node_features,

@@ -92,8 +92,6 @@ def _near_terminal_state(
     native = native_game(players)
     actions: list[tuple[int, int]] = []
     for player in players[:finishers]:
-        physical = adapter.codec.encode(entries[player.id], destinations[player.id])
-        canonical = adapter.encoder.to_canonical_action(physical, players, player.id)
         # The C++ core is the authority on legality. Each finisher moves on its
         # own turn, so the seat to move is what it is asked about -- which is why
         # this is a probe state rather than ``state`` itself.
@@ -102,6 +100,8 @@ def _near_terminal_state(
             current_player=player.id,
             turn_number=state.turn_number,
         )
+        physical = module.encode_action(entries[player.id], destinations[player.id])
+        canonical = native.to_canonical_action(physical, probe)
         if canonical not in native.canonical_legal_action_ids(probe):
             raise RuntimeError("near-terminal move was rejected by the native rules")
         actions.append((player.id, canonical))

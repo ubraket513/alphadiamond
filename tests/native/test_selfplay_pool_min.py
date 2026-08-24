@@ -146,17 +146,15 @@ def test_min_samples_carry_a_three_component_target(harness) -> None:
     """
     pool = NativeSelfPlayPool(harness["model"], device="cpu")
     job = _job(harness, 0)
-    encoded = harness["game"].encoder.encode(
-        harness["game"].initial_state(), harness["players"]
-    )
+    node_features, canonical_player_ids = harness["game"].encode(harness["game"].initial_state())
     record = {
         "move_count": 3,
         "completed": True,
         "finish_order": [2, 3, 1],
         "moves": [
             {
-                "node_features": [list(row) for row in encoded.node_features],
-                "canonical_player_ids": list(encoded.canonical_player_ids),
+                "node_features": [list(row) for row in node_features],
+                "canonical_player_ids": list(canonical_player_ids),
                 "root_actions": [10, 20, 30],
                 "visit_counts": [3, 1, 0],
             }

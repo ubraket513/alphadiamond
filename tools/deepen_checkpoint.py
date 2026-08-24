@@ -441,8 +441,8 @@ def _corpus_features(corpus: Path) -> list[torch.Tensor]:
             status=GameStatus(record["status"]),
             finish_order=tuple(record["finish_order"]),
         )
-        encoded = game.encoder.encode(state, players)
-        features.append(torch.tensor(encoded.node_features, dtype=torch.float32))
+        encoded, _player_ids = game.encode(state)
+        features.append(torch.tensor(encoded, dtype=torch.float32))
     return features
 
 
