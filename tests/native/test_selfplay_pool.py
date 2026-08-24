@@ -1,14 +1,16 @@
-"""Gate F: the native pool produces the episodes the Python backend would.
+"""The batched pool and the per-episode runner must agree, move for move.
 
-Gate D proved the native *search* plays the same game. This is the layer above:
-that a whole episode -- samples, policy targets, value targets, provenance --
-comes out identical to what ``SooSelfPlayRunner`` produces for the same job.
+Both drive the same C++ core, by different routes: ``NativeSelfPlayPool`` runs
+many games in flight behind one batched evaluator, while ``SooSelfPlayRunner``
+plays one game through the per-node bridge. Two drivers over one engine is
+still two chances to differ -- in seeding, in when a lane is reset, in how a
+sample is assembled -- and a whole episode is where that shows: samples, policy
+targets, value targets, provenance.
 
-Determinism is the only setting where the two can be compared move for move, so
-the parity tests run at ``epsilon = 0, temperature = 0``. What that cannot cover
-is asserted separately: the stochastic path has its own gate (Gate E), and the
-things that are *structural* rather than stochastic -- shapes, sorting, value
-signs, abort semantics -- are checked in the stochastic configuration too.
+Determinism is the only setting where they can be compared move for move, so
+those tests run at ``epsilon = 0, temperature = 0``. What that cannot cover is
+asserted separately: the structural properties -- shapes, sorting, value signs,
+abort semantics -- are checked in the stochastic configuration too.
 """
 
 from __future__ import annotations
@@ -198,7 +200,7 @@ def _python_episode(harness: _Harness, job: SelfPlayJob):
 # --------------------------------------------------------------------------
 
 
-def test_a_deterministic_episode_matches_the_python_runner() -> None:
+def test_a_deterministic_episode_matches_the_per_episode_runner() -> None:
     """The whole point: identical games, identical training data.
 
     Compared field by field rather than by digest, so a failure says *which*

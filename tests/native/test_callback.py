@@ -6,7 +6,7 @@ requires.
 
 No throughput is asserted here.  Gate D's A/B throughput table needs the GPU
 host; what these establish is that the boundary is correct, does not deadlock,
-does not lose exceptions, and produces the *same game* as the Python backend.
+does not lose exceptions, and hands the core what it asked for.
 """
 
 from __future__ import annotations
