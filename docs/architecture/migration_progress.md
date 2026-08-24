@@ -15,7 +15,7 @@ Last updated 2026-08-24.
 | 1 — native build and CI | **done** |
 | 2 — storage and cleanup | **mostly done** (fixture fetch and history rewrite left) |
 | 3 — release-grade model artifacts | **done** |
-| 4 — remove duplicate runtime Python | **both ledgers 0** (nothing shipped imports the engine; deletion is what is left) |
+| 4 — remove duplicate runtime Python | **done** — the engine, the Python MCTS, the Python board and the oracle are deleted |
 | 5 — measured additional ports | **first measurement done** |
 
 ## Milestone 0 — contracts and boundaries
@@ -23,8 +23,9 @@ Last updated 2026-08-24.
 * [`products.md`](products.md) records the three products, the golden contract
   and the rule for retiring a parity gate.
 * [`model_artifact_v3.md`](model_artifact_v3.md) fixes the artifact schema.
-* The golden corpus and its generator version are frozen in `tests/golden/`,
-  regenerated and checked on every CI run by `tests/test_golden_is_current.py`.
+* The golden corpus is frozen in `tests/golden/` and checked for provenance by
+  `tests/test_golden_contract.py`. It is not regenerated: the generator was
+  deleted with the Python engine (decision 3).
 
 ## Milestone 1 — native build and CI
 
@@ -121,61 +122,19 @@ Left:
 
 ## Milestone 4 — remove duplicate runtime Python
 
-The C++ core is the authority. Progress and the remaining order live in
-[`retiring_the_python_engine.md`](retiring_the_python_engine.md):
+**Done.** The C++ core is the only implementation of rules, encoding, search,
+self-play and geometry. `src/diamond/game`, `src/diamond/alphazero/mcts`, the
+Python board, `src/diamond/agents` and the two corpus generators are deleted;
+[`retiring_the_python_engine.md`](retiring_the_python_engine.md) records the
+order it happened in, the evidence collected before each deletion, and what can
+no longer be done as a result.
 
-```text
-native self-play default            done (selfplay_backend defaults to auto)
-dependent ratchet                   done (tests/test_engine_retirement.py)
-arena on the native core            done (Soo and Min)
-GUI agent on native                 done (both seat counts)
-three-player native search          done (SearchSession3P)
-native wall-clock deadline          done (set_budget on both sessions)
-Python parity gates retired         done (five, on mutation evidence)
-Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
-freeze the golden corpus            then
-retire the Python parity gates      one at a time, each with its C++ replacement
-delete src/diamond/game             last
-```
+What Python still owns, and always was going to: the training loop and
+autograd, optimizer and checkpoint tooling, experiment orchestration, arena
+statistics and rating, release tooling, and the Hugging Face synchronisation.
 
-`tests/test_engine_retirement.py` freezes the dependent set: adding a module
-fails, and removing one requires deleting its line. It now counts in two piles,
-because "30 dependents" could not distinguish running the rules from naming a
-dataclass in a type hint:
-
-* **behaviour: 0** -- drained, which is Phase A. `search_factory` left with
-  decision 1; `orchestration/benchmark` and both self-play runners followed by
-  taking their search from the selector; the two smokes by asking the core for
-  legality; and `game_adapter` -- the last and the only real port -- now applies
-  moves through the native `Game`, pinned by
-  `tests/native/test_game_adapter_parity.py` over 61,139 successors.
-* **definitions and types: 0** -- the board, the seats and the position shapes
-  moved to `diamond.contract` by `git mv`. They were never rules, and they now
-  live in a package nothing plans to delete.
-
-Both product decisions are taken and recorded in
-[`decisions.md`](decisions.md): training game execution requires the native
-extension, and the golden corpus is frozen as the normative game contract.
-Phase A is draining the queue.
-
-`tests/native/test_search_factory.py` proves the choice is real rather than
-nominal, including end to end: the agent's two-seat move actually constructs
-`NativeSearch2P`. `arena.py` has already left the list -- both its searches now
-go through the selector.
-
-The three-player search is `SearchSession3P`
-(`native/src/mcts3p.cpp`). It is not the 2P tree with a wider value: Min backs a
-utility vector -- one component per seat, placement-ordered 1/0/-1 at a terminal
--- through every ancestor unchanged, where Soo negates a scalar once per edge.
-`tests/native/test_search_3p_parity.py` compares it with `MCTS3P` per position
-on the selected action, the visit distribution, the evaluator request sequence
-and every q vector *by seat*, with an evaluator that is deliberately asymmetric
-between seats: symmetric values would hide a search maximising the wrong
-component.
-
-Nothing here rewrites the training loop, the optimizer tooling, the experiment
-orchestration or the rating code. The brief is explicit that those stay in
-Python, and they do.
+Both retirement ledgers reached zero, so `tests/test_engine_retirement.py` was
+deleted with the thing it counted.
 
 ## Milestone 5 — measured additional ports
 
@@ -236,33 +195,23 @@ Left, and deliberately unmeasured until someone needs them:
 ## How to pick this up
 
 ```bash
-make test-native      # C++ core and its gates; no Python at all
-make test-python      # engine, AlphaZero, hygiene, ratchet
-make test-parity      # bridge: Python <-> C++ (needs the pybind build)
-make golden           # regenerate tests/golden from the Python oracle
+make test-native      # the game: rules, search, self-play, geometry. No Python.
+make test-python      # the trainer's Python: training, orchestration, hygiene
+make test-parity      # the pybind boundary (needs the pybind build)
+make golden-freeze    # re-record tests/golden provenance (contract change only)
 ```
 
-The next concrete task is what stands between here and deleting
-`src/diamond/game`:
+The migration's own work is finished. What is left is the ordinary backlog:
 
-1. **Done: the core generates its own geometry.** `native/src/topology_gen.cpp`
-   performs the same construction the Python board does -- the two overlapping
-   triangles, the camp inequalities with their clip, the (z, x) ordering that
-   fixes position ids, the neighbour lattice, breadth-first distances and the
-   canonical rotation -- and the extension configures itself at import. Two
-   gates hold the constructions to one contract: `topology_test` compares the
-   generated tables with the frozen export, and
-   `tests/native/test_topology_generation.py` compares them with the live Python
-   board. Verified by mutation: reordering two lattice directions fails
-   `topology_test`.
-
-   The Python board is still what `tools/build_golden.py` freezes and what
-   `tools/export_deployment.py` ships, and the shipped encoder and bootstrap
-   heuristic still compute from it. Those are the remaining geometry callers.
-2. **The rules move to `tools/`.** `rules.py`, `session.py` and `history.py`
-   exist for `tools/build_golden.py` and the bridge gates. Decision 2 set the
-   precedent for exactly this: an oracle lives in `tools/`, imported by no
-   shipped code. Then `src/diamond/game` is deleted, and the bridge gates that
-   compare against it go with it. Each one ends
-with a line struck from `BEHAVIOUR_ALLOWED` in
-`tests/test_engine_retirement.py`; that deletion is the unit of progress.
+1. **CI does not fetch fixtures from the bucket** (milestone 2). The step-80
+   checkpoint is still tracked as the one documented exception.
+2. **History still contains the removed payloads.** A `git filter-repo` rewrite
+   is a separate, announced operation because it changes every commit hash.
+3. **The `apps/` / `python/` restructure** from section 4 of the brief. It
+   rewrites hundreds of documented command paths and deserves its own change;
+   `src/diamond/qml` and `src/diamond/assets` belong to the native application
+   and are the obvious first move.
+4. **Measured ports, when something needs them.**
+   `PersistentReplayStore.load_buffer()` is called once per training step; on a
+   large store that is a re-read per step. Nothing else has a measurement, so
+   nothing else has a case.

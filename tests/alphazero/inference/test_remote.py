@@ -199,14 +199,14 @@ def test_remote_matches_local_fp32_torch_evaluation_through_the_central_pool(tmp
     assert central.value == pytest.approx(direct.value)
 
 
-def test_loading_mcts_modules_does_not_import_torch_rating_or_orchestration() -> None:
+def test_loading_the_search_does_not_import_torch_rating_or_orchestration() -> None:
     source_root = str(Path(__file__).resolve().parents[3] / "src")
     environment = os.environ | {"PYTHONPATH": source_root}
     code = """
 import importlib
 import sys
-importlib.import_module('diamond.alphazero.mcts.search_2p')
-importlib.import_module('diamond.alphazero.mcts.search_3p')
+importlib.import_module('diamond.alphazero.native.search')
+importlib.import_module('diamond.alphazero.search_factory')
 forbidden = ('torch', 'diamond.alphazero.rating', 'diamond.alphazero.orchestration')
 loaded = tuple(sys.modules)
 assert not any(name == prefix or name.startswith(prefix + '.') for name in loaded for prefix in forbidden), loaded

@@ -33,7 +33,8 @@ from diamond.alphazero.bootstrap.heuristic import (
 )
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.native import native_game, require_native
-from diamond.contract.board import Camp, standard_board
+from diamond.alphazero.native.topology import camp_positions
+from diamond.contract.camps import Camp
 from diamond.contract.state import GameState, GameStatus, build_players
 
 FIXTURE = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
@@ -72,8 +73,8 @@ class PythonStages:
         self.search = DiamondSearchAdapter(self.game)
         self.codec = ActionCodec(ActionSpaceSpec.diamond73())
         self.prior = CanonicalTargetVacancyDistancePrior()
-        self.pairwise = pairwise_distance_table(self.game.board)
-        self.target = frozenset(standard_board().camp_positions(Camp.Z_NEG))
+        self.pairwise = pairwise_distance_table()
+        self.target = frozenset(camp_positions(Camp.Z_NEG))
 
     def run(self, states: list[GameState], repeats: int) -> dict[str, float]:
         totals = dict.fromkeys(("legal", "encode", "prior", "apply"), 0.0)

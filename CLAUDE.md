@@ -21,8 +21,7 @@ Two rules that are easy to get wrong and expensive to rediscover:
 
 | path | what |
 |---|---|
-| `src/diamond/contract/` | what a position *is*: board, seats, `GameState`, `Move` |
-| `src/diamond/game/` | the Python reading of the rules — the oracle, and nothing ships against it |
+| `src/diamond/contract/` | what a position *is*: seats, camps, `GameState`, `Move` |
 | `src/diamond/alphazero/` | encoder, MCTS, evaluators, orchestration |
 | `src/diamond/alphazero/native/` | optional native backend: import guard, topology export, callback |
 | `native/` | the C++ extension (`_diamond_native`) |
@@ -38,16 +37,15 @@ separate products with separate build and test commands. Read
 code between them -- it defines what the golden fixtures are for and the rule
 for retiring a Python parity gate.
 
-**The C++ core is the source of truth** for rules, encoding, search and
-self-play, and training game execution requires the native extension --
-`selfplay_backend` accepts `native` only. `tests/golden/` is the frozen,
-normative game contract rather than a regenerated fixture. Both are recorded in
-[docs/architecture/decisions.md](docs/architecture/decisions.md). `src/diamond/game` and `src/diamond/alphazero/mcts` are the oracle
-behind `tests/golden/` and the other half of the bridge gates, and nothing
-else; `tests/test_engine_retirement.py` fails if new code depends on them. See
-[docs/architecture/retiring_the_python_engine.md](docs/architecture/retiring_the_python_engine.md),
-and [docs/architecture/migration_progress.md](docs/architecture/migration_progress.md)
-for what is done and what is left against the plan in `migrate-and-cleanup.md`.
+**The C++ core is the only implementation** of rules, encoding, search,
+self-play and board geometry. The Python engine, the Python MCTS, the Python
+board and the oracle that generated `tests/golden/` are deleted (decision 3);
+`tests/golden/` and `tests/native/fixtures/` are frozen and normative, and
+cannot be regenerated from the tree. Training game execution requires the native
+extension -- `selfplay_backend` accepts `native` only. See
+[docs/architecture/decisions.md](docs/architecture/decisions.md),
+[docs/architecture/retiring_the_python_engine.md](docs/architecture/retiring_the_python_engine.md)
+and [docs/architecture/migration_progress.md](docs/architecture/migration_progress.md).
 
 ## Build and test
 
@@ -63,7 +61,7 @@ make golden-freeze               # re-record tests/golden provenance (contract c
 
 ```bash
 python tools/build_native.py     # optional extension; absence must stay harmless
-pytest -m "not gui"              # engine + AlphaZero + native gates
+pytest -m "not gui"              # the trainer's Python; the game is CTest's
 ```
 
 ## Shipping a model

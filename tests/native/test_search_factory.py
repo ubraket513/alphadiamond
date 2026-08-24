@@ -1,29 +1,47 @@
-"""Callers get the C++ core when it can play, and the Python search when it cannot.
+"""Which search a caller gets, and what it is refused.
 
-The selector is the single place that decides, so this is where the decision is
-worth pinning: an "authoritative" core that quietly never gets used would look
-exactly like one that does.
+There is one engine. What the selector still decides is whether a game is one
+the core can play at all -- a seat count it was not compiled for, or a caller's
+stand-in that is not the 73-hole board. Those are unsupported inputs, not slow
+paths, and the caller is told so rather than handed another engine's answer
+(decision 1 in docs/architecture/decisions.md).
+
+The search's own behaviour is not tested here: it is C++, and it is tested by
+CTest without an interpreter. This file is the Python half of the boundary.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
-from diamond.agents.alphazero_agent import AlphaZeroAgent
-from diamond.agents.base import MoveRequest
+from diamond.alphazero.deadline import Deadline
+from diamond.alphazero.evaluator.base import EvalResult
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
-from diamond.alphazero.native.search import NativeSearch2P
-from diamond.alphazero.search_factory import NativeSearchUnavailable, two_player_search
-from diamond.contract.board import standard_board
-from diamond.contract.state import build_players, initial_state
-from diamond.game.rules import legal_moves
+from diamond.alphazero.native import native_module
+from diamond.alphazero.native.search import NativeSearch2P, NativeSearch3P
+from diamond.alphazero.search_factory import (
+    NativeSearchUnavailable,
+    three_player_search,
+    two_player_search,
+)
+from diamond.contract.state import build_players
+
+pytestmark = pytest.mark.skipif(
+    native_module() is None, reason="the native extension is not built"
+)
 
 
 class _Evaluator:
-    def evaluate(self, requests):  # pragma: no cover - never called here
-        raise AssertionError("the factory must not evaluate anything")
+    def evaluate(self, requests):
+        return tuple(
+            EvalResult({action: 1.0 / len(r.legal_action_ids) for action in r.legal_action_ids}, 0.0)
+            for r in requests
+        )
 
 
+@dataclass(frozen=True)
 class _Config:
     simulations = 4
     c_puct = 1.5
@@ -37,86 +55,35 @@ def _adapter(player_count: int = 2) -> DiamondSearchAdapter:
 
 
 def test_the_real_game_goes_to_the_native_core() -> None:
-    search = two_player_search()(_adapter(), _Evaluator(), _Config())
-    assert isinstance(search, NativeSearch2P)
+    assert isinstance(two_player_search()(_adapter(), _Evaluator(), _Config()), NativeSearch2P)
+    assert isinstance(
+        three_player_search()(_adapter(3), _Evaluator(), _Config()), NativeSearch3P
+    )
 
 
 def test_a_three_seat_game_is_refused_by_the_two_seat_search() -> None:
-    """There is no Python fallback to receive it: it is an unsupported input,
-    not a slower path (decision 1 in docs/architecture/decisions.md)."""
     assert not NativeSearch2P.can_drive(_adapter(3))
     with pytest.raises(NativeSearchUnavailable, match="two-seat"):
         two_player_search()(_adapter(3), _Evaluator(), _Config())
 
 
-def test_a_deadline_no_longer_forces_the_python_search() -> None:
-    """`SearchSession::set_budget` is why: the bound survives the crossing.
-
-    Covered in full by tests/native/test_native_deadline.py; here it is only the
-    selector's half of the contract.
-    """
-    from diamond.alphazero.deadline import Deadline
-
+def test_a_deadline_reaches_the_native_search() -> None:
+    """The bound survives the crossing; what it then does is `budget_test`."""
     search = two_player_search()(_adapter(), _Evaluator(), _Config(), deadline=Deadline.start(5.0))
     assert isinstance(search, NativeSearch2P)
 
 
-def test_an_option_the_native_search_does_not_understand_routes_to_python() -> None:
-    import pytest
-
+def test_an_option_the_native_search_does_not_understand_is_not_swallowed() -> None:
     with pytest.raises(TypeError, match="some_future_option"):
         two_player_search()(_adapter(), _Evaluator(), _Config(), some_future_option=1)
 
 
-def test_a_reduced_board_falls_back() -> None:
-    board = standard_board()
-    assert len(board) == 73, "this test's premise is that 73 is the native size"
+def test_a_caller_that_is_not_the_board_is_refused() -> None:
+    """A stand-in has no board size, which is the question `can_drive` asks."""
 
-    class Smaller:
+    class NotAGame:
         players = build_players(2)
-        board = tuple(range(19))
 
-    assert not NativeSearch2P.can_drive(Smaller())
-
-
-def test_the_agent_proposes_a_move_through_the_native_search(monkeypatch) -> None:
-    """End to end: the agent's two-seat path must actually reach C++."""
-    built: list[str] = []
-    original = NativeSearch2P.__init__
-
-    def spy(self, game, evaluator, config):
-        built.append(type(self).__name__)
-        original(self, game, evaluator, config)
-
-    monkeypatch.setattr(NativeSearch2P, "__init__", spy)
-
-    players = build_players(2)
-    board = standard_board()
-    state = initial_state(players, board)
-    agent = AlphaZeroAgent(players, simulations=2, seed=7)
-    proposal = agent.choose_move(
-        MoveRequest(board=board, state=state, legal_moves=legal_moves(board, state))
-    )
-
-    assert proposal is not None
-    assert built == ["NativeSearch2P"], "the agent did not use the native search"
-
-
-def test_a_three_seat_agent_stays_on_python(monkeypatch) -> None:
-    built: list[str] = []
-    original = NativeSearch2P.__init__
-
-    def spy(self, game, evaluator, config):  # pragma: no cover - must not run
-        built.append(type(self).__name__)
-        original(self, game, evaluator, config)
-
-    monkeypatch.setattr(NativeSearch2P, "__init__", spy)
-
-    players = build_players(3)
-    board = standard_board()
-    state = initial_state(players, board)
-    agent = AlphaZeroAgent(players, simulations=2, seed=7)
-    assert agent.choose_move(
-        MoveRequest(board=board, state=state, legal_moves=legal_moves(board, state))
-    ) is not None
-    assert built == []
+    assert not NativeSearch2P.can_drive(NotAGame())
+    with pytest.raises(NativeSearchUnavailable):
+        two_player_search()(NotAGame(), _Evaluator(), _Config())
