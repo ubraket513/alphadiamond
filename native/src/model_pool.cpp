@@ -24,7 +24,7 @@ void ModelPool::install(ModelKey key, diamond_model::DiamondModel model) {
 void ModelPool::install_checkpoint(ModelKey key, const std::filesystem::path& checkpoint_root,
                                    diamond_model::DiamondModel model) {
     try {
-        (void)diamond_training::inspect_checkpoint_v2(checkpoint_root);
+        (void)diamond_training::load_checkpoint_v2_weights(checkpoint_root, model);
     } catch (const diamond_training::CheckpointError& error) {
         throw IncompatibleCheckpointError(error.what());
     }

@@ -15,6 +15,7 @@ namespace diamond_training {
 namespace {
 constexpr char kPointer[] = "CURRENT";
 constexpr char kState[] = "state.pt";
+constexpr char kOptimizer[] = "optimizer.pt";
 
 std::string read_pointer(const std::filesystem::path& root) {
     if (!std::filesystem::is_directory(root))
@@ -48,7 +49,9 @@ void atomic_write(const std::filesystem::path& path, const std::string& contents
 
 CheckpointInfo state_info(const std::filesystem::path& generation) {
     const auto state = generation / kState;
-    if (!std::filesystem::is_regular_file(state)) throw CheckpointError("checkpoint generation is incomplete");
+    const auto optimizer = generation / kOptimizer;
+    if (!std::filesystem::is_regular_file(state) || !std::filesystem::is_regular_file(optimizer))
+        throw CheckpointError("checkpoint generation is incomplete");
     std::ifstream input(generation / "training_step", std::ios::binary);
     uint64_t step = 0;
     if (!(input >> step)) throw CheckpointError("checkpoint training_step is invalid");
@@ -70,13 +73,10 @@ CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& tr
     const auto committed = root / "generations" / generation;
     std::error_code ignored; std::filesystem::remove_all(staged, ignored); std::filesystem::create_directories(staged);
     try {
-        // The v2 generation owns its state payload.  Model tensor export is
-        // deliberately kept separate from the legacy Python pickle reader.
-        {
-            std::ofstream state(staged / kState, std::ios::binary | std::ios::trunc);
-            state << "diamond-checkpoint-v2\n";
-            if (!state) throw CheckpointError("cannot write checkpoint state");
-        }
+        // Native LibTorch archives make this generation self-contained and
+        // deliberately distinct from the legacy Python checkpoint reader.
+        torch::save(trainer.model(), staged / kState);
+        torch::save(trainer.optimizer(), staged / kOptimizer);
         {
             std::ofstream step(staged / "training_step", std::ios::binary | std::ios::trunc);
             step << trainer.training_step();
@@ -102,10 +102,27 @@ CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& tr
       catch (const std::filesystem::filesystem_error& error) { std::filesystem::remove_all(staged, ignored); throw CheckpointError(error.what()); }
 }
 
-CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer) {
+CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
+                                          diamond_model::DiamondModel model) {
     const auto info = inspect_checkpoint_v2(root);
-    trainer.restore_checkpoint_state(trainer.config(), info.training_step);
-    return info;
+    if (!model) throw CheckpointError("checkpoint model destination is empty");
+    try {
+        torch::load(model, info.generation / kState);
+        return info;
+    } catch (const c10::Error& error) {
+        throw CheckpointError(std::string("cannot load checkpoint model weights: ") + error.what());
+    }
+}
+
+CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer) {
+    const auto info = load_checkpoint_v2_weights(root, trainer.model());
+    try {
+        torch::load(trainer.optimizer(), info.generation / kOptimizer);
+        trainer.restore_checkpoint_state(trainer.config(), info.training_step);
+        return info;
+    } catch (const c10::Error& error) {
+        throw CheckpointError(std::string("cannot load checkpoint optimizer state: ") + error.what());
+    }
 }
 
 }  // namespace diamond_training

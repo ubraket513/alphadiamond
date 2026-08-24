@@ -176,9 +176,14 @@ if(DIAMOND_BUILD_LIBTORCH)
     endif()
 
     add_library(diamond_orchestration STATIC
+        src/arena.cpp
         src/config.cpp
         src/coordinator.cpp
+        src/rating.cpp
+        src/rating_store.cpp
+        src/report.cpp
         src/run_state.cpp
+        src/schedule.cpp
     )
     add_library(alphadiamond::diamond_orchestration ALIAS diamond_orchestration)
     target_link_libraries(diamond_orchestration PUBLIC alphadiamond::diamond_pipeline)
@@ -186,6 +191,12 @@ if(DIAMOND_BUILD_LIBTORCH)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     )
     target_compile_features(diamond_orchestration PUBLIC cxx_std_20)
+
+    add_executable(alphadiamond-train src/train_main.cpp)
+    target_link_libraries(alphadiamond-train PRIVATE
+        alphadiamond::diamond_orchestration
+        alphadiamond::diamond_native_pipeline)
+    target_compile_features(alphadiamond-train PRIVATE cxx_std_20)
 
     add_executable(alphadiamond-pipeline src/pipeline_main.cpp)
     target_link_libraries(alphadiamond-pipeline PRIVATE alphadiamond::diamond_native_pipeline)
@@ -351,6 +362,35 @@ if(DIAMOND_BUILD_LIBTORCH)
         add_test(NAME coordinator_resume_test
                  COMMAND coordinator_resume_test "${CMAKE_CURRENT_BINARY_DIR}/coordinator-resume-scratch")
         set_tests_properties(coordinator_resume_test PROPERTIES LABELS orchestration)
+
+        add_executable(arena_schedule_test tests/arena_schedule_test.cpp)
+        target_link_libraries(arena_schedule_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(arena_schedule_test PRIVATE tests)
+        target_compile_features(arena_schedule_test PRIVATE cxx_std_20)
+        add_test(NAME arena_schedule_test COMMAND arena_schedule_test)
+        set_tests_properties(arena_schedule_test PROPERTIES LABELS orchestration)
+
+        add_executable(rating_fixture_test tests/rating_fixture_test.cpp)
+        target_link_libraries(rating_fixture_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(rating_fixture_test PRIVATE tests)
+        target_compile_features(rating_fixture_test PRIVATE cxx_std_20)
+        add_test(NAME rating_fixture_test COMMAND rating_fixture_test)
+        set_tests_properties(rating_fixture_test PROPERTIES LABELS orchestration)
+
+        add_executable(rating_registry_test tests/rating_registry_test.cpp)
+        target_link_libraries(rating_registry_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(rating_registry_test PRIVATE tests)
+        target_compile_features(rating_registry_test PRIVATE cxx_std_20)
+        add_test(NAME rating_registry_test COMMAND rating_registry_test)
+        set_tests_properties(rating_registry_test PROPERTIES LABELS orchestration)
+
+        add_executable(cli_contract_test tests/cli_contract_test.cpp)
+        target_link_libraries(cli_contract_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(cli_contract_test PRIVATE tests)
+        target_compile_features(cli_contract_test PRIVATE cxx_std_20)
+        add_test(NAME cli_contract_test
+                 COMMAND cli_contract_test "${CMAKE_CURRENT_BINARY_DIR}/cli-contract-scratch")
+        set_tests_properties(cli_contract_test PROPERTIES LABELS orchestration)
         if(WIN32)
             list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
             get_filename_component(DIAMOND_TORCH_PREFIX

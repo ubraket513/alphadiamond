@@ -19,9 +19,12 @@ struct CheckpointInfo {
 };
 
 // A checkpoint root is v2-only: CURRENT points to one fully-written immutable
-// generation.  A legacy .pt file is deliberately not a valid root.
+// generation. Each generation contains state.pt (model parameters), optimizer.pt,
+// and training_step. A legacy .pt file is deliberately not a valid root.
 CheckpointInfo inspect_checkpoint_v2(const std::filesystem::path& root);
 CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer);
+CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
+                                          diamond_model::DiamondModel model);
 CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer);
 
 }  // namespace diamond_training
