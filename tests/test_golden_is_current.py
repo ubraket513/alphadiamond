@@ -31,6 +31,7 @@ PRIOR_TOLERANCE = 1e-9
 
 EXACT_FILES = [
     "mcts-v1.txt",
+    "mcts3p-v1.txt",
     "topology/topology_neighbour.i8",
     "topology/topology_camp_positions.i32",
     "topology/topology_pairwise_distance.i32",

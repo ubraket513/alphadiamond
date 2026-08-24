@@ -32,10 +32,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-# The Gate B reference evaluator lives with the parity tests it was written for.
-sys.path.insert(0, str(ROOT / "tests" / "native"))
+# The reference evaluator is oracle tooling: it defines the deterministic
+# answers the golden files are generated from, and its C++ twins live in
+# native/tests. It moved here when the Python parity gates that used to share
+# it were retired.
+sys.path.insert(0, str(ROOT / "tools"))
 
-from reference_evaluator import ReferenceEvaluator
+from reference_evaluator import (
+    ReferenceEvaluator,
+    _mix_u32,
+    _mix_u64,
+    _unit,
+    request_hash,
+)
 
 from diamond.alphazero.action_codec import ActionCodec, ActionSpaceSpec
 from diamond.alphazero.bootstrap.heuristic import (
@@ -43,8 +52,10 @@ from diamond.alphazero.bootstrap.heuristic import (
     pairwise_distance_table,
 )
 from diamond.alphazero.config import MCTSConfig
+from diamond.alphazero.evaluator.base import EvalResult
 from diamond.alphazero.game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from diamond.alphazero.mcts.search_2p import MCTS2P
+from diamond.alphazero.mcts.search_3p import MCTS3P as PythonMCTS3P
 from diamond.alphazero.native.topology import player_table, topology_tables
 from diamond.game.board import Camp, standard_board
 from diamond.game.state import GameState, GameStatus, build_players
@@ -53,6 +64,7 @@ CORPUS = ROOT / "tests" / "native" / "fixtures" / "positions.jsonl"
 GOLDEN = ROOT / "tests" / "golden"
 RULES = GOLDEN / "rules-v1.txt"
 MCTS = GOLDEN / "mcts-v1.txt"
+MCTS3P = GOLDEN / "mcts3p-v1.txt"
 
 # Gate B's sample: a full search costs ~200x a Gate A comparison, so the corpus
 # is strided rather than searched whole. Simulation counts include 1 and 2
@@ -62,6 +74,8 @@ MCTS_SIMULATIONS = (1, 2, 8, 33, 64)
 TOPOLOGY = GOLDEN / "topology"
 
 FNV_OFFSET = 0xCBF29CE484222325
+"""The same offset basis reference_evaluator.py uses; kept local so this file
+reads without chasing an import for a constant."""
 FNV_PRIME = 0x100000001B3
 MASK = 0xFFFFFFFFFFFFFFFF
 
@@ -203,6 +217,104 @@ def _doubles_bytes(values) -> bytes:
     return struct.pack(f"<{len(values)}d", *values)
 
 
+
+class VectorEvaluator:
+    """The Gate B evaluator, widened to a three-seat value vector.
+
+    The C++ twin is native/tests/vector_evaluator.hpp; both are specified in
+    integer arithmetic so the golden file compares one function with itself
+    rather than two that merely look alike.
+
+    The three components are deliberately distinct. A symmetric vector hides
+    the two mistakes that matter in a 3P search -- components assigned to the
+    wrong seats, and a node maximising somebody else's component -- because
+    both still look right when every component is the same number.
+    """
+
+    def evaluate(self, requests):
+        results = []
+        for request in requests:
+            digest = request_hash(request)
+            weights = []
+            total = 0.0
+            for action in request.legal_action_ids:
+                action_hash = _mix_u32(_mix_u64(FNV_OFFSET, digest), action)
+                weight = _unit(action_hash) + 0.5
+                weights.append(weight)
+                total += weight
+            priors = {
+                action: weight / total
+                for action, weight in zip(request.legal_action_ids, weights)
+            }
+            value = tuple(
+                _unit(_mix_u32(_mix_u64(FNV_OFFSET, digest), 0x5EA70000 + seat)) * 2.0 - 1.0
+                for seat in range(3)
+            )
+            results.append(EvalResult(priors=priors, value=value))
+        return tuple(results)
+
+
+def _mcts3p_lines(records: list[dict], oracle: Oracle) -> list[str]:
+    """Min's search, frozen: root statistics and the q vector per seat.
+
+    Sampled like the 2P section, plus every position with a seat already
+    placed -- only a handful of the corpus has one, all at the tail, and they
+    are the only positions that exercise the placement vector.
+    """
+    lines = [
+        "# alphadiamond 3P mcts golden v1",
+        "# mcts3p <tag> <simulations> <current> <turn> <finish_order|-> <occupancy>",
+        (
+            "# mexp3p <selected> <root_fnv> <visit_fnv> <policy_fnv> <q_fnv>"
+            " <calls> <simulations_run>"
+        ),
+    ]
+    searchable = [
+        record for record in records
+        if record["player_count"] == 3 and record["status"] != "finished"
+    ]
+    sampled = searchable[::MCTS_STRIDE]
+    placed = [record for record in searchable if record["finish_order"]]
+    seen = {id(record) for record in sampled}
+    for record in sampled + [r for r in placed if id(r) not in seen]:
+        state = _state(record)
+        for simulations in MCTS_SIMULATIONS:
+            evaluator = VectorEvaluator()
+            config = MCTSConfig(
+                simulations=simulations, c_puct=1.5, dirichlet_epsilon=0.0, seed=0
+            )
+            result = PythonMCTS3P(oracle.search, evaluator, config).run(state, temperature=0.0)
+
+            actions = list(result.visit_counts)
+            visits = [result.visit_counts[action] for action in actions]
+            policy = [result.policy[action] for action in actions]
+
+            # q is a vector per action: hashed by seat id in ascending order, so
+            # the digest changes if a component lands on the wrong seat.
+            q_digest = Fnv()
+            for action in actions:
+                vector = result.q_values[action]
+                for seat in sorted(vector):
+                    q_digest.i32(seat)
+                    q_digest.bytes(struct.pack("<d", vector[seat]))
+
+            finish = ",".join(str(pid) for pid in record["finish_order"]) or "-"
+            occupancy = "".join(str(cell) for cell in record["occupancy"])
+            lines.append(
+                f"mcts3p {record['tag']} {simulations} {record['current_player_id']} "
+                f"{record['turn_number']} {finish} {occupancy}"
+            )
+            lines.append(
+                f"mexp3p {result.selected_action} "
+                f"{fnv1a(_actions_bytes(actions)):016x} "
+                f"{fnv1a(struct.pack(f'<{len(visits)}i', *visits)):016x} "
+                f"{fnv1a(_doubles_bytes(policy)):016x} "
+                f"{q_digest.value:016x} "
+                f"{len(actions)} {simulations}"
+            )
+    return lines
+
+
 def _mcts_lines(records: list[dict], oracle: Oracle) -> list[str]:
     """Gate B, frozen: the search's root statistics and its request sequence.
 
@@ -301,7 +413,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     print(f"{rules}: {len(records)} positions")
+    mcts3p = output / MCTS3P.name
+    mcts3p.write_text(
+        "\n".join(_mcts3p_lines(records, oracles[3])) + "\n", encoding="utf-8", newline="\n"
+    )
+
     print(f"{mcts}: gate B searches")
+    print(f"{mcts3p}: 3P searches")
     print(f"{output / 'topology'}: 5 tables")
     return 0
 

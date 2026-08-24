@@ -83,6 +83,8 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(mcts_stochastic_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
+    diamond_add_native_test(mcts3p_golden_test
+        "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(batcher_test)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
 endif()

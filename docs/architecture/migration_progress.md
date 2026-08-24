@@ -47,6 +47,7 @@ Last updated 2026-08-24.
   | `prior_golden_test` | folded into `rules_golden_test` (prior max and dot product) |
   | `mcts_deterministic_golden_test` | done as `mcts_golden_test` |
   | `mcts_stochastic_test` | done |
+  | 3P search gate (not in the brief's list) | done as `mcts3p_golden_test` |
   | `batcher_test` | done |
   | `scheduler_test` | folded into `selfplay_test` (lane trajectories across worker counts) |
   | `selfplay_test` | done |
@@ -56,7 +57,10 @@ Last updated 2026-08-24.
   the successors, the encoding and the prior, and splitting one reader across
   four executables would have bought file names rather than coverage.
 
-* No Python parity test has been deleted. `bridge-parity` runs them all.
+* **All five Python parity gates are retired**, each on mutation evidence
+  (`tools/mutation_check.py`, thirteen mutations, every one caught by the
+  gate named for it). `bridge-parity` now runs bridge tests only: the callback
+  ABI, the pool, and the search paths Python still drives.
 
 ## Milestone 2 — storage and cleanup
 
@@ -184,18 +188,11 @@ Left, and deliberately unmeasured until someone needs them:
 
 ## Known gaps and open questions
 
-1. **The Python stochastic gate is not fully replaceable.**
-   `native/tests/mcts_stochastic_test.cpp` now covers the distribution half
-   with no interpreter -- gamma moments (the boost branch production actually
-   uses), weighted-choice frequencies, the Dirichlet mixture, temperature
-   behaviour, and reproducibility from a seed. Verified by mutation: inverting
-   the gamma boost exponent moves the mean from 0.30 to 1.00 and the test goes
-   red.
-
-   What stays in `tests/native/test_stochastic_parity.py` is the part that
-   needs CPython by definition -- the gamma CDF compared against
-   `random.Random` itself. That one is a bridge test and retires with the
-   bridge, not before.
+1. **Resolved.** The stochastic gate is fully replaced. Comparing the sampler
+   against CPython's gamma was the weaker reference anyway: the C++ gate now
+   runs a KS test against the *analytic* gamma CDF, which is what CPython is
+   itself an implementation of. Proven by a mutation moments alone cannot see
+   -- an exponential draw with the right mean, which the KS check rejects.
 2. **The self-play runners belong on the pool, not the bridge.** Both native
    sessions now take a wall-clock budget, so the deadline is no longer what
    holds them back. What does is batching: self-play wants many games in flight

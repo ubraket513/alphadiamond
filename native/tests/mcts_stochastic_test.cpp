@@ -17,6 +17,7 @@
 // The Python gate (tests/native/test_stochastic_parity.py) additionally
 // compares the gamma CDF against CPython itself. That comparison needs CPython
 // and stays in the bridge lane; everything here runs with no interpreter.
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -34,6 +35,65 @@
 namespace {
 
 constexpr int kSamples = 200000;
+
+
+// Regularised lower incomplete gamma P(a, x), by series below the mean and by
+// continued fraction above it -- the standard split, because each converges
+// slowly where the other is fast.
+//
+// This is here so the gate can compare the sampler against the *analytic* gamma
+// CDF rather than against CPython's implementation of it. That is the stronger
+// reference: agreeing with CPython proves the two agree, while agreeing with
+// the CDF proves the sampler is right.
+double log_gamma(double x) { return std::lgamma(x); }
+
+double lower_incomplete_gamma(double a, double x) {
+    if (x <= 0.0) return 0.0;
+    if (x < a + 1.0) {
+        double term = 1.0 / a;
+        double sum = term;
+        for (int n = 1; n < 1000; ++n) {
+            term *= x / (a + n);
+            sum += term;
+            if (std::fabs(term) < std::fabs(sum) * 1e-15) break;
+        }
+        return sum * std::exp(-x + a * std::log(x) - log_gamma(a));
+    }
+    // Lentz's algorithm on the continued fraction for Q(a, x).
+    const double tiny = 1e-300;
+    double b = x + 1.0 - a;
+    double c = 1.0 / tiny;
+    double d = 1.0 / b;
+    double h = d;
+    for (int i = 1; i < 1000; ++i) {
+        const double an = -i * (i - a);
+        b += 2.0;
+        d = an * d + b;
+        if (std::fabs(d) < tiny) d = tiny;
+        c = b + an / c;
+        if (std::fabs(c) < tiny) c = tiny;
+        d = 1.0 / d;
+        const double delta = d * c;
+        h *= delta;
+        if (std::fabs(delta - 1.0) < 1e-15) break;
+    }
+    return 1.0 - std::exp(-x + a * std::log(x) - log_gamma(a)) * h;
+}
+
+// Kolmogorov-Smirnov statistic against Gamma(alpha, 1).
+double ks_statistic(std::vector<double> samples, double alpha) {
+    std::sort(samples.begin(), samples.end());
+    const double n = static_cast<double>(samples.size());
+    double worst = 0.0;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const double expected = lower_incomplete_gamma(alpha, samples[i]);
+        const double below = static_cast<double>(i) / n;
+        const double above = static_cast<double>(i + 1) / n;
+        worst = std::max(worst, std::max(std::fabs(expected - below),
+                                         std::fabs(above - expected)));
+    }
+    return worst;
+}
 
 struct Moments {
     double mean = 0.0;
@@ -102,6 +162,19 @@ int main(int argc, char** argv) {
         }
         // Gamma is supported on (0, inf): a zero would divide by zero upstream.
         for (const double value : gamma_samples(alpha, 7, 1000)) CHECK(value > 0.0);
+
+        // Moments are necessary and not sufficient -- a distribution with the
+        // right mean and variance can still be the wrong distribution. The KS
+        // statistic against the analytic CDF is what pins the shape. The 5%
+        // critical value for n = 200000 is about 1.36/sqrt(n) = 0.0030; the
+        // threshold here is deliberately looser so the gate does not flake, and
+        // still an order of magnitude tighter than any real sampler bug.
+        const double ks = ks_statistic(gamma_samples(alpha, 31337), alpha);
+        if (ks > 0.01) {
+            soo_test::fail(__FILE__, __LINE__,
+                           where + ": KS against the analytic gamma CDF is " +
+                               std::to_string(ks));
+        }
     }
 
     // Deterministic per seed, and neighbouring seeds must not correlate: lanes
