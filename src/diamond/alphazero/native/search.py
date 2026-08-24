@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..evaluator.base import EvalRequest, Evaluator
-from ..mcts.search_2p import SearchResult2P
+from ..search_result import SearchResult2P
 from . import native_game, require_native
 
 VALUE_ONLY = "value_only"

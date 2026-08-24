@@ -42,7 +42,7 @@ class ScalarNode:
     state: Any
     player_id: int
     edges: dict[int, ScalarEdge] = field(default_factory=dict)
-    children: dict[int, "ScalarNode"] = field(default_factory=dict)
+    children: dict[int, ScalarNode] = field(default_factory=dict)
     expanded: bool = False
 
 
@@ -52,7 +52,7 @@ class VectorNode:
     player_id: int
     player_ids: tuple[int, ...]
     edges: dict[int, VectorEdge] = field(default_factory=dict)
-    children: dict[int, "VectorNode"] = field(default_factory=dict)
+    children: dict[int, VectorNode] = field(default_factory=dict)
     expanded: bool = False
 
 

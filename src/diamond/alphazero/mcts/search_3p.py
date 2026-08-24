@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..config import MCTSConfig
 from ..deadline import Deadline
 from ..evaluator.base import EvalRequest, Evaluator
+from ..search_result import SearchResult3P
 from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
 from .tree import VectorEdge, VectorNode
 
@@ -20,14 +20,6 @@ class ThreePlayerSearchGame(Protocol):
     def is_terminal(self, state: Any) -> bool: ...
     def terminal_vector_value(self, state: Any) -> dict[int, float]: ...
     def evaluation_request(self, state: Any) -> EvalRequest: ...
-
-
-@dataclass(frozen=True, slots=True)
-class SearchResult3P:
-    selected_action: int
-    visit_counts: dict[int, int]
-    policy: dict[int, float]
-    q_values: dict[int, dict[int, float]]
 
 
 class MCTS3P:
