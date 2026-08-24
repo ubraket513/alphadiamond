@@ -1,12 +1,22 @@
 # Native Soo Self-Play — Phase 1 Progress
 
+> **Superseded, 2026-08-24.** This is the implementation log for Phase 1, written as the work landed.
+> The migration this document belongs to is finished: the Python engine, the
+> Python MCTS, the Python board and the corpus oracle are deleted, and the C++
+> core is the only implementation of rules, encoding, search, self-play and
+> geometry. See [decisions.md](../architecture/decisions.md) (decision 3) and
+> [retiring_the_python_engine.md](../architecture/retiring_the_python_engine.md).
+>
+> Kept because the measurements and the pitfalls are still true and still cost
+> something to rediscover. Read it as a record, not as instructions.
+
 Implementation log for [native_selfplay_phase0.md](native_selfplay_phase0.md) §8.
 Follows the standing instruction there: **exact parity and a simple native
 representation before low-level micro-optimization.**
 
-**Status: Gates A, B and C pass. Gate D's correctness half passes on CPU;
-its throughput half needs the GPU host.** The `selfplay_backend = "native"`
-config switch is not written.
+**Status: finished and superseded.** All six gates closed;
+`selfplay_backend` now accepts `native` and nothing else. The Python halves of
+these gates are deleted.
 
 > Everything below was done on a **local development machine**, not the
 > RTX 5060 Ti / Xeon training host. No GPU numbers, no throughput claims and no

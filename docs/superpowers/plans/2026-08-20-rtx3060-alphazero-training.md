@@ -1,5 +1,12 @@
 # RTX 3060 AlphaZero Training Implementation Plan
 
+> **Completed plan — 2026-08-20. Do not execute this file.** Shipped, and then superseded in part: the multiprocessing self-play workers this plan tunes are no longer the training path — training runs on the native pool, and `selfplay_backend` accepts `native` only (decision 1). The per-game deadline it added survives as `set_budget` in the C++ search.
+> It is kept as the record of what was decided and why. The unchecked
+> boxes below are historical, not a work queue; the tree has moved on and
+> some of the modules named here no longer exist. See
+> [migration_progress.md](../../architecture/migration_progress.md) for the
+> current state.
+
 **Goal:** Run Soo AlphaZero self-play and training efficiently on an RTX 3060 while using available CPU parallelism, preserving learning semantics and CPU compatibility, and making pathological games abort individually instead of terminating an iteration.
 
 **Architecture:** Keep independent multiprocessing self-play workers and the existing centralized inference coordinator. Resolve worker count from available CPUs minus two, run policy/value inference and training on CUDA, batch inference across games, propagate a 900-second per-game monotonic deadline through MCTS, and keep the parent pool timeout only as a catastrophic safety guard.

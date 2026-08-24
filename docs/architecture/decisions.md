@@ -98,25 +98,32 @@ as part of a `game_contract_version` change.
 
 ## Phases these two open
 
-```text
-Phase A -- eliminate duplicated behaviour
-    remove the no-extension fallback
-    freeze the golden corpus
-    behaviour ledger 7 -> 0
-    delete the Python MCTS and self-play implementations
+Both phases are complete. Recorded as planned, with what actually happened:
 
-Phase B -- eliminate the game-definitions dependency
-    standard_board / build_players -> a neutral topology and contract source
-    GameState -> the native State, or a trainer-owned representation
-    definitions ledger 14 -> 0
-    delete src/diamond/game
+```text
+Phase A -- eliminate duplicated behaviour                        done
+    remove the no-extension fallback                             done
+    freeze the golden corpus                                     done
+    behaviour ledger 7 -> 0                                      done
+    delete the Python MCTS and self-play implementations         done, except
+        the episode runners: what ran the engine in them was the hard-coded
+        search class, not the loop. They take the selector instead.
+
+Phase B -- eliminate the game-definitions dependency             done
+    standard_board / build_players -> a neutral source           done, and the
+        source turned out to be the core itself: it generates the board now
+        (native/src/topology_gen.cpp) instead of being handed it
+    GameState -> a trainer-owned representation                  done, by
+        `git mv` into diamond.contract -- the same classes, a package nothing
+        plans to delete
+    definitions ledger 14 -> 0                                   done
+    delete src/diamond/game                                      done, with the
+        oracle and the Python board (decision 3)
 ```
 
-`behaviour -> 0` removes the *behavioural* blocker on deleting
-`src/diamond/game`. It does not by itself make the directory deletable: the
-fourteen definition dependents still import `standard_board`, `build_players`
-and `GameState`. That is Phase B, and keeping the two apart is what makes the
-ledger mean something.
+Keeping the two ledgers apart is what made the work legible: "30 dependents"
+could not distinguish a module that ran the rules from one that named a
+dataclass in a type hint, and the two retired at completely different times.
 
 See [`retiring_the_python_engine.md`](retiring_the_python_engine.md) for the
-running state.
+order it happened in and the evidence collected before each deletion.

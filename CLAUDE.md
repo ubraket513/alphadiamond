@@ -5,7 +5,7 @@ training stack. The two-player configuration is called **Soo**.
 
 ## Working on the native self-play backend
 
-Active project. **Read [docs/native_selfplay_handoff.md](docs/native_selfplay_handoff.md) first** —
+Active project. **Read [docs/native-selfplay/native_selfplay_handoff.md](docs/native-selfplay/native_selfplay_handoff.md) first** —
 it covers gate status, environment setup, how to run the benchmarks, the
 invariants that must not break, and the pitfalls already paid for.
 

@@ -32,14 +32,27 @@ work.
 It licenses the arena and the GUI agent, which is where it is used: one search
 per move, one evaluator that is a real network.
 
-It does not make the per-node bridge the right vehicle for self-play. Self-play
-wants many games in flight so one evaluator call answers a *batch*, which is
-what the native pool (`play_episodes`) already does; a runner on the per-node
-bridge would give up batching to gain 2× on the tree. The self-play runners
-therefore stay on the Python search until they move to the pool, not to this.
+It does not make the per-node bridge the right vehicle for *training* self-play.
+Training wants many games in flight so one evaluator call answers a *batch*,
+which is what the native pool (`play_episodes`) already does; a runner on the
+per-node bridge gives up batching to gain 2× on the tree. Training self-play
+therefore runs on the pool.
 
-There is also a test-shaped consequence worth recording:
-`test_a_lane_that_finishes_early_takes_pending_work` makes one job slow by
-giving it many simulations. Its margin assumes the search cost it was tuned
-against; anything that changes that constant by 2× needs the fixture re-tuned,
-not the assertion relaxed.
+**Updated 2026-08-24.** This section used to end "the self-play runners
+therefore stay on the Python search until they move to the pool". They did not
+move to the pool and they did not stay on the Python search — there is no
+Python search. `runner_2p` and `runner_3p` take their search from
+`search_factory`, which is the per-node bridge, because what they serve is the
+*single-episode* caller that holds its own `Evaluator` (`bootstrap/probe`
+above all), and the pool's shape is one model in one process. The paragraph
+above is still the reason training does not use them.
+
+There was also a test-shaped consequence, and it came true in the worst way:
+`test_a_lane_that_finishes_early_takes_pending_work` made one job slow by
+giving it many simulations, and this section warned that anything changing that
+constant by 2× needs the fixture re-tuned. What happened was larger than 2×.
+Once the runner reached the native search, the near-terminal position's tree
+was exhausted long before the simulation budget — 60,000 simulations ran no
+longer than 1,500 — and the lanes split evenly. The fixture now buys its
+slowness with a 300-move game: one round trip per move, engine-independent.
+**Slowness measured in one engine's units is not slowness.**

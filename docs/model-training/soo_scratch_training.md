@@ -1,12 +1,18 @@
 # Soo from scratch — training record
 
+
+> **Note, 2026-08-24.** Throughput figures here compare against "the Python
+> backend". That backend is deleted (decision 3): the numbers are the
+> measurements taken at the time, kept as evidence, and there is nothing left
+> to re-measure them against.
+
 The first Soo training run on the native self-play backend, from a randomly
 initialised network. Live document: configuration and reasoning are settled,
 results accumulate.
 
-Companion documents: [native_selfplay_handoff.md](native_selfplay_handoff.md)
+Companion documents: [../native-selfplay/native_selfplay_handoff.md](../native-selfplay/native_selfplay_handoff.md)
 for the backend, §10–§12 of
-[native_selfplay_phase1_progress.md](native_selfplay_phase1_progress.md) for how
+[../native-selfplay/native_selfplay_phase1_progress.md](../native-selfplay/native_selfplay_phase1_progress.md) for how
 it was gated.
 
 ---

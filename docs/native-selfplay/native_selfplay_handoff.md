@@ -4,12 +4,19 @@
 the GPU training host.
 
 Everything below is current as of the A0 (heuristic-free) investigation. **All
-six gates A–F are closed and the native backend is in production use.** The
+six gates A–F are closed and the native backend is the only backend.** The
 project is no longer a C++ port; it is an AlphaZero training system, and the open
 questions are about training dynamics rather than about the backend.
 
+> **Migration finished, 2026-08-24.** The Python engine, the Python MCTS, the
+> Python board and the corpus oracle are deleted (decision 3). Throughput
+> numbers below that compare against "the Python backend" are *measurements
+> taken at the time* and are kept as evidence — there is nothing left to
+> re-measure them against. §6.1 and §6.2 are updated; the rest of this file
+> stands.
+
 If you are picking this up cold, read this file, then §6 of
-[soo_scratch_training.md](soo_scratch_training.md) — that section contains the
+[soo_scratch_training.md](../model-training/soo_scratch_training.md) — that section contains the
 result that matters most and is the least obvious.
 
 ---
@@ -104,7 +111,7 @@ Read in this order:
 | [native_selfplay_phase0.md](native_selfplay_phase0.md) | **The contract.** Measurements, proposed shapes, the four gates, the risk list. A design record — *not* rewritten as work lands. |
 | [native_selfplay_phase1_progress.md](native_selfplay_phase1_progress.md) | **What actually happened.** Per-gate results, every number measured, every bug found and why it was possible. |
 | this file | Where to resume, how to run things, what must not break. |
-| [rtx5060_bottleneck_findings.md](rtx5060_bottleneck_findings.md) | The GPU-host measurements Phase 0 rests on. |
+| [rtx5060_bottleneck_findings.md](../performance-profiling/rtx5060_bottleneck_findings.md) | The GPU-host measurements Phase 0 rests on. |
 
 ---
 
@@ -348,8 +355,10 @@ change anything in that area.
 
 ### Fixtures the tests need
 
-- `tests/native/fixtures/positions.jsonl` — committed, regenerate with
-  `python tools/build_native_corpus.py` (deterministic, byte-identical).
+- `tests/native/fixtures/positions.jsonl` — committed and **frozen**. The
+  generator (`tools/build_native_corpus.py`) drove the Python engine and was
+  deleted with it; the corpus is now a normative fixture, recoverable from Git
+  history if a contract change ever needs a new one.
 - `runtime/runs/soo/cpu8h-soo-20260819/latest.pt` — the **immutable step-80
   checkpoint**, `sha256:1634b901e213b065c107eea734b8c172c14babb1c2565352203961e86ea165af`.
   Tracked in git and hash-asserted by a test. Every measurement in the design
@@ -433,15 +442,19 @@ host's absolutes transfer to the other; that is the point of re-running):
 
 ## 6. Invariants that must not break
 
-1. **The Python implementation is the oracle and stays.** `game/rules.py`,
-   `alphazero/encoder.py`, `bootstrap/heuristic.py`, `mcts/search_2p.py` and
-   `game_adapter.py` are not dead code duplicated by C++ — every gate is defined
-   as equality against them, and CI re-runs that comparison on every change.
-   They are the only defence against risk 1 (two authoritative rule
-   implementations drifting). Do not delete them.
-2. **Topology is generated, never transcribed.** `native/topology.py` derives
-   every board fact from `diamond.game.board` and injects it at import.
-   No neighbour, camp or rotation is hard-coded in C++.
+1. **The frozen corpus is the oracle now.** *(Changed 2026-08-24.)* This used to
+   read "the Python implementation is the oracle and stays — do not delete
+   them", and for the whole of the port that was right: every gate was defined
+   as equality against `game/rules.py`, `mcts/search_2p.py` and `game_adapter.py`.
+   Those are deleted. What defends against risk 1 — two rule implementations
+   drifting — is that there is now one, pinned by `tests/golden/`, which is
+   frozen and normative and **cannot be regenerated from the tree**. Changing it
+   is a deliberate `game_contract_version` change, not a build step.
+2. **Topology is generated, never transcribed.** Still true, and now the core
+   generates it: `native/src/topology_gen.cpp` performs the construction, and
+   `native/topology.py` reads the tables back for the trainer. No neighbour,
+   camp or rotation is hard-coded anywhere. `topology_test` holds the generated
+   tables to the frozen export, and was proven non-vacuous by mutation.
 3. **Legal action ordering is exact parity, in every mode.** It decides which
    action each Dirichlet noise component lands on. Compare *sequences*, never
    sets — a set-based gate passes a backend that misassigns every noise
