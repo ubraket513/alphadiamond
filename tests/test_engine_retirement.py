@@ -71,9 +71,6 @@ BEHAVIOUR_ALLOWED = {
     # The oracle's adapter: what tools/build_golden.py drives to produce the
     # frozen answers. Retires with the corpus generator.
     "src/diamond/alphazero/game_adapter.py",
-    # The smokes script games with find_legal_move.
-    "src/diamond/alphazero/milestone2_smoke.py",
-    "src/diamond/alphazero/smoke.py",
 }
 
 # ---------------------------------------------------------------------------
@@ -89,6 +86,7 @@ DEFINITIONS_ALLOWED = {
     "src/diamond/alphazero/bootstrap/probe.py",
     "src/diamond/alphazero/encoder.py",
     "src/diamond/alphazero/identity.py",
+    "src/diamond/alphazero/milestone2_smoke.py",
     "src/diamond/alphazero/native/__init__.py",
     "src/diamond/alphazero/native/topology.py",
     "src/diamond/alphazero/network/trunk.py",
@@ -96,6 +94,7 @@ DEFINITIONS_ALLOWED = {
     "src/diamond/alphazero/orchestration/production.py",
     "src/diamond/alphazero/orchestration/selfplay_workers.py",
     "src/diamond/alphazero/rating/openings.py",
+    "src/diamond/alphazero/smoke.py",
 }
 
 ENGINE_ITSELF = {

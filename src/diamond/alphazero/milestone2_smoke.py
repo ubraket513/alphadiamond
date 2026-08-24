@@ -11,7 +11,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..game.board import standard_board
-from ..game.rules import find_legal_move
 from ..game.state import EMPTY, GameState, PlayerSpec, build_players
 from .arena import MinArena, SooArena
 from .checkpoint import load_checkpoint, load_inference_checkpoint, save_checkpoint
@@ -20,6 +19,7 @@ from .evaluator.base import EvalRequest, EvalResult
 from .evaluator.torch import TorchEvaluator
 from .game_adapter import AlphaZeroGameAdapter, DiamondSearchAdapter
 from .identity import MIN_MODEL_NAME, SOO_MODEL_NAME, CheckpointCompatibilitySpec
+from .native import native_game, require_native
 from .inference.coordinator import InferenceConfig, InferenceCoordinator
 from .inference.protocol import InferenceRequest, InferenceResponse, ModelKey
 from .network import MinModel, SooModel
@@ -88,21 +88,23 @@ def _near_terminal_state(
 
     state = GameState(tuple(occupied), players[0].id, 40)
     adapter = AlphaZeroGameAdapter(players, board=board, initial=state)
+    module = require_native()
+    native = native_game(players)
     actions: list[tuple[int, int]] = []
     for player in players[:finishers]:
-        move = find_legal_move(
-            board,
-            state,
-            entries[player.id],
-            destinations[player.id],
-            player_id=player.id,
+        physical = adapter.codec.encode(entries[player.id], destinations[player.id])
+        canonical = adapter.encoder.to_canonical_action(physical, players, player.id)
+        # The C++ core is the authority on legality. Each finisher moves on its
+        # own turn, so the seat to move is what it is asked about -- which is why
+        # this is a probe state rather than ``state`` itself.
+        probe = module.State(
+            occupancy=list(state.occupancy),
+            current_player=player.id,
+            turn_number=state.turn_number,
         )
-        if move is None:
-            raise RuntimeError("near-terminal move was rejected by authoritative rules")
-        physical = adapter.codec.encode(move.source, move.destination)
-        actions.append(
-            (player.id, adapter.encoder.to_canonical_action(physical, players, player.id))
-        )
+        if canonical not in native.canonical_legal_action_ids(probe):
+            raise RuntimeError("near-terminal move was rejected by the native rules")
+        actions.append((player.id, canonical))
     return state, tuple(actions)
 
 

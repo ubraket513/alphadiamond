@@ -24,7 +24,7 @@ Everything else that imports it is migration debt, counted and frozen by
 number could not distinguish a module that *runs the rules* from one that names
 a dataclass in a type hint:
 
-* **behaviour** (3) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
+* **behaviour** (1) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
   reach zero before `diamond.game` can go, and it is the work queue.
 * **definitions and types** (14) -- `standard_board`, `build_players`,
   `GameState`. Not rules; C++ receives the same tables through the topology
@@ -65,6 +65,14 @@ serving is the single-episode caller with its own `Evaluator` -- `bootstrap/prob
 measuring a checkpoint's data-generation viability, where the pool's
 model-in-one-process shape does not fit. 5 to 3.
 
+Then the two smokes. Both build the same near-terminal fixture and asked
+`find_legal_move` whether the finishing move they had constructed was real. The
+geometry -- camp positions, neighbours -- is board definition and stays; the
+legality answer now comes from the native core, asked with the finishing seat to
+move rather than the state's current one. 3 to 1.
+
+What is left in the behaviour queue is `game_adapter`, alone.
+
 ## The behaviour queue was two decisions, not seven tasks
 
 Reading the seven, none was independent work (`search_factory` and
@@ -74,7 +82,6 @@ Reading the seven, none was independent work (`search_factory` and
 |---|---|
 | `game_adapter` | the corpus generator: it is what `tools/build_golden.py` drives |
 | `search_factory` | the Python search existing at all |
-| `smoke`, `milestone2_smoke` | scripting games with `find_legal_move` |
 
 So the rest of the queue drains on two decisions, both of which are product
 calls rather than refactors:
