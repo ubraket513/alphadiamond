@@ -48,6 +48,20 @@ always consumes the immutable path and verifies `checkpoint_sha256` first.
 
 Manifest fields: see [manifests/checkpoint.schema.json](manifests/checkpoint.schema.json).
 
+## Promotion
+
+```bash
+python tools/promote_checkpoint.py checkpoints/soo/<run>/step-<n> --to candidate
+python tools/promote_checkpoint.py checkpoints/soo/<run>/step-<n> --to promoted     --artifacts artifacts/soo-release
+```
+
+States move one step at a time, because `candidate` is where conversion is
+gated. Promotion converts: it exports the deployment artifact and writes its
+digests back into the manifest, so a `promoted` checkpoint whose artifact was
+never built cannot exist. The checkpoint's own digest is verified first --
+these paths are immutable, and one that was overwritten invalidates every
+measurement recorded against it.
+
 ## CI fixtures
 
 [manifests/ci-fixtures.json](manifests/ci-fixtures.json) names every large file
