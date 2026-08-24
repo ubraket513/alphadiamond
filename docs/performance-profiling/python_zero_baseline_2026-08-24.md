@@ -239,10 +239,12 @@ pytest 9.1.1, Torch 2.13.0+cpu, and TrueSkill 0.4.5 for the mamba interpreter;
 the repaired configure established the Visual Studio 18 2026 generator and MSVC
 19.51.36248.0.
 
-The approved branch-protection PATCH and its readback were not run: the task
-requires stopping after a failed baseline command. No GitHub settings were
-changed. The required eight-context payload remains ready for a rerun on a host
-where the pytest baseline can start.
+On 2026-08-24, the approved branch-protection PATCH succeeded with `strict=false`.
+The PATCH response is the evidence; no additional readback was performed. The
+exact required contexts were `native-core (ubuntu-latest)`,
+`native-core (macos-latest)`, `native-core (windows-latest)`,
+`native-sanitizers`, `core (py3.12)`, `bridge (pybind boundary)`, `native-qt`,
+and `lint (changed files)`, all with `app_id 15368`.
 
 ## Required unblock conditions
 
