@@ -23,6 +23,13 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "native-training",
+      "inherits": "native-ci",
+      "displayName": "Native LibTorch training",
+      "binaryDir": "${sourceDir}/build/native-training",
+      "cacheVariables": { "DIAMOND_BUILD_LIBTORCH": "ON" }
+    },
+    {
       "name": "native-asan",
       "inherits": "native-ci",
       "displayName": "Native core + tests, ASan/UBSan",
@@ -56,6 +63,7 @@
   "buildPresets": [
     { "name": "native-ci", "configurePreset": "native-ci", "configuration": "RelWithDebInfo" },
     { "name": "native-release", "configurePreset": "native-release", "configuration": "Release" },
+    { "name": "native-training", "configurePreset": "native-training", "configuration": "RelWithDebInfo" },
     { "name": "native-asan", "configurePreset": "native-asan", "configuration": "Debug" },
     { "name": "native-qt", "configurePreset": "native-qt", "configuration": "RelWithDebInfo" },
     { "name": "pybind", "configurePreset": "pybind", "configuration": "RelWithDebInfo" }
@@ -72,6 +80,13 @@
       "name": "native-release",
       "configurePreset": "native-release",
       "configuration": "Release",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "native-training",
+      "configurePreset": "native-training",
+      "configuration": "RelWithDebInfo",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     },

@@ -11,12 +11,12 @@ from dataclasses import dataclass
 from math import exp
 
 from ...contract.camps import Camp
-from ..action_codec import ActionCodec
 from ..config import (
     BOOTSTRAP_PRIOR_NONE,
     CANONICAL_TARGET_DISTANCE_V1,
     CANONICAL_TARGET_VACANCY_DISTANCE_V2,
 )
+from ..native import require_native
 
 TEMPERATURE_V1 = 1.0
 """Part of the ``canonical-target-distance-v1`` identity, not a tuning knob."""
@@ -61,7 +61,6 @@ class CanonicalTargetDistancePrior:
     def priors(
         self,
         legal_action_ids: tuple[int, ...],
-        codec: ActionCodec,
         distance: tuple[int, ...],
     ) -> dict[int, float]:
         if not legal_action_ids:
@@ -69,7 +68,7 @@ class CanonicalTargetDistancePrior:
 
         progress: list[float] = []
         for action_id in legal_action_ids:
-            source, destination = codec.decode(action_id)
+            source, destination = require_native().decode_action(action_id)
             progress.append(float(distance[source] - distance[destination]))
 
         # Shift by the max before exponentiating: identical probabilities, no
@@ -146,7 +145,6 @@ class CanonicalTargetVacancyDistancePrior:
     def priors(
         self,
         legal_action_ids: tuple[int, ...],
-        codec: ActionCodec,
         target: frozenset[int],
         pairwise: tuple[tuple[int, ...], ...],
         node_features: tuple[tuple[float, ...], ...],
@@ -159,7 +157,7 @@ class CanonicalTargetVacancyDistancePrior:
 
         scores: list[float] = []
         for action_id in legal_action_ids:
-            source, destination = codec.decode(action_id)
+            source, destination = require_native().decode_action(action_id)
             moved = (occupied - {source}) | {destination}
             scores.append(before - self.potential(moved, target, pairwise))
 

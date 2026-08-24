@@ -1,0 +1,89 @@
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "check.hpp"
+#include "diamond_orchestration/report.hpp"
+
+namespace {
+
+using diamond_orchestration::CommandRequest;
+using diamond_orchestration::CommandService;
+using diamond_orchestration::ProductionConfig;
+using diamond_support::JsonValue;
+
+std::filesystem::path write_config(const std::filesystem::path& scratch) {
+    const auto path = scratch / "soo-production.json";
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << diamond_support::canonical_json(ProductionConfig{}.to_json());
+    return path;
+}
+
+std::vector<std::string> command(std::string verb, const std::filesystem::path& scratch,
+                                 const std::filesystem::path& config) {
+    std::vector<std::string> result{std::move(verb), "--runtime-dir", scratch.string(),
+                                    "--model", "Soo", "--config", config.string(),
+                                    "--checkpoint", (scratch / "bootstrap.pt").string()};
+    result.emplace_back("--run-id");
+    result.emplace_back("native-cli");
+    return result;
+}
+
+JsonValue::Object report_object(const std::ostringstream& output) {
+    const auto parsed = diamond_support::parse_json(output.str());
+    return std::get<JsonValue::Object>(parsed.value);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    REQUIRE(argc == 2, "usage: cli_contract_test <scratch>");
+    const auto scratch = std::filesystem::path(argv[1]);
+    std::filesystem::remove_all(scratch);
+    std::filesystem::create_directories(scratch);
+    const auto config = write_config(scratch);
+
+    std::vector<std::string> calls;
+    const CommandService service = [&](const CommandRequest& request, const ProductionConfig& parsed) {
+        CHECK_EQ(parsed.model_name, std::string("Soo"));
+        calls.push_back(request.command);
+        return JsonValue::Object{{"service", JsonValue{std::string("injected")}}};
+    };
+    for (const char* verb : {"train", "resume", "evaluate", "report"}) {
+        std::ostringstream output;
+        CHECK_EQ(diamond_orchestration::dispatch_command(command(verb, scratch, config), service, output),
+                 diamond_orchestration::kExitOk);
+        const auto& report = report_object(output);
+        CHECK_EQ(std::get<std::string>(report.at("command").value), std::string(verb));
+        CHECK_EQ(std::get<std::string>(report.at("status").value), std::string("ok"));
+        CHECK_EQ(std::get<std::string>(report.at("service").value), std::string("injected"));
+    }
+    CHECK_EQ(calls.size(), std::size_t{4});
+
+    std::ostringstream argument_output;
+    CHECK_EQ(diamond_orchestration::dispatch_command({"train"}, service, argument_output),
+             diamond_orchestration::kExitArgumentError);
+    CHECK_EQ(std::get<std::string>(report_object(argument_output).at("status").value), std::string("error"));
+
+    std::ostringstream runtime_output;
+    const CommandService incompatible = [](const CommandRequest&, const ProductionConfig&)
+        -> JsonValue::Object { throw diamond_orchestration::CommandArtifactError("incompatible checkpoint"); };
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config), incompatible, runtime_output),
+             diamond_orchestration::kExitArtifactError);
+
+    std::ostringstream interrupted_output;
+    const CommandService interrupted = [](const CommandRequest&, const ProductionConfig&)
+        -> JsonValue::Object { throw diamond_orchestration::CommandInterruptedError("unfinished stage"); };
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("resume", scratch, config), interrupted, interrupted_output),
+             diamond_orchestration::kExitInterrupted);
+
+    std::ostringstream internal_output;
+    const CommandService broken = [](const CommandRequest&, const ProductionConfig&)
+        -> JsonValue::Object { throw std::runtime_error("broken"); };
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config), broken, internal_output),
+             diamond_orchestration::kExitInternalError);
+    return soo_test::report("cli_contract_test");
+}

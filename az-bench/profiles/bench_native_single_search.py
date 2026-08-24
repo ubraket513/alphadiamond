@@ -26,7 +26,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from diamond.alphazero.action_codec import ActionCodec, ActionSpaceSpec
 from diamond.alphazero.bootstrap.heuristic import (
     CanonicalTargetVacancyDistancePrior,
     pairwise_distance_table,
@@ -71,7 +70,6 @@ class PythonStages:
         self.players = players
         self.game = AlphaZeroGameAdapter(players)
         self.search = DiamondSearchAdapter(self.game)
-        self.codec = ActionCodec(ActionSpaceSpec.diamond73())
         self.prior = CanonicalTargetVacancyDistancePrior()
         self.pairwise = pairwise_distance_table()
         self.target = frozenset(camp_positions(Camp.Z_NEG))
@@ -88,12 +86,12 @@ class PythonStages:
                     continue
 
                 start = time.perf_counter_ns()
-                encoded = self.game.encoder.encode(state, self.players)
+                encoded, _player_ids = self.game.encode(state)
                 totals["encode"] += time.perf_counter_ns() - start
 
                 start = time.perf_counter_ns()
                 self.prior.priors(
-                    legal, self.codec, self.target, self.pairwise, encoded.node_features
+                    legal, self.target, self.pairwise, encoded
                 )
                 totals["prior"] += time.perf_counter_ns() - start
 

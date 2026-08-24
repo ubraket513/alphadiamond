@@ -16,14 +16,14 @@ def test_adapter_uses_authoritative_legal_moves_and_transitions(player_count: in
     legal_actions = adapter.legal_action_ids(state)
 
     assert legal_actions
-    # Action ids are the codec's, whichever engine produced them.
+    # Action ids come directly from the native action contract.
     for action in legal_actions:
-        source, destination = adapter.codec.decode(action)
+        source, destination = adapter.decode_action(action)
         assert state.occupant(source) == state.current_player_id
         assert state.occupant(destination) == EMPTY
 
     selected = legal_actions[0]
-    source, destination = adapter.codec.decode(selected)
+    source, destination = adapter.decode_action(selected)
     next_state = adapter.apply_action(state, selected)
 
     assert next_state.occupant(source) == EMPTY
@@ -32,12 +32,26 @@ def test_adapter_uses_authoritative_legal_moves_and_transitions(player_count: in
     assert next_state.current_player_id != state.current_player_id
 
 
+def test_adapter_uses_native_action_and_feature_encoding_for_frozen_opening() -> None:
+    adapter = AlphaZeroGameAdapter(build_players(2))
+    state = adapter.initial_state()
+    action_id = adapter.legal_action_ids(state)[0]
+
+    source, destination = adapter._module.decode_action(action_id)
+    native_features, native_player_ids = adapter._native.encode(adapter._to_native(state))
+    request = DiamondSearchAdapter(adapter).evaluation_request(state)
+
+    assert action_id == adapter._module.encode_action(source, destination)
+    assert request.node_features == tuple(tuple(row) for row in native_features)
+    assert request.canonical_player_ids == tuple(native_player_ids)
+
+
 def test_adapter_rejects_representable_but_illegal_action() -> None:
     adapter = AlphaZeroGameAdapter(build_players(2))
     state = adapter.initial_state()
 
     with pytest.raises(IllegalMoveError):
-        adapter.apply_action(state, adapter.codec.encode(0, 0))
+        adapter.apply_action(state, adapter.encode_action(0, 0))
 
 
 @pytest.mark.parametrize("player_count", [2, 3])
@@ -80,8 +94,8 @@ def test_soo_terminal_search_perspective_advances_to_the_loser() -> None:
     setup = GameState(tuple(occupancy), winner.id, 40)
     game = AlphaZeroGameAdapter(players, initial=setup)
     search = DiamondSearchAdapter(game)
-    physical = game.codec.encode(entry, destination)
-    canonical = game.encoder.to_canonical_action(physical, players, winner.id)
+    physical = game.encode_action(entry, destination)
+    canonical = game._native.to_canonical_action(physical, game._to_native(setup))
 
     terminal = search.apply_action(setup, canonical)
 

@@ -1,9 +1,8 @@
 """AlphaZero adapter over the authoritative Diamond rules.
 
-The rules are the C++ core's. This holds the Python-side shape of a position --
-``GameState``, ``PlayerSpec``, the action codec and the canonical encoder -- and
-asks the native ``Game`` for everything that *applies* rules: which actions are
-legal, and what a position becomes when one is played.
+The rules, action encoding, and feature encoding are the C++ core's. This holds
+the Python-side shape of a position -- ``GameState`` and ``PlayerSpec`` -- and
+asks the native ``Game`` for legal actions, encodings, and transitions.
 
 **The state type stays Python on purpose.** A ``GameState`` crosses process
 boundaries in ``SelfPlayJob``, is stored in run state and is what the Qt agent
@@ -22,8 +21,6 @@ from __future__ import annotations
 from ..contract.camps import PLAYABLE_HOLES
 from ..contract.move import IllegalMoveError
 from ..contract.state import GameState, GameStatus, PlayerSpec, initial_state
-from .action_codec import ActionCodec, ActionSpaceSpec
-from .encoder import CanonicalEncoder
 from .evaluator.base import EvalRequest
 
 _NATIVE_FINISHED = 1
@@ -53,13 +50,6 @@ class AlphaZeroGameAdapter:
 
         self._module = require_native()
         self._native = native_game(self.players)
-        self.codec = ActionCodec(
-            ActionSpaceSpec(
-                board_size=PLAYABLE_HOLES,
-                version=f"diamond{PLAYABLE_HOLES}-srcdst-v1",
-            )
-        )
-        self.encoder = CanonicalEncoder(self.codec)
 
     def initial_state(self) -> GameState:
         return self._initial
@@ -88,6 +78,17 @@ class AlphaZeroGameAdapter:
 
     def legal_action_ids(self, state: GameState) -> tuple[int, ...]:
         return tuple(self._native.legal_action_ids(self._to_native(state)))
+
+    def encode_action(self, source: int, destination: int) -> int:
+        return int(self._module.encode_action(source, destination))
+
+    def decode_action(self, action_id: int) -> tuple[int, int]:
+        source, destination = self._module.decode_action(action_id)
+        return int(source), int(destination)
+
+    def encode(self, state: GameState) -> tuple[tuple[tuple[float, ...], ...], tuple[int, ...]]:
+        features, player_ids = self._native.encode(self._to_native(state))
+        return tuple(tuple(row) for row in features), tuple(player_ids)
 
     def apply_action(self, state: GameState, action_id: int) -> GameState:
         """Play ``action_id``; the core settles turn order and the podium."""
@@ -135,32 +136,24 @@ class DiamondSearchAdapter:
         return state.current_player_id
 
     def legal_action_ids(self, state: GameState) -> tuple[int, ...]:
-        return tuple(
-            self.game.encoder.to_canonical_action(
-                physical,
-                self.players,
-                state.current_player_id,
-            )
-            for physical in self.game.legal_action_ids(state)
-        )
+        return tuple(self.game._native.canonical_legal_action_ids(self.game._to_native(state)))
 
     def apply_action(self, state: GameState, canonical_action_id: int) -> GameState:
-        physical = self.game.encoder.to_physical_action(
-            canonical_action_id,
-            self.players,
-            state.current_player_id,
+        return self.game._from_native(
+            self.game._native.apply_canonical_action(
+                self.game._to_native(state), canonical_action_id
+            )
         )
-        return self.game.apply_action(state, physical)
 
     def is_terminal(self, state: GameState) -> bool:
         return self.game.is_terminal(state)
 
     def evaluation_request(self, state: GameState) -> EvalRequest:
-        encoded = self.game.encoder.encode(state, self.players)
+        node_features, canonical_player_ids = self.game.encode(state)
         return EvalRequest(
-            node_features=encoded.node_features,
+            node_features=node_features,
             legal_action_ids=self.legal_action_ids(state),
-            canonical_player_ids=encoded.canonical_player_ids,
+            canonical_player_ids=canonical_player_ids,
         )
 
     def terminal_scalar_value(self, state: GameState, player_id: int) -> float:

@@ -4,13 +4,28 @@ project(alphadiamond LANGUAGES CXX)
 
 option(DIAMOND_BUILD_PYBIND "Build the optional pybind11 extension" OFF)
 option(DIAMOND_BUILD_NATIVE_TESTS "Build portable native smoke tests" ON)
-option(DIAMOND_BUILD_LIBTORCH_PROBE "Build the Q2 LibTorch parity probe" OFF)
+option(DIAMOND_BUILD_LIBTORCH "Build native LibTorch model and training support" OFF)
+option(DIAMOND_BUILD_LIBTORCH_PROBE "Deprecated alias for DIAMOND_BUILD_LIBTORCH" OFF)
+if(DIAMOND_BUILD_LIBTORCH_PROBE)
+    set(DIAMOND_BUILD_LIBTORCH ON CACHE BOOL "Build native LibTorch model and training support" FORCE)
+endif()
 option(DIAMOND_BUILD_QT "Build the native Qt/QML shell" OFF)
 option(DIAMOND_BUILD_QT_SOO "Build Qt shell with native LibTorch Soo search" OFF)
 
-set(CMAKE_CXX_STANDARD 20)
+# CMake cannot yet model CXX26 for the installed MSVC toolset.  Keep its
+# known-feature baseline at C++23, then require each compiler's next-standard
+# dialect explicitly below.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    add_compile_options(/std:c++latest)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-std=c++2c)
+else()
+    message(FATAL_ERROR "AlphaDiamond requires a compiler with a C++26 dialect mode")
+endif()
 
 include(GNUInstallDirs)
 include(CTest)
