@@ -158,6 +158,44 @@ int main(int argc, char** argv) {
         if (!rejects_family(temporary.path, "min"))
             throw std::runtime_error("family-scoped validation accepted the wrong family");
 
+        // A release package carries only what the runtime loads: metadata, the
+        // topology tables and the weights. The TorchScript graph and the parity
+        // corpus stay in the development artifact, because shipping model.ts
+        // would put a second 3.1 MB copy of every model in the installer for
+        // something nothing opens.
+        //
+        // So a package's integrity rests on runtime_sha256, which was defined
+        // as exactly that set. model_sha256 names the absent graph and is inert
+        // there -- which is worth asserting rather than assuming, in both
+        // directions: the package must still validate, and corrupting a tensor
+        // must still be caught.
+        TempArtifact packaged{std::filesystem::temp_directory_path() /
+            ("alphadiamond-artifact-package-" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()))};
+        std::filesystem::create_directories(packaged.path);
+        for (const char* name : {"metadata.json", "topology_neighbour.i8",
+                                 "topology_camp_positions.i32",
+                                 "topology_pairwise_distance.i32",
+                                 "topology_physical_to_canonical.i32",
+                                 "topology_canonical_to_physical.i32"}) {
+            std::filesystem::copy_file(temporary.path / name, packaged.path / name);
+        }
+        std::filesystem::copy(temporary.path / "weights", packaged.path / "weights",
+                              std::filesystem::copy_options::recursive);
+
+        (void)diamond_model::validate_deployment_artifact(packaged.path, "soo");
+
+        const auto packaged_weight = packaged.path / "weights" / "value_head__2__bias.f32";
+        const std::string packaged_original = read_text(packaged_weight);
+        std::string flipped = packaged_original;
+        flipped[0] = static_cast<char>(flipped[0] ^ 0x01);
+        write_text(packaged_weight, flipped);
+        if (!rejects(packaged.path))
+            throw std::runtime_error("a corrupt tensor was accepted in a runtime-only package");
+        write_text(packaged_weight, packaged_original);
+
+        std::cout << "runtime-only package validated\n";
+
         // The second artifact, when supplied, is a Min bundle: the same
         // validator must accept it without a single Soo constant relaxed.
         if (argc >= 3) {

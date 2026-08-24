@@ -40,6 +40,32 @@ def _entry(family: str, source: Path) -> dict:
     }
 
 
+RUNTIME_FILES = (
+    "metadata.json",
+    "topology_neighbour.i8",
+    "topology_camp_positions.i32",
+    "topology_pairwise_distance.i32",
+    "topology_physical_to_canonical.i32",
+    "topology_canonical_to_physical.i32",
+)
+"""What the application loads, plus the weights directory.
+
+Everything else an artifact carries -- the TorchScript graph, the parity corpus,
+the MCTS fixture -- exists for development and for the contract tests. Copying
+them into a release would ship every model twice: `model.ts` is the same 3.1 MB
+as `weights/`, and nothing in the runtime opens it. `runtime_sha256` covers
+exactly the set below plus the weights, which is not a coincidence -- it was
+defined as the integrity of what actually gets loaded.
+"""
+
+
+def _copy_runtime(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for name in RUNTIME_FILES:
+        shutil.copy2(source / name, target / name)
+    shutil.copytree(source / "weights", target / "weights")
+
+
 def build(output: Path, artifacts: dict[str, Path], defaults: list[str]) -> dict:
     if not artifacts:
         raise SystemExit("at least one --artifact is required")
@@ -54,7 +80,7 @@ def build(output: Path, artifacts: dict[str, Path], defaults: list[str]) -> dict
         target = output / entry["path"]
         if target.exists():
             shutil.rmtree(target)
-        shutil.copytree(source, target)
+        _copy_runtime(source, target)
         entries.append(entry)
 
     index = {

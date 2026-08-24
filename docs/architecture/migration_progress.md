@@ -96,11 +96,13 @@ Left:
 * Packaging: `tools/build_model_index.py` writes `models/index.json`; the Qt
   runtime prefers the packaged index; CPack ZIP with a SHA-256 checksum.
 
+* **One canonical runtime representation, in the package.** The release ships
+  `metadata.json`, the topology tables and `weights/` -- what the runtime loads,
+  and exactly what `runtime_sha256` covers. The TorchScript graph and the parity
+  corpus stay in the development artifact. Package: 11.5 MB to 6.0 MB.
+
 Left:
 
-* **One canonical runtime representation.** v3 still ships both a TorchScript
-  graph and raw weights, so every model is stored twice. Decide which the
-  runtime consumes and keep the other only as a conversion fixture.
 * **Promotion policy is documented, not implemented.** Nothing yet marks a
   checkpoint `candidate` or `promoted`, or drives conversion from that.
 
