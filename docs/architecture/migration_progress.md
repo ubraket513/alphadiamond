@@ -113,15 +113,22 @@ The C++ core is the authority. Progress and the remaining order live in
 native self-play default            done (selfplay_backend defaults to auto)
 dependent ratchet                   done (tests/test_engine_retirement.py)
 arena on the native core            done (Soo; Min is 3P and stays)
-runners and agent on native         next
+GUI agent on native                 done (two-seat path)
+self-play runners on native         blocked on a native deadline
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last
 ```
 
-`tests/test_engine_retirement.py` freezes the dependent set at thirty shipped
-modules: adding one fails, and removing one requires deleting its line. That
-list is the work queue for the rest of this milestone.
+`tests/test_engine_retirement.py` freezes the dependent set: adding a module
+fails, and removing one requires deleting its line. That list is the work queue
+for the rest of this milestone. It grew by one -- `search_factory.py`, whose
+whole job is to choose between the engines -- and everything that searches now
+goes through it.
+
+`tests/native/test_search_factory.py` proves the choice is real rather than
+nominal, including end to end: the agent's two-seat move actually constructs
+`NativeSearch2P`.
 
 Nothing here rewrites the training loop, the optimizer tooling, the experiment
 orchestration or the rating code. The brief is explicit that those stay in
@@ -150,16 +157,21 @@ Left, and deliberately unmeasured until someone needs them:
    sampling. A golden file cannot capture a distribution the way it captures a
    deterministic answer; the likely shape is a fixed-seed expectation, since
    the native RNG is seeded explicitly.
-2. **`MinArena` is still on the Python search.** The native MCTS is
-   two-player; `MCTS3P` has no native counterpart at all.
-3. **The `apps/` / `python/` restructure from section 4 of the brief has not
+2. **Everything three-player is still on the Python search** -- `MinArena`,
+   `runner_3p`, the agent's three-seat path. The native MCTS is two-player and
+   `MCTS3P` has no native counterpart at all. This is the largest single piece
+   of remaining work in milestone 4.
+3. **`selfplay/runner_2p` needs a native deadline.** It bounds a game by wall
+   clock; `SearchSession` has no such notion, and the selector refuses to drop
+   the bound silently.
+4. **The `apps/` / `python/` restructure from section 4 of the brief has not
    been done.** It rewrites hundreds of documented command paths and deserves
    its own change; the boundaries it would express are already established in
    `products.md`.
-4. **`src/diamond/qml` and `src/diamond/assets` belong to the native
+5. **`src/diamond/qml` and `src/diamond/assets` belong to the native
    application**, not to the Python package that excludes them. They are the
    obvious first move if the restructure happens.
-5. **Branch protection** is on `main` with the CI checks required,
+6. **Branch protection** is on `main` with the CI checks required,
    `enforce_admins: false` and no required reviews. Remove with
    `gh api -X DELETE repos/ubraket513/alphadiamond/branches/main/protection`.
 
@@ -172,7 +184,9 @@ make test-parity      # bridge: Python <-> C++ (needs the pybind build)
 make golden           # regenerate tests/golden from the Python oracle
 ```
 
-The next concrete task is the row after `arena on the native core` above: move
-`selfplay/runner_2p`, `runner_3p` and `agents/alphazero_agent` onto
-`NativeSearch2P`, then strike their lines from `ALLOWED` in
-`tests/test_engine_retirement.py`. That deletion is the unit of progress.
+The next concrete task is a three-player native search (`MCTS3P`'s
+counterpart). It is what unblocks `MinArena`, `runner_3p` and the agent's
+three-seat path in one go -- and after it, a wall-clock deadline in
+`SearchSession` unblocks `runner_2p`. Each one ends with a line struck from
+`ALLOWED` in `tests/test_engine_retirement.py`; that deletion is the unit of
+progress.

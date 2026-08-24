@@ -38,6 +38,9 @@ ALLOWED = {
     "src/diamond/alphazero/mcts/__init__.py",
     "src/diamond/alphazero/mcts/search_2p.py",
     "src/diamond/alphazero/mcts/search_3p.py",
+    # The selector itself: it names both engines because choosing between them
+    # is its entire job, and it is what everything else now goes through.
+    "src/diamond/alphazero/search_factory.py",
     # The bridge: these exist to hand the Python board to the native side.
     "src/diamond/alphazero/native/__init__.py",
     "src/diamond/alphazero/native/topology.py",

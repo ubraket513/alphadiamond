@@ -25,11 +25,21 @@ grow. Adding a module to it fails; removing one is the progress.
 
 Deletion is not one commit. In rough dependency order:
 
-1. **The runtime path is native everywhere it matters.** Self-play already
-   defaults to `auto`, which resolves to the native backend wherever the
-   extension is importable. Remaining Python-engine runtime users: `arena`,
-   `orchestration/benchmark`, `selfplay/runner_2p`, `runner_3p`,
-   `agents/alphazero_agent`.
+1. **The runtime path is native everywhere it matters.** Self-play defaults to
+   `auto`, which resolves to the native backend wherever the extension is
+   importable. The Soo arena and the GUI agent's two-seat path now go through
+   `diamond.alphazero.search_factory.two_player_search()`, which prefers the
+   native search and falls back per game.
+
+   Still on the Python search, each for a reason:
+   - `selfplay/runner_2p` passes a wall-clock `deadline` to the search, which
+     the native side does not implement. Losing a game's time bound silently
+     would be worse than not using the native search, so the selector declines
+     any call carrying extras it cannot honour. Implementing a deadline in the
+     C++ session is what unblocks this.
+   - `selfplay/runner_3p`, `MinArena` and the agent's three-seat path: the
+     native search is two-player. `MCTS3P` has no native counterpart at all.
+   - `orchestration/benchmark` measures the Python search deliberately.
 2. **Arena runs on the native core.** Done for Soo: `Game.search_with_callback`
    suspends the C++ tree on every node and asks the Python evaluator for that
    node's answer, so two different networks can alternate moves inside one game
@@ -72,7 +82,8 @@ these are not on the shipped application's runtime path.
 native self-play default            done (auto)
 dependent ratchet                   done (tests/test_engine_retirement.py)
 arena on the native core            done (Soo; Min is 3P and stays)
-runners and agent on native         next
+GUI agent on native                 done (two-seat path)
+self-play runners on native         blocked: the native search has no deadline
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last
