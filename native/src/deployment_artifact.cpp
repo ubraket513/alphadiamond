@@ -14,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -252,6 +253,36 @@ void require_nullable_digest(const JsonValue::Object& object, const std::string&
         throw std::runtime_error("metadata " + name + " is invalid");
 }
 
+void require_nullable_commit(const JsonValue::Object& object, const std::string& name) {
+    const JsonValue& value = field(object, name);
+    if (std::holds_alternative<std::nullptr_t>(value.value)) return;
+    const auto* commit = std::get_if<std::string>(&value.value);
+    if (!commit || commit->size() != 40)
+        throw std::runtime_error("metadata " + name + " is invalid");
+}
+
+void require_nullable_nonnegative_integer(const JsonValue::Object& object,
+                                          const std::string& name) {
+    const JsonValue& value = field(object, name);
+    if (std::holds_alternative<std::nullptr_t>(value.value)) return;
+    const auto* integer = std::get_if<int64_t>(&value.value);
+    if (!integer || *integer < 0)
+        throw std::runtime_error("metadata " + name + " is invalid");
+}
+
+std::filesystem::path absolute_normal(const std::filesystem::path& path) {
+    return std::filesystem::absolute(path).lexically_normal();
+}
+
+const std::array<const char*, 6> kRuntimeFiles = {
+    "metadata.json",
+    "topology_neighbour.i8",
+    "topology_camp_positions.i32",
+    "topology_pairwise_distance.i32",
+    "topology_physical_to_canonical.i32",
+    "topology_canonical_to_physical.i32",
+};
+
 }  // namespace
 
 DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& root) {
@@ -314,6 +345,8 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
     const JsonValue::Object& provenance = object_field(*object, "source");
     require_keys(provenance, source_keys, "source");
     require_nullable_digest(provenance, "checkpoint_sha256");
+    require_nullable_commit(provenance, "training_commit");
+    require_nullable_nonnegative_integer(provenance, "training_step");
 
     (void)integer_field(*object, "corpus_seed");
 
@@ -359,8 +392,9 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
     if (runtime_sha256(root, expected) != runtime_hash)
         throw std::runtime_error("deployment runtime SHA-256 mismatch");
 
-    return DeploymentArtifact{root,   weights,        family,         model_version,
-                              width,  blocks,         input_features, value_size};
+    return DeploymentArtifact{root,       weights,        family,         model_version,
+                              model_hash, runtime_hash,  width,          blocks,
+                              input_features, value_size};
 }
 
 DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& root,
@@ -370,6 +404,38 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
         throw std::runtime_error("deployment model family mismatch: expected " + expected_family +
                                  ", got " + artifact.model_family);
     return artifact;
+}
+
+DeploymentArtifact write_runtime_deployment_artifact(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root) {
+    // Validate before copying so this routine never makes a release-shaped
+    // tree from malformed inputs.  The return value also retains the hashes a
+    // release caller needs when it writes index.json.
+    (void)validate_deployment_artifact(source_root);
+    if (std::filesystem::exists(destination_root))
+        throw std::runtime_error("runtime artifact destination already exists: " +
+                                 destination_root.string());
+    if (absolute_normal(source_root) == absolute_normal(destination_root))
+        throw std::runtime_error("runtime artifact destination must differ from source");
+
+    bool created = false;
+    try {
+        std::filesystem::create_directories(destination_root);
+        created = true;
+        for (const char* name : kRuntimeFiles) {
+            std::filesystem::copy_file(source_root / name, destination_root / name);
+        }
+        std::filesystem::copy(source_root / "weights", destination_root / "weights",
+                              std::filesystem::copy_options::recursive);
+        return validate_deployment_artifact(destination_root);
+    } catch (...) {
+        if (created) {
+            std::error_code ignored;
+            std::filesystem::remove_all(destination_root, ignored);
+        }
+        throw;
+    }
 }
 
 const ModelIndexEntry* ModelIndex::default_for(const std::string& family) const {
@@ -423,6 +489,100 @@ ModelIndex load_model_index(const std::filesystem::path& models_dir) {
             throw std::runtime_error("model index default names no bundled model: " + family);
     }
     return index;
+}
+
+ModelIndex write_model_index(const std::filesystem::path& models_dir,
+                             const std::vector<std::filesystem::path>& artifact_roots,
+                             const std::vector<std::string>& default_families) {
+    if (artifact_roots.empty())
+        throw std::runtime_error("model index requires at least one artifact");
+    if (!std::filesystem::is_directory(models_dir))
+        throw std::runtime_error("model index directory is missing: " + models_dir.string());
+    const auto index_path = models_dir / "index.json";
+    if (std::filesystem::exists(index_path))
+        throw std::runtime_error("model index destination already exists: " + index_path.string());
+
+    struct IndexedArtifact {
+        DeploymentArtifact artifact;
+        JsonValue::Object metadata;
+    };
+    std::vector<IndexedArtifact> artifacts;
+    std::set<std::pair<std::string, std::string>> identities;
+    for (const auto& root : artifact_roots) {
+        DeploymentArtifact artifact = validate_deployment_artifact(root);
+        const auto expected_root = models_dir / artifact.model_family / artifact.model_version;
+        if (absolute_normal(root) != absolute_normal(expected_root))
+            throw std::runtime_error("model index artifact is not in its package path: " +
+                                     root.string());
+        if (!identities.emplace(artifact.model_family, artifact.model_version).second)
+            throw std::runtime_error("model index contains a duplicate model: " +
+                                     artifact.model_family + "/" + artifact.model_version);
+        const JsonValue parsed = diamond_support::parse_json(read_text(root / "metadata.json"));
+        const auto* metadata = std::get_if<JsonValue::Object>(&parsed.value);
+        if (!metadata) throw std::runtime_error("deployment metadata must be a JSON object");
+        artifacts.push_back(IndexedArtifact{std::move(artifact), *metadata});
+    }
+    std::sort(artifacts.begin(), artifacts.end(), [](const IndexedArtifact& left,
+                                                      const IndexedArtifact& right) {
+        return std::tie(left.artifact.model_family, left.artifact.model_version) <
+               std::tie(right.artifact.model_family, right.artifact.model_version);
+    });
+
+    std::set<std::string> defaults_seen;
+    JsonValue::Object defaults;
+    for (const std::string& family : default_families) {
+        if (!defaults_seen.insert(family).second)
+            throw std::runtime_error("model index default is duplicated: " + family);
+        const IndexedArtifact* selected = nullptr;
+        for (const IndexedArtifact& candidate : artifacts) {
+            if (candidate.artifact.model_family != family) continue;
+            if (selected != nullptr)
+                throw std::runtime_error("model index default is ambiguous for family: " + family);
+            selected = &candidate;
+        }
+        if (selected == nullptr)
+            throw std::runtime_error("model index default names no bundled model: " + family);
+        defaults.emplace(family, JsonValue{family + "/" + selected->artifact.model_version});
+    }
+
+    JsonValue::Array models;
+    for (const IndexedArtifact& item : artifacts) {
+        const DeploymentArtifact& artifact = item.artifact;
+        JsonValue::Object entry;
+        // Preserve the validated metadata subobjects in the index, matching
+        // the package contract while keeping one authority for their syntax.
+        entry.emplace("architecture", JsonValue{object_field(item.metadata, "architecture")});
+        entry.emplace("family", JsonValue{artifact.model_family});
+        entry.emplace("model_sha256", JsonValue{artifact.model_sha256});
+        entry.emplace("path", JsonValue{artifact.model_family + "/" + artifact.model_version});
+        entry.emplace("runtime_sha256", JsonValue{artifact.runtime_sha256});
+        entry.emplace("source", JsonValue{object_field(item.metadata, "source")});
+        entry.emplace("version", JsonValue{artifact.model_version});
+        models.emplace_back(JsonValue{std::move(entry)});
+    }
+    JsonValue::Object document;
+    document.emplace("defaults", JsonValue{std::move(defaults)});
+    document.emplace("index_version", JsonValue{int64_t{1}});
+    document.emplace("models", JsonValue{std::move(models)});
+
+    const std::string contents = diamond_support::canonical_json(JsonValue{std::move(document)}) + "\n";
+    std::ofstream output(index_path, std::ios::binary);
+    if (!output) throw std::runtime_error("cannot write model index: " + index_path.string());
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!output) {
+        output.close();
+        std::error_code ignored;
+        std::filesystem::remove(index_path, ignored);
+        throw std::runtime_error("cannot write model index: " + index_path.string());
+    }
+    output.close();
+    try {
+        return load_model_index(models_dir);
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(index_path, ignored);
+        throw;
+    }
 }
 
 }  // namespace diamond_model

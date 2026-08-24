@@ -8,6 +8,7 @@
 #include <string>
 
 #include "diamond_model/deployment_artifact.hpp"
+#include "diamond_model/model_index.hpp"
 
 namespace {
 
@@ -184,6 +185,29 @@ int main(int argc, char** argv) {
                               std::filesystem::copy_options::recursive);
 
         (void)diamond_model::validate_deployment_artifact(packaged.path, "soo");
+
+        // The native writer is the release boundary: its output is the same
+        // runtime-only tree, rather than a filtered copy assembled by a CLI.
+        TempArtifact native_packaged{std::filesystem::temp_directory_path() /
+            ("alphadiamond-native-artifact-package-" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()))};
+        const auto written = diamond_model::write_runtime_deployment_artifact(
+            temporary.path, native_packaged.path);
+        if (written.runtime_sha256 != artifact.runtime_sha256)
+            throw std::runtime_error("native runtime artifact writer changed the runtime digest");
+        if (std::filesystem::exists(native_packaged.path / "model.ts"))
+            throw std::runtime_error("native runtime artifact writer copied the graph");
+
+        TempArtifact native_models{std::filesystem::temp_directory_path() /
+            ("alphadiamond-native-model-index-" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()))};
+        const auto staged_root = native_models.path / artifact.model_family / artifact.model_version;
+        (void)diamond_model::write_runtime_deployment_artifact(temporary.path, staged_root);
+        const auto written_index = diamond_model::write_model_index(
+            native_models.path, {staged_root}, {artifact.model_family});
+        const auto* written_default = written_index.default_for(artifact.model_family);
+        if (!written_default || written_default->runtime_sha256 != artifact.runtime_sha256)
+            throw std::runtime_error("native model index writer lost the staged artifact digest");
 
         const auto packaged_weight = packaged.path / "weights" / "value_head__2__bias.f32";
         const std::string packaged_original = read_text(packaged_weight);

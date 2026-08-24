@@ -5,19 +5,15 @@
 # does too:  cmake --preset native-ci && cmake --build --preset native-ci
 #            && ctest --preset native-ci
 .PHONY: help configure build test test-native test-native-asan test-qt \
-        test-python test-parity test-hygiene golden-freeze package clean \
-        data-push data-push-dry-run data-pull data-pull-dry-run
+        test-python test-parity test-hygiene golden-freeze package clean
 
 PRESET ?= native-ci
-BUCKET ?= hf://buckets/ubraket513/AlphaDiamond
-DATA   ?= ./TrainAlphaDiamond
 
 help:
 	@echo "make test-native   native C++ tests, no Python required"
 	@echo "make test-python   Python training/research suite"
 	@echo "make test-parity   pybind boundary tests (needs pybind build)"
 	@echo "make package       release package from the native-release preset"
-	@echo "make data-push / data-pull (add -dry-run to preview)"
 	@echo "make golden-freeze   re-record tests/golden provenance (contract change)"
 
 configure:
@@ -59,15 +55,3 @@ package:
 
 clean:
 	cmake -E rm -rf build
-
-data-push-dry-run:
-	hf sync $(DATA) $(BUCKET) --dry-run
-
-data-push:
-	hf sync $(DATA) $(BUCKET)
-
-data-pull-dry-run:
-	hf sync $(BUCKET) $(DATA) --dry-run
-
-data-pull:
-	hf sync $(BUCKET) $(DATA)
