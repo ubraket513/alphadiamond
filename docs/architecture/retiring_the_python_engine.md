@@ -24,7 +24,7 @@ Everything else that imports it is migration debt, counted and frozen by
 number could not distinguish a module that *runs the rules* from one that names
 a dataclass in a type hint:
 
-* **behaviour** (5) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
+* **behaviour** (3) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
   reach zero before `diamond.game` can go, and it is the work queue.
 * **definitions and types** (14) -- `standard_board`, `build_players`,
   `GameState`. Not rules; C++ receives the same tables through the topology
@@ -53,6 +53,18 @@ did not need to leave the shipped package -- it needed the selector, and the
 matches it rates are now rated by the engine that plays them in production,
 which is the point of rating them at all.
 
+The two self-play runners followed, for the same reason and by the same one-line
+change. Decision 1 said to delete them; that turned out to be the wrong unit.
+What ran the Python engine in `runner_2p` was the hard-coded `MCTS2P`, not the
+episode loop around it -- the temperature schedule, the sample construction and
+the wall-clock abort are control plane, and the review keeps control plane in
+Python. They now take a `search_factory` defaulting to the native search, so the
+runtime path is native without a second episode driver having to exist. The
+training loop still runs on the pool, which batches; what the runners keep
+serving is the single-episode caller with its own `Evaluator` -- `bootstrap/probe`
+measuring a checkpoint's data-generation viability, where the pool's
+model-in-one-process shape does not fit. 5 to 3.
+
 ## The behaviour queue was two decisions, not seven tasks
 
 Reading the seven, none was independent work (`search_factory` and
@@ -62,7 +74,6 @@ Reading the seven, none was independent work (`search_factory` and
 |---|---|
 | `game_adapter` | the corpus generator: it is what `tools/build_golden.py` drives |
 | `search_factory` | the Python search existing at all |
-| `selfplay/runner_2p`, `runner_3p` | the Python self-play backend |
 | `smoke`, `milestone2_smoke` | scripting games with `find_legal_move` |
 
 So the rest of the queue drains on two decisions, both of which are product
@@ -93,18 +104,11 @@ Deletion is not one commit. In rough dependency order:
    `diamond.alphazero.search_factory.two_player_search()`, which prefers the
    native search and falls back per game.
 
-   Still on the Python search, each for a reason:
-   - `selfplay/runner_2p` and `runner_3p`. Not for want of a native search any
-     more -- both sessions take a wall-clock budget now, and the selector
-     accepts a `deadline`. The reason is batching: self-play wants many games in
-     flight so one evaluator call answers a batch, which is what the native pool
-     already does. A runner on the per-node bridge would trade that away for
-     about 2x on the tree (measured:
-     docs/performance-profiling/bridge_search_findings.md). They move to the
-     pool, not to the bridge.
-   - `selfplay/runner_3p` passes a deadline for the same reason as
-     `runner_2p`. `MinArena` and the agent's three-seat path now run on
-     `SearchSession3P`, the native vector search.
+   Nothing shipped is left on the Python search. `selfplay/runner_2p` and
+   `runner_3p` take their search from the selector, with the `deadline` it
+   already accepted; training self-play runs on the native pool, which batches,
+   and the runners serve the single-episode callers that hold their own
+   `Evaluator`.
 2. **Arena runs on the native core.** Done for Soo: `Game.search_with_callback`
    suspends the C++ tree on every node and asks the Python evaluator for that
    node's answer, so two different networks can alternate moves inside one game
@@ -152,6 +156,7 @@ native wall-clock deadline          done (set_budget on both sessions)
 Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
 Soo/Min training on native by default  done (selfplay_backend auto)
 rated benchmark matches on native   done (ProductionBenchmarkStage)
+episode runners on the selector     done (runner_2p, runner_3p)
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last

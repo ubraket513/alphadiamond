@@ -143,10 +143,10 @@ fails, and removing one requires deleting its line. It now counts in two piles,
 because "30 dependents" could not distinguish running the rules from naming a
 dataclass in a type hint:
 
-* **behaviour: 5** -- the work queue, and it must reach zero before
-  `diamond.game` can be deleted. `search_factory` left it with decision 1, and
-  `orchestration/benchmark` followed: its rated matches now run on the native
-  search through the same selector the arena uses.
+* **behaviour: 3** -- the work queue, and it must reach zero before
+  `diamond.game` can be deleted. `search_factory` left it with decision 1;
+  `orchestration/benchmark` and both self-play runners followed, each by taking
+  its search from the selector instead of naming `MCTS2P`/`MCTS3P`.
 * **definitions and types: 14** -- the board, the seats and the position
   shapes, which survive until the trainer speaks the native `State`.
 
@@ -239,8 +239,8 @@ make test-parity      # bridge: Python <-> C++ (needs the pybind build)
 make golden           # regenerate tests/golden from the Python oracle
 ```
 
-The next concrete task is the rest of the behaviour queue: the two self-play
-runners and the Python worker pool that drives them (decision 1), then
-`game_adapter`'s oracle role (decision 2), then the two smokes. Each one ends
+The next concrete task is the rest of the behaviour queue: `game_adapter`'s
+oracle role (decision 2), and the two smokes, which script games with
+`find_legal_move`. Each one ends
 with a line struck from `BEHAVIOUR_ALLOWED` in
 `tests/test_engine_retirement.py`; that deletion is the unit of progress.

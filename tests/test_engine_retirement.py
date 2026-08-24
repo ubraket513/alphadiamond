@@ -71,9 +71,6 @@ BEHAVIOUR_ALLOWED = {
     # The oracle's adapter: what tools/build_golden.py drives to produce the
     # frozen answers. Retires with the corpus generator.
     "src/diamond/alphazero/game_adapter.py",
-    # The Python self-play path, still reachable through selfplay_backend.
-    "src/diamond/alphazero/selfplay/runner_2p.py",
-    "src/diamond/alphazero/selfplay/runner_3p.py",
     # The smokes script games with find_legal_move.
     "src/diamond/alphazero/milestone2_smoke.py",
     "src/diamond/alphazero/smoke.py",

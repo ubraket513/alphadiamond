@@ -23,8 +23,11 @@ model families already train on the native pool; every Python parity gate has
 been replaced by a C++ gate proven on mutation evidence. What is left is not
 resilience, it is a duplicate engine kept warm.
 
-**What it removes.** `selfplay/runner_2p`, `runner_3p`, the Python-search
-fallback in `search_factory`, and the `python` value of `selfplay_backend`. The
+**What it removes.** The Python-search fallback in `search_factory`, and the `python` value of `selfplay_backend`. `selfplay/runner_2p` and
+`runner_3p` were listed for deletion here and were not deleted: what ran the
+Python engine in them was the hard-coded search class, and the episode loop
+around it is control plane. They take the selector instead -- see
+`retiring_the_python_engine.md`. The
 Python-versus-native comparison in `orchestration/benchmark` leaves the shipped
 package for `az-bench/`, where research and historical benchmarks live. The two
 smokes stop scripting games through the Python rules and exercise the native
