@@ -112,6 +112,7 @@ routes:
     target_component: "alphadiamond::diamond_pipeline (native replay store, model pool, scheduler, and trainer feed)"
     replacement_test: "replay_schema_test; replay_store_test; inference_coordinator_test; selfplay_3p_test; native_pipeline_smoke_test"
     deletion_condition: "C++ self-play emits the stable replay schema directly, replay/load/sample is native, cancellation/errors are covered, and a native smoke trains from generated episodes."
+    ruling: "PR07 implements the native pipeline and transitional versioned file adapter, but defers this exact 38-file deletion: earlier native-selfplay and later orchestration/native-smoke routes still own live callers. Delete only when those owning routes migrate or retire their callers."
     files:
       - "src/diamond/alphazero/bootstrap/__init__.py"
       - "src/diamond/alphazero/bootstrap/evaluator.py"

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -15,6 +16,8 @@ struct ModelKey {
     std::string model_name;
     std::string model_version;
     std::string checkpoint_sha256;
+
+    auto operator<=>(const ModelKey&) const = default;
 };
 
 struct Episode {
