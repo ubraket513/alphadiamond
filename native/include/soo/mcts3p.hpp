@@ -10,6 +10,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
@@ -53,6 +54,10 @@ class SearchSession3P {
 
     void begin(const State& state, double temperature);
     void reseed(uint64_t seed) { rng_.reseed(seed); }
+
+    // See SearchSession::set_budget: seconds, <= 0 for unlimited, first
+    // simulation always runs.
+    void set_budget(double seconds) { budget_seconds_ = seconds; }
 
     Status advance();
     const Encoded& pending_features() const { return pending_encoded_; }
@@ -109,6 +114,8 @@ class SearchSession3P {
     Phase phase_ = Phase::Done;
     double temperature_ = 0.0;
     Rng rng_;
+    double budget_seconds_ = 0.0;
+    std::chrono::steady_clock::time_point started_at_{};
     std::vector<double> weights_;
     int simulation_ = 0;
     uint32_t root_ = 0;

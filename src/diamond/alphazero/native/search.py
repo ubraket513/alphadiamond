@@ -43,6 +43,22 @@ def _native_state(module: Any, state: Any) -> Any:
     )
 
 
+def _budget_seconds(deadline: Any) -> float:
+    """Seconds left on a game's wall-clock budget, or 0 for unlimited.
+
+    The native side measures with steady_clock rather than the Deadline's
+    injectable one, so what crosses the boundary is what is *left* at the moment
+    the search starts. An already-spent budget is passed as a tiny positive
+    number, not as zero: zero means unlimited, and the two must not collide.
+    """
+    if deadline is None:
+        return 0.0
+    remaining = getattr(deadline, "remaining_s", None)
+    if remaining is None:
+        return 0.0
+    return max(float(remaining), 1e-9)
+
+
 class NativeSearch2P:
     """A drop-in for :class:`MCTS2P` whose tree lives in C++.
 
@@ -66,9 +82,12 @@ class NativeSearch2P:
         board = getattr(game, "board", None) or getattr(getattr(game, "game", None), "board", None)
         return board is not None and len(board) == 73
 
-    def __init__(self, game: Any, evaluator: Evaluator, config: Any) -> None:
+    def __init__(
+        self, game: Any, evaluator: Evaluator, config: Any, *, deadline: Any = None
+    ) -> None:
         if not self.can_drive(game):
             raise ValueError("the native search needs a two-seat game on the 73-hole board")
+        self.deadline = deadline
         self.module = require_native()
         self.game = game
         self.evaluator = evaluator
@@ -136,6 +155,7 @@ class NativeSearch2P:
             trace=False,
             callback=self._callback,
             mode=POLICY_VALUE,
+            budget_seconds=_budget_seconds(self.deadline),
         )
 
         actions = [int(action) for action in result["root_actions"]]
@@ -164,9 +184,12 @@ class NativeSearch3P:
         board = getattr(game, "board", None) or getattr(getattr(game, "game", None), "board", None)
         return board is not None and len(board) == 73
 
-    def __init__(self, game: Any, evaluator: Evaluator, config: Any) -> None:
+    def __init__(
+        self, game: Any, evaluator: Evaluator, config: Any, *, deadline: Any = None
+    ) -> None:
         if not self.can_drive(game):
             raise ValueError("the native 3P search needs a three-seat game on the 73-hole board")
+        self.deadline = deadline
         self.module = require_native()
         self.game = game
         self.evaluator = evaluator
@@ -211,6 +234,7 @@ class NativeSearch3P:
             config,
             temperature=float(temperature),
             callback=self._callback,
+            budget_seconds=_budget_seconds(self.deadline),
         )
 
         actions = [int(action) for action in result["root_actions"]]

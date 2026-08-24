@@ -47,11 +47,23 @@ def test_a_three_seat_game_stays_on_python() -> None:
     assert isinstance(search, MCTS2P)
 
 
-def test_a_caller_that_needs_a_deadline_keeps_the_python_search() -> None:
-    """`deadline` has no native implementation; losing it silently would be
-    worse than not using the native search."""
-    search = two_player_search()(_adapter(), _Evaluator(), _Config(), deadline=None)
-    assert isinstance(search, MCTS2P)
+def test_a_deadline_no_longer_forces_the_python_search() -> None:
+    """`SearchSession::set_budget` is why: the bound survives the crossing.
+
+    Covered in full by tests/native/test_native_deadline.py; here it is only the
+    selector's half of the contract.
+    """
+    from diamond.alphazero.deadline import Deadline
+
+    search = two_player_search()(_adapter(), _Evaluator(), _Config(), deadline=Deadline.start(5.0))
+    assert isinstance(search, NativeSearch2P)
+
+
+def test_an_option_the_native_search_does_not_understand_routes_to_python() -> None:
+    import pytest
+
+    with pytest.raises(TypeError, match="some_future_option"):
+        two_player_search()(_adapter(), _Evaluator(), _Config(), some_future_option=1)
 
 
 def test_a_reduced_board_falls_back() -> None:

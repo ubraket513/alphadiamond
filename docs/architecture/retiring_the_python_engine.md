@@ -32,11 +32,14 @@ Deletion is not one commit. In rough dependency order:
    native search and falls back per game.
 
    Still on the Python search, each for a reason:
-   - `selfplay/runner_2p` passes a wall-clock `deadline` to the search, which
-     the native side does not implement. Losing a game's time bound silently
-     would be worse than not using the native search, so the selector declines
-     any call carrying extras it cannot honour. Implementing a deadline in the
-     C++ session is what unblocks this.
+   - `selfplay/runner_2p` and `runner_3p`. Not for want of a native search any
+     more -- both sessions take a wall-clock budget now, and the selector
+     accepts a `deadline`. The reason is batching: self-play wants many games in
+     flight so one evaluator call answers a batch, which is what the native pool
+     already does. A runner on the per-node bridge would trade that away for
+     about 2x on the tree (measured:
+     docs/performance-profiling/bridge_search_findings.md). They move to the
+     pool, not to the bridge.
    - `selfplay/runner_3p` passes a deadline for the same reason as
      `runner_2p`. `MinArena` and the agent's three-seat path now run on
      `SearchSession3P`, the native vector search.
@@ -85,7 +88,8 @@ dependent ratchet                   done (tests/test_engine_retirement.py)
 arena on the native core            done (Soo and Min)
 GUI agent on native                 done (both seat counts)
 three-player native search          done (SearchSession3P)
-self-play runners on native         blocked: the native search has no deadline
+native wall-clock deadline          done (set_budget on both sessions)
+self-play runners on the pool       next: batching, not the per-node bridge
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last
