@@ -1,3 +1,23 @@
+> **Approved brief, completed 2026-08-24. This is the plan, not the state.**
+>
+> Milestones 0-4 are done and milestone 5's first measurements are in. The
+> Python engine, the Python MCTS, the Python board and the corpus oracle are
+> deleted; the C++ core is the only implementation of rules, encoding, search,
+> self-play and geometry.
+>
+> Two things here were deliberately *not* done as written, and both are recorded
+> with reasons: the `apps/` / `python/` restructure of section 4 (it rewrites
+> hundreds of documented command paths and deserves its own change), and the
+> self-play runners, which were listed for deletion but only needed their
+> hard-coded search replaced.
+>
+> For what is actually true today, read
+> [docs/architecture/migration_progress.md](docs/architecture/migration_progress.md);
+> for the binding calls, [docs/architecture/decisions.md](docs/architecture/decisions.md).
+> `tools/export_soo_deployment.py` below is now `tools/export_deployment.py`.
+
+---
+
 I approve everything written here. Go ahead with implementation. I reviewed the current `main` branch at commit `84bf13965ed5f17ad176518a9db0d34652b2a5e8`, committed on August 23, 2026 UTC—August 24 in Korea. The latest work is the native Qt analysis console and telemetry validation. The branch is currently unprotected, with required status checks disabled.
 My overall view is that your direction is sound, and the repository is already farther along than the proposal implies. The main risk is treating this as a broad “rewrite Python in C++” project. I would instead frame it as establishing three clean products:
 1. A native application with no Python dependency.

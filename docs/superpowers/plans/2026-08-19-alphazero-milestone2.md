@@ -1,5 +1,12 @@
 # AlphaDiamond Milestone 2 Implementation Plan
 
+> **Completed plan — 2026-08-19. Do not execute this file.** Milestone 2 shipped. The rating, inference and orchestration layers it describes exist and have moved on since.
+> It is kept as the record of what was decided and why. The unchecked
+> boxes below are historical, not a work queue; the tree has moved on and
+> some of the modules named here no longer exist. See
+> [migration_progress.md](../../architecture/migration_progress.md) for the
+> current state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build production training and historical strength evaluation for independently versioned Soo and Min checkpoints without changing Milestone 1 game, MCTS, or value semantics.

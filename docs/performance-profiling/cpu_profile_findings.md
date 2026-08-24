@@ -90,7 +90,7 @@ far more damaging.
 ## First optimization
 
 One change only: `_InferenceBridge` in
-[selfplay_workers.py](../src/diamond/alphazero/orchestration/selfplay_workers.py).
+[selfplay_workers.py](../../src/diamond/alphazero/orchestration/selfplay_workers.py).
 
 Requests and responses are each pumped by a dedicated thread that **blocks on
 queue arrival** rather than being drained between episode polls. The main loop's
