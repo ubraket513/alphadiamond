@@ -46,7 +46,7 @@ Last updated 2026-08-24.
   | `encoder_golden_test` | folded into `rules_golden_test` (encoding digest per position) |
   | `prior_golden_test` | folded into `rules_golden_test` (prior max and dot product) |
   | `mcts_deterministic_golden_test` | done as `mcts_golden_test` |
-  | `mcts_stochastic_test` | **not done** — see below |
+  | `mcts_stochastic_test` | done |
   | `batcher_test` | done |
   | `scheduler_test` | folded into `selfplay_test` (lane trajectories across worker counts) |
   | `selfplay_test` | done |
@@ -173,11 +173,18 @@ Left, and deliberately unmeasured until someone needs them:
 
 ## Known gaps and open questions
 
-1. **`mcts_stochastic_test` has no C++ counterpart.** The Python
-   `test_stochastic_parity.py` still covers Dirichlet mixing and temperature
-   sampling. A golden file cannot capture a distribution the way it captures a
-   deterministic answer; the likely shape is a fixed-seed expectation, since
-   the native RNG is seeded explicitly.
+1. **The Python stochastic gate is not fully replaceable.**
+   `native/tests/mcts_stochastic_test.cpp` now covers the distribution half
+   with no interpreter -- gamma moments (the boost branch production actually
+   uses), weighted-choice frequencies, the Dirichlet mixture, temperature
+   behaviour, and reproducibility from a seed. Verified by mutation: inverting
+   the gamma boost exponent moves the mean from 0.30 to 1.00 and the test goes
+   red.
+
+   What stays in `tests/native/test_stochastic_parity.py` is the part that
+   needs CPython by definition -- the gamma CDF compared against
+   `random.Random` itself. That one is a bridge test and retires with the
+   bridge, not before.
 2. **The self-play runners belong on the pool, not the bridge.** Both native
    sessions now take a wall-clock budget, so the deadline is no longer what
    holds them back. What does is batching: self-play wants many games in flight
