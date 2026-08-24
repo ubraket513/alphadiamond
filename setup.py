@@ -26,6 +26,8 @@ SOURCES = [
     "native/src/profile.cpp",
     "native/src/selfplay.cpp",
     "native/src/rules.cpp",
+    "native/src/topology_gen.cpp",
+    "native/src/topology_io.cpp",
 ]
 
 # Broadwell is the GPU training host's baseline (AVX2) and a subset of every

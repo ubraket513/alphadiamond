@@ -1,5 +1,7 @@
-// Fixed board topology.  Every table here is injected from Python
-// (see src/diamond/alphazero/native/topology.py); nothing is transcribed.
+// Fixed board topology.  The tables are generated here (src/topology_gen.cpp)
+// from the same construction the Python board performs; they can also be loaded
+// from exported files, which is how a deployment artifact carries its own copy.
+// Nothing is transcribed as constants either way.
 #pragma once
 
 #include <array>
@@ -38,11 +40,24 @@ Topology& mutable_topology();
 // without Python gets its tables: nothing in native/ transcribes them.
 bool load_topology_from_dir(const std::string& root);
 
+// Derive every table from the board's geometry: the two overlapping triangles,
+// the camp inequalities, the (z, x) ordering that fixes position ids, the
+// neighbour lattice, breadth-first distances and the canonical rotation. This
+// is what makes the core self-sufficient in geometry -- no Python, no files.
+// `topology_test` requires the result to equal the frozen exported tables.
+Topology generate_topology();
+
+// Install the generated tables, unless something already configured them.
+// Idempotent, and safe to call from an entry point that does not know whether
+// an artifact's tables were loaded first.
+void ensure_topology_configured();
+
 inline const Topology& topology() {
     const Topology& t = mutable_topology();
     if (!t.configured) {
         throw std::runtime_error(
-            "native topology is not configured; call diamond_native.configure()");
+            "native topology is not configured; call ensure_topology_configured(), "
+            "load_topology_from_dir() or diamond_native.configure()");
     }
     return t;
 }

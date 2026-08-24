@@ -10,6 +10,12 @@ Topology& mutable_topology() {
     return instance;
 }
 
+void ensure_topology_configured() {
+    Topology& current = mutable_topology();
+    if (current.configured) return;
+    current = generate_topology();
+}
+
 const PlayerSpec& Match::by_id(uint8_t player_id) const {
     for (uint8_t i = 0; i < count; ++i) {
         if (players[i].id == player_id) return players[i];

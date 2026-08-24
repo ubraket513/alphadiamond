@@ -1,11 +1,17 @@
-"""Optional native Soo backend: import guard and capability probe.
+"""The native Soo backend: import guard and capability probe.
 
-The extension is never required.  If it is missing, stale or built for another
-board, :func:`native_module` returns ``None`` and every caller must fall back to
-the Python backend, which stays the default and the parity oracle.
+The extension is **required** for anything that executes games -- decision 1 in
+docs/architecture/decisions.md retired the Python search and self-play backend,
+and there is nothing to fall back to. What this guard still does is say plainly
+why it is unavailable, because "no module named _diamond_native" from six frames
+down is not a diagnosis.
 
-Importing this package configures the extension with the tables exported by
-:mod:`.topology`, so a native handle is always topology-configured.
+The extension derives its own board tables at import (``ensure_topology_configured``
+in ``native/src/topology_gen.cpp``), so a handle is always topology-configured
+without Python handing it anything. :mod:`.topology` still generates the same
+tables from the Python board -- that is the export the deployment artifact ships
+and the golden corpus pins, and ``tests/native/test_topology_generation.py``
+holds the two constructions to the same answer.
 """
 
 from __future__ import annotations
@@ -35,7 +41,9 @@ def _load() -> None:
             _MODULE, _ERROR = None, f"native extension unavailable: {exc}"
         else:
             try:
-                module.configure(topology_tables())
+                if not module.is_configured():
+                    # An older extension that does not configure itself.
+                    module.configure(topology_tables())
             except Exception as exc:  # noqa: BLE001 - the guard must never raise
                 _MODULE, _ERROR = None, f"native extension failed to configure: {exc}"
             else:
