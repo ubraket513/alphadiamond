@@ -12,10 +12,12 @@ deletion once neither job needs them.
    A C++ test that compared one C++ function with another would prove nothing
    about the port, so *something* has to be the independent answer, and today
    that something is Python.
-2. **Bridge parity.** `tests/native/` compares the two implementations position
-   by position. That comparison is the only thing that would catch a native
-   regression that the frozen golden files happen not to cover, and it is what
-   keeps the frozen files trustworthy in the first place.
+2. **The bridge.** `tests/native/` no longer compares the two engines -- those
+   five gates were retired once `tools/mutation_check.py` showed their C++
+   replacements catching the same mistakes. What remains tests the pybind
+   bridge itself: the callback ABI, the GIL contract, the self-play pool, and
+   the search paths the arena and the GUI agent drive through Python. Those
+   retire when the bridge does.
 
 Everything else that still imports it is migration debt, counted and frozen by
 `tests/test_engine_retirement.py`: the list of dependents may shrink, never
@@ -64,11 +66,10 @@ Deletion is not one commit. In rough dependency order:
    The first is cheaper and is what the deletion plan assumes. It requires the
    corpus to be complete enough that no future change wants regeneration --
    which is exactly what freezing it means.
-4. **Each retired parity gate has a demonstrated C++ replacement.** The
-   standing rule from `products.md`: a Python gate goes only after its C++
-   counterpart has been shown to catch the mutations that gate catches --
-   demonstrated by mutating the expectation and watching it go red, not
-   asserted.
+4. **Each retired parity gate has a demonstrated C++ replacement.** Done for
+   all five: `tools/mutation_check.py` runs thirteen behavioural mutations and
+   requires the named gate to fail on each. What is left in `tests/native/`
+   tests the bridge, not parity.
 5. **The trainer no longer needs a Python `GameState`.** Replay samples carry
    encoded features rather than states, so this is mostly about
    `selfplay_workers` and the episode conversion around it.
