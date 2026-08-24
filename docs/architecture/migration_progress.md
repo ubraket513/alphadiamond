@@ -101,10 +101,19 @@ Left:
   and exactly what `runtime_sha256` covers. The TorchScript graph and the parity
   corpus stay in the development artifact. Package: 11.5 MB to 6.0 MB.
 
+* **Promotion is implemented.** `tools/promote_checkpoint.py` moves a bucket
+  checkpoint archival -> candidate -> promoted, one step at a time, and
+  promotion *converts*: it exports the deployment artifact and records its
+  digests back into the manifest. It refuses a drifted checkpoint digest (an
+  immutable path that was overwritten invalidates every measurement against
+  it), refuses to skip the candidate gate, and refuses a `promoted` state whose
+  artifact was never exported. Verified end to end on the step-80 checkpoint:
+  promoted, converted, and the native model loads the result with zero error
+  against PyTorch.
+
 Left:
 
-* **Promotion policy is documented, not implemented.** Nothing yet marks a
-  checkpoint `candidate` or `promoted`, or drives conversion from that.
+* Nothing outstanding in this milestone.
 
 ## Milestone 4 — remove duplicate runtime Python
 
