@@ -1,4 +1,8 @@
-"""Single-process full-ranking self-play for the Min three-player model."""
+"""Single-process full-ranking self-play for the Min three-player model.
+
+The episode loop is control plane and stays in Python; the search comes from
+``search_factory`` and is the native three-seat search. See ``runner_2p``.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +21,8 @@ from ..config import MCTSConfig, SelfPlayConfig
 from ..deadline import MAX_GAME_TIME_EXCEEDED, Deadline
 from ..evaluator.base import Evaluator
 from ..identity import CheckpointCompatibilitySpec, MIN_MODEL_NAME
-from ..mcts.search_3p import MCTS3P
 from ..replay import TrainingSample
+from ..search_factory import SearchFactory, three_player_search
 
 
 class MinSelfPlayRunner:
@@ -31,6 +35,7 @@ class MinSelfPlayRunner:
         compatibility: CheckpointCompatibilitySpec,
         *,
         clock: Callable[[], float] = monotonic,
+        search_factory: SearchFactory | None = None,
     ) -> None:
         if compatibility.identity.model_name != MIN_MODEL_NAME:
             raise ValueError("MinSelfPlayRunner requires Min compatibility metadata")
@@ -40,6 +45,7 @@ class MinSelfPlayRunner:
         self.selfplay_config = selfplay_config
         self.compatibility = compatibility
         self.clock = clock
+        self.search_factory = search_factory or three_player_search()
 
     def run(self) -> SelfPlayEpisode:
         state = self.game.initial_state()
@@ -57,7 +63,7 @@ class MinSelfPlayRunner:
                 if move_count < self.selfplay_config.temperature_moves
                 else 0.0
             )
-            search = MCTS3P(
+            search = self.search_factory(
                 self.game,
                 self.evaluator,
                 replace(self.mcts_config, seed=self.selfplay_config.seed + move_count),

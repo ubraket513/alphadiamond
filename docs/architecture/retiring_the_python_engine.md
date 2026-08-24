@@ -24,7 +24,7 @@ Everything else that imports it is migration debt, counted and frozen by
 number could not distinguish a module that *runs the rules* from one that names
 a dataclass in a type hint:
 
-* **behaviour** (7) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
+* **behaviour** (1) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
   reach zero before `diamond.game` can go, and it is the work queue.
 * **definitions and types** (14) -- `standard_board`, `build_players`,
   `GameState`. Not rules; C++ receives the same tables through the topology
@@ -42,22 +42,49 @@ of why each entry was there.
 
 Phase A is under way. `search_factory` has already left the behaviour queue --
 it no longer names a Python search to fall back to -- taking the count from 7
-to 6.
+to 6. `orchestration/benchmark` followed it: its rated matches now go through
+`two_player_search()` / `three_player_search()`, the same selector the arena and
+the GUI agent use. 6 to 5.
+
+That entry was mis-described in decision 1 and in the table below as a
+*comparison* against native. It was not: the stage played its rated games on
+`MCTS2P`/`MCTS3P` because that was the only search when it was written. So it
+did not need to leave the shipped package -- it needed the selector, and the
+matches it rates are now rated by the engine that plays them in production,
+which is the point of rating them at all.
+
+The two self-play runners followed, for the same reason and by the same one-line
+change. Decision 1 said to delete them; that turned out to be the wrong unit.
+What ran the Python engine in `runner_2p` was the hard-coded `MCTS2P`, not the
+episode loop around it -- the temperature schedule, the sample construction and
+the wall-clock abort are control plane, and the review keeps control plane in
+Python. They now take a `search_factory` defaulting to the native search, so the
+runtime path is native without a second episode driver having to exist. The
+training loop still runs on the pool, which batches; what the runners keep
+serving is the single-episode caller with its own `Evaluator` -- `bootstrap/probe`
+measuring a checkpoint's data-generation viability, where the pool's
+model-in-one-process shape does not fit. 5 to 3.
+
+Then the two smokes. Both build the same near-terminal fixture and asked
+`find_legal_move` whether the finishing move they had constructed was real. The
+geometry -- camp positions, neighbours -- is board definition and stays; the
+legality answer now comes from the native core, asked with the finishing seat to
+move rather than the state's current one. 3 to 1.
+
+What is left in the behaviour queue is `game_adapter`, alone.
 
 ## The behaviour queue was two decisions, not seven tasks
 
-Reading the seven, none is independent work:
+Reading the seven, none was independent work (`search_factory` and
+`orchestration/benchmark` have since left):
 
 | Module | Waits on |
 |---|---|
 | `game_adapter` | the corpus generator: it is what `tools/build_golden.py` drives |
 | `search_factory` | the Python search existing at all |
-| `selfplay/runner_2p`, `runner_3p` | the Python self-play backend |
-| `orchestration/benchmark` | the Python search, which it benchmarks on purpose |
-| `smoke`, `milestone2_smoke` | scripting games with `find_legal_move` |
 
-So the queue drains on two decisions, both of which are product calls rather
-than refactors:
+So the rest of the queue drains on two decisions, both of which are product
+calls rather than refactors:
 
 1. **Does the trainer keep a fallback that runs without the extension?** Today
    `selfplay_backend` resolves to `python` on a host with no compiled backend.
@@ -84,19 +111,11 @@ Deletion is not one commit. In rough dependency order:
    `diamond.alphazero.search_factory.two_player_search()`, which prefers the
    native search and falls back per game.
 
-   Still on the Python search, each for a reason:
-   - `selfplay/runner_2p` and `runner_3p`. Not for want of a native search any
-     more -- both sessions take a wall-clock budget now, and the selector
-     accepts a `deadline`. The reason is batching: self-play wants many games in
-     flight so one evaluator call answers a batch, which is what the native pool
-     already does. A runner on the per-node bridge would trade that away for
-     about 2x on the tree (measured:
-     docs/performance-profiling/bridge_search_findings.md). They move to the
-     pool, not to the bridge.
-   - `selfplay/runner_3p` passes a deadline for the same reason as
-     `runner_2p`. `MinArena` and the agent's three-seat path now run on
-     `SearchSession3P`, the native vector search.
-   - `orchestration/benchmark` measures the Python search deliberately.
+   Nothing shipped is left on the Python search. `selfplay/runner_2p` and
+   `runner_3p` take their search from the selector, with the `deadline` it
+   already accepted; training self-play runs on the native pool, which batches,
+   and the runners serve the single-episode callers that hold their own
+   `Evaluator`.
 2. **Arena runs on the native core.** Done for Soo: `Game.search_with_callback`
    suspends the C++ tree on every node and asks the Python evaluator for that
    node's answer, so two different networks can alternate moves inside one game
@@ -143,6 +162,8 @@ three-player native search          done (SearchSession3P)
 native wall-clock deadline          done (set_budget on both sessions)
 Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
 Soo/Min training on native by default  done (selfplay_backend auto)
+rated benchmark matches on native   done (ProductionBenchmarkStage)
+episode runners on the selector     done (runner_2p, runner_3p)
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last

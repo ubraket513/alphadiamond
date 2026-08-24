@@ -615,23 +615,33 @@ def test_inference_bridge_rejects_an_uncorrelated_response() -> None:
         bridge.close()
 
 
-def _slow_job(game_index: int, simulations: int) -> tuple[SelfPlayJob, tuple[tuple[int, int], ...]]:
-    """The same episode, but with enough search to dominate the other lanes."""
-    base, actions = _job(2, game_index=game_index)
-    return (
-        SelfPlayJob(
-            run_seed=base.run_seed,
-            iteration=base.iteration,
-            game_index=base.game_index,
-            retry_id=base.retry_id,
-            model_key=base.model_key,
-            compatibility=base.compatibility,
-            players=base.players,
-            initial_state=base.initial_state,
-            mcts_config=MCTSConfig(simulations=simulations, dirichlet_epsilon=0.0),
-            selfplay_config=base.selfplay_config,
-        ),
-        actions,
+def _slow_job(game_index: int, *, moves: int = 300) -> SelfPlayJob:
+    """A long episode: a whole game from the opening, not a deeper tree.
+
+    This used to buy its slowness with ``simulations=1500`` on a near-terminal
+    position. That stopped working when the runners moved to the native search:
+    the position has one move left, so the tree is exhausted long before the
+    simulation budget and 60,000 simulations run no longer than 1,500 -- both in
+    single-digit milliseconds. Slowness measured in simulations was slowness
+    measured in one engine's units.
+
+    Moves are engine-independent: each one is a round trip to the parent's
+    coordinator, and ``moves`` of them take ~1 s against the ~1 ms the
+    near-terminal jobs take. The episode hits its move cap rather than a
+    terminal state, which is what makes it long.
+    """
+    base, _actions = _job(2, game_index=game_index)
+    return SelfPlayJob(
+        run_seed=base.run_seed,
+        iteration=base.iteration,
+        game_index=base.game_index,
+        retry_id=base.retry_id,
+        model_key=base.model_key,
+        compatibility=base.compatibility,
+        players=base.players,
+        initial_state=initial_state(base.players),
+        mcts_config=MCTSConfig(simulations=1, dirichlet_epsilon=0.0),
+        selfplay_config=SelfPlayConfig(max_moves=moves, temperature_moves=0),
     )
 
 
@@ -653,11 +663,11 @@ def test_a_lane_that_finishes_early_takes_pending_work() -> None:
     """
     from collections import Counter
 
-    slow, slow_actions = _slow_job(40, simulations=1500)
+    slow = _slow_job(40)
     fast_jobs = tuple(_job(2, game_index=41 + offset) for offset in range(9))
     preferred = tuple(
         (job.model_key.model_name, player_id, action)
-        for job, actions in ((slow, slow_actions), *fast_jobs)
+        for job, actions in fast_jobs
         for player_id, action in actions
     )
     jobs = (slow, *(job for job, _actions in fast_jobs))
@@ -672,7 +682,10 @@ def test_a_lane_that_finishes_early_takes_pending_work() -> None:
 
     by_id = {result.game_id: result for result in results}
     assert set(by_id) == {job.game_id for job in jobs}
-    assert all(result.completed for result in results)
+    # The slow game is long, so it ends on its move cap rather than a terminal
+    # state; every other job still has to finish.
+    assert all(by_id[job.game_id].completed for job, _actions in fast_jobs)
+    assert by_id[slow.game_id].aborted_reason == "max_game_moves_exceeded"
 
     lane_loads = Counter(result.worker_id for result in results)
     slow_lane = by_id[slow.game_id].worker_id

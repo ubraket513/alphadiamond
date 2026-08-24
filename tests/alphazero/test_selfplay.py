@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from diamond.alphazero.config import MCTSConfig, NetworkConfig, SelfPlayConfig
 from diamond.alphazero.evaluator.base import EvalRequest
@@ -10,6 +11,24 @@ from diamond.alphazero.identity import CheckpointCompatibilitySpec
 from diamond.alphazero.selfplay.runner_2p import SooSelfPlayRunner
 from diamond.alphazero.selfplay.runner_3p import MinSelfPlayRunner
 from diamond.game.state import build_players
+
+
+class ToySearch:
+    """The runners take their search from the factory; toy games need one.
+
+    These tests are about value targets, sample retention and the two aborts --
+    none of which the tree decides. The native search declines a game that is
+    not the 73-hole board, and correctly: a stub is not a fallback's job.
+    """
+
+    def __init__(self, game, evaluator, config, **kwargs) -> None:
+        self._game = game
+
+    def run(self, state, *, temperature: float):
+        actions = self._game.legal_action_ids(state)
+        return SimpleNamespace(
+            selected_action=actions[0], policy={action: 1.0 / len(actions) for action in actions}
+        )
 
 
 @dataclass(frozen=True)
@@ -73,6 +92,7 @@ def test_soo_selfplay_assigns_scalar_target_from_each_samples_perspective() -> N
         MCTSConfig(simulations=4, dirichlet_epsilon=0.0),
         SelfPlayConfig(max_moves=5, temperature_moves=0),
         compatibility,
+        search_factory=ToySearch,
     ).run()
 
     assert episode.completed
@@ -92,6 +112,7 @@ def test_min_selfplay_keeps_states_after_first_place_and_maps_final_utility() ->
         MCTSConfig(simulations=4, dirichlet_epsilon=0.0),
         SelfPlayConfig(max_moves=5, temperature_moves=0),
         compatibility,
+        search_factory=ToySearch,
     ).run()
 
     assert episode.completed
@@ -162,6 +183,7 @@ def test_a_game_that_outruns_its_budget_aborts_with_zero_samples() -> None:
         SelfPlayConfig(max_moves=500, temperature_moves=0, max_game_seconds=900.0),
         _soo_compatibility(),
         clock=clock,
+        search_factory=ToySearch,
     ).run()
 
     assert not episode.completed
@@ -181,6 +203,7 @@ def test_the_move_cap_and_the_time_cap_stay_distinct() -> None:
         SelfPlayConfig(max_moves=3, temperature_moves=0, max_game_seconds=None),
         _soo_compatibility(),
         clock=SteppingClock(step=100_000.0),
+        search_factory=ToySearch,
     ).run()
 
     assert not episode.completed
@@ -198,6 +221,7 @@ def test_without_a_budget_a_slow_game_still_completes() -> None:
         SelfPlayConfig(max_moves=5, temperature_moves=0),
         _soo_compatibility(),
         clock=SteppingClock(step=100_000.0),
+        search_factory=ToySearch,
     ).run()
 
     assert episode.completed
@@ -217,6 +241,7 @@ def test_the_three_player_runner_honours_the_same_budget() -> None:
         SelfPlayConfig(max_moves=500, temperature_moves=0, max_game_seconds=900.0),
         compatibility,
         clock=SteppingClock(step=100.0),
+        search_factory=ToySearch,
     ).run()
 
     assert not episode.completed

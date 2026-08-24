@@ -1,4 +1,11 @@
-"""Single-process self-play for the Soo two-player model."""
+"""Single-process self-play for the Soo two-player model.
+
+The episode loop is control plane -- temperature schedule, sample construction,
+the wall-clock abort -- and stays in Python. The *search* is not: it comes from
+``search_factory``, which returns the native two-seat search. A caller with a
+game the native core cannot play (a stub, a toy) injects its own factory rather
+than getting a second engine by default.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +24,8 @@ from ..config import MCTSConfig, SelfPlayConfig
 from ..deadline import MAX_GAME_TIME_EXCEEDED, Deadline
 from ..evaluator.base import Evaluator
 from ..identity import CheckpointCompatibilitySpec, SOO_MODEL_NAME
-from ..mcts.search_2p import MCTS2P
 from ..replay import TrainingSample
+from ..search_factory import SearchFactory, two_player_search
 
 
 class SooSelfPlayRunner:
@@ -31,6 +38,7 @@ class SooSelfPlayRunner:
         compatibility: CheckpointCompatibilitySpec,
         *,
         clock: Callable[[], float] = monotonic,
+        search_factory: SearchFactory | None = None,
     ) -> None:
         if compatibility.identity.model_name != SOO_MODEL_NAME:
             raise ValueError("SooSelfPlayRunner requires Soo compatibility metadata")
@@ -40,6 +48,7 @@ class SooSelfPlayRunner:
         self.selfplay_config = selfplay_config
         self.compatibility = compatibility
         self.clock = clock
+        self.search_factory = search_factory or two_player_search()
 
     def run(self) -> SelfPlayEpisode:
         state = self.game.initial_state()
@@ -57,7 +66,7 @@ class SooSelfPlayRunner:
                 if move_count < self.selfplay_config.temperature_moves
                 else 0.0
             )
-            search = MCTS2P(
+            search = self.search_factory(
                 self.game,
                 self.evaluator,
                 replace(self.mcts_config, seed=self.selfplay_config.seed + move_count),

@@ -14,8 +14,6 @@ from ..identity import MIN_MODEL_NAME, SOO_MODEL_NAME, CheckpointCompatibilitySp
 from ..inference.coordinator import InferenceConfig, InferenceCoordinator
 from ..inference.model_pool import InferenceModelPool
 from ..inference.remote import RemoteEvaluator
-from ..mcts.search_2p import MCTS2P
-from ..mcts.search_3p import MCTS3P
 from ..rating.events import MinRatingEvent, SooRatingEvent
 from ..rating.openings import BenchmarkOpening, OpeningSuite
 from ..rating.participants import CheckpointParticipant
@@ -29,6 +27,7 @@ from ..rating.schedule import (
     validate_min_rated_batch,
     validate_soo_rated_batch,
 )
+from ..search_factory import SearchFactory, three_player_search, two_player_search
 from ...game.state import build_players
 from .coordinator import CandidateArtifact
 
@@ -105,6 +104,7 @@ class ProductionBenchmarkStage:
         model_pool: InferenceModelPool,
         inference_config: InferenceConfig,
         match_runner: MatchRunner | None = None,
+        search_factory: SearchFactory | None = None,
     ) -> None:
         if protocol.compatibility.identity.player_count != opening_suite.player_count:
             raise ValueError("benchmark opening suite player_count is incompatible")
@@ -124,6 +124,9 @@ class ProductionBenchmarkStage:
         self.model_pool = model_pool
         self.inference_config = inference_config
         self.match_runner = match_runner or self._run_match
+        # Resolved on the first match rather than here: constructing the stage
+        # with an injected ``match_runner`` must not require the extension.
+        self.search_factory = search_factory
         self.status = "eligible"
 
     @property
@@ -307,6 +310,9 @@ class ProductionBenchmarkStage:
             )
         }
         seed_base = int(match.match_id.removeprefix("sha256:")[:15], 16)
+        search = self.search_factory or (
+            two_player_search() if player_count == 2 else three_player_search()
+        )
         moves = 0
         while not game.is_terminal(state) and moves < self.protocol.max_game_moves:
             participant_id = participant_by_seat[game.current_player_id(state)]
@@ -316,7 +322,6 @@ class ProductionBenchmarkStage:
                 dirichlet_epsilon=0.0,
                 seed=seed_base + moves,
             )
-            search = MCTS2P if player_count == 2 else MCTS3P
             action = search(game, evaluators[participant_id], mcts).run(
                 state, temperature=0.0
             ).selected_action
