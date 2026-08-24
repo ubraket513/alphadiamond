@@ -139,10 +139,20 @@ delete src/diamond/game             last
 ```
 
 `tests/test_engine_retirement.py` freezes the dependent set: adding a module
-fails, and removing one requires deleting its line. That list is the work queue
-for the rest of this milestone. It grew by one -- `search_factory.py`, whose
-whole job is to choose between the engines -- and everything that searches now
-goes through it.
+fails, and removing one requires deleting its line. It now counts in two piles,
+because "30 dependents" could not distinguish running the rules from naming a
+dataclass in a type hint:
+
+* **behaviour: 7** -- the work queue, and it must reach zero before
+  `diamond.game` can be deleted.
+* **definitions and types: 14** -- the board, the seats and the position
+  shapes, which survive until the trainer speaks the native `State`.
+
+Reading the seven, none is independent work: they wait on two product
+decisions, recorded in
+[`retiring_the_python_engine.md`](retiring_the_python_engine.md) -- whether the
+trainer keeps a no-extension fallback, and whether the golden corpus is
+frozen.
 
 `tests/native/test_search_factory.py` proves the choice is real rather than
 nominal, including end to end: the agent's two-seat move actually constructs

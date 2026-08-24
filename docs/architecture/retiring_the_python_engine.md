@@ -19,9 +19,49 @@ deletion once neither job needs them.
    the search paths the arena and the GUI agent drive through Python. Those
    retire when the bridge does.
 
-Everything else that still imports it is migration debt, counted and frozen by
-`tests/test_engine_retirement.py`: the list of dependents may shrink, never
-grow. Adding a module to it fails; removing one is the progress.
+Everything else that imports it is migration debt, counted and frozen by
+`tests/test_engine_retirement.py`. It is counted in two piles, because one
+number could not distinguish a module that *runs the rules* from one that names
+a dataclass in a type hint:
+
+* **behaviour** (7) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
+  reach zero before `diamond.game` can go, and it is the work queue.
+* **definitions and types** (14) -- `standard_board`, `build_players`,
+  `GameState`. Not rules; C++ receives the same tables through the topology
+  export. These survive until the trainer speaks the native `State`.
+
+The criterion is whether rules are applied. `initial_state` is a definition by
+that test: it fills each seat's home camp and applies nothing.
+
+## The behaviour queue is two decisions, not seven tasks
+
+Reading the seven, none is independent work:
+
+| Module | Waits on |
+|---|---|
+| `game_adapter` | the corpus generator: it is what `tools/build_golden.py` drives |
+| `search_factory` | the Python search existing at all |
+| `selfplay/runner_2p`, `runner_3p` | the Python self-play backend |
+| `orchestration/benchmark` | the Python search, which it benchmarks on purpose |
+| `smoke`, `milestone2_smoke` | scripting games with `find_legal_move` |
+
+So the queue drains on two decisions, both of which are product calls rather
+than refactors:
+
+1. **Does the trainer keep a fallback that runs without the extension?** Today
+   `selfplay_backend` resolves to `python` on a host with no compiled backend.
+   Dropping that removes the runners, the selector's fallback and the
+   benchmark's comparison in one go -- and makes a compiler a hard requirement
+   for training.
+2. **Is the golden corpus frozen?** Freezing it retires the generator, and with
+   it `game_adapter`'s oracle role. Safe now in a way it was not before: the C++
+   side is pinned by the golden files, the Python side by its own unit tests
+   (`tests/test_rules.py`, `test_moves.py`, `test_session.py`), and
+   `tests/native/test_callback.py` still compares a native game against the
+   Python backend move for move.
+
+Neither is blocked on engineering. Both change what the project promises, so
+they are recorded here rather than taken unilaterally.
 
 ## What has to be true before deletion
 
