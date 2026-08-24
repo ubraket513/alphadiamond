@@ -17,6 +17,7 @@ from typing import Any
 from .config import MCTSConfig
 from .evaluator.base import Evaluator
 from .mcts.search_2p import MCTS2P
+from .mcts.search_3p import MCTS3P
 
 SearchFactory = Callable[[Any, Evaluator, MCTSConfig], Any]
 
@@ -41,4 +42,21 @@ def two_player_search() -> SearchFactory:
     return factory
 
 
-__all__ = ["SearchFactory", "two_player_search"]
+def three_player_search() -> SearchFactory:
+    """The same rule for Min: native where it can play, Python where it cannot."""
+    from .native import is_available
+
+    if not is_available():
+        return MCTS3P
+
+    from .native.search import NativeSearch3P
+
+    def factory(game, evaluator, config, **kwargs):
+        if not kwargs and NativeSearch3P.can_drive(game):
+            return NativeSearch3P(game, evaluator, config)
+        return MCTS3P(game, evaluator, config, **kwargs)
+
+    return factory
+
+
+__all__ = ["SearchFactory", "three_player_search", "two_player_search"]

@@ -10,6 +10,7 @@ set(SOO_SEARCH_SOURCES
     src/batcher.cpp
     src/evaluator.cpp
     src/mcts.cpp
+    src/mcts3p.cpp
     src/profile.cpp
     src/selfplay.cpp
 )

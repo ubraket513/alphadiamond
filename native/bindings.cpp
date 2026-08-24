@@ -17,6 +17,7 @@
 #include "soo/encoder.hpp"
 #include "soo/evaluator.hpp"
 #include "soo/mcts.hpp"
+#include "soo/mcts3p.hpp"
 #include "soo/prior.hpp"
 #include "soo/profile.hpp"
 #include "soo/random.hpp"
@@ -398,6 +399,79 @@ class Game {
         return pack_search(session.result());
     }
 
+    // Min's search, answered by a Python callback. Unlike the 2P shape the
+    // callback returns a value *vector* per position -- one component per seat,
+    // in that position's canonical player order -- because a three-player game
+    // is not zero-sum between two sides.
+    py::dict search3p_with_callback(const State& state, const MCTSConfig& config,
+                                    double temperature, const py::object& callback) const {
+        if (match_.count != 3) throw std::invalid_argument("MCTS3P requires a three-seat match");
+        SearchSession3P session(match_, config);
+        session.begin(state, temperature);
+
+        while (session.advance() == SearchSession3P::Status::NeedsEvaluation) {
+            const Encoded& encoded = session.pending_features();
+            const std::vector<int32_t>& actions = session.pending_actions();
+            const int features = encoded.feature_count;
+            const auto rows = static_cast<py::ssize_t>(kBoardSize);
+
+            py::array_t<float> feature_view({py::ssize_t{1}, rows,
+                                             static_cast<py::ssize_t>(features)});
+            std::copy(encoded.node_features.begin(), encoded.node_features.end(),
+                      feature_view.mutable_data());
+            py::array_t<int32_t> action_view(static_cast<py::ssize_t>(actions.size()));
+            std::copy(actions.begin(), actions.end(), action_view.mutable_data());
+            py::array_t<int32_t> canonical_view(
+                static_cast<py::ssize_t>(encoded.canonical_player_ids.size()));
+            for (size_t i = 0; i < encoded.canonical_player_ids.size(); ++i) {
+                canonical_view.mutable_data()[i] =
+                    static_cast<int32_t>(encoded.canonical_player_ids[i]);
+            }
+
+            py::object answer = callback(feature_view, action_view, canonical_view);
+            auto pair = py::cast<py::tuple>(answer);
+            if (pair.size() != 2) {
+                throw std::runtime_error("3P callback must return (priors, values)");
+            }
+            const auto priors = py::cast<py::array_t<float>>(pair[0]);
+            const auto values = py::cast<py::array_t<float>>(pair[1]);
+            if (static_cast<size_t>(priors.size()) != actions.size()) {
+                throw std::runtime_error("callback returned the wrong number of priors");
+            }
+            if (values.size() != 3) {
+                throw std::runtime_error("3P callback must return three value components");
+            }
+
+            EvalOutcome3P outcome;
+            outcome.priors.assign(priors.data(), priors.data() + priors.size());
+            for (int seat = 0; seat < 3; ++seat) {
+                outcome.value[static_cast<size_t>(seat)] =
+                    static_cast<double>(values.data()[seat]);
+            }
+            session.supply(outcome);
+        }
+
+        const SearchResult3P& result = session.result();
+        py::dict out;
+        out["selected_action"] = result.selected_action;
+        out["root_actions"] = py::cast(result.root_actions);
+        out["visit_counts"] = py::cast(result.visit_counts);
+        out["policy"] = py::cast(result.policy);
+        out["root_priors"] = py::cast(result.root_priors);
+        out["player_ids"] = py::cast(session.player_ids());
+        py::list q_vectors;
+        for (const ValueVector& q : result.q_vectors) {
+            py::list row;
+            for (uint8_t seat = 0; seat < 3; ++seat) row.append(q[seat]);
+            q_vectors.append(row);
+        }
+        out["q_vectors"] = q_vectors;
+        out["simulations_run"] = result.simulations_run;
+        out["evaluator_calls"] = result.evaluator_calls;
+        out["nodes_created"] = result.nodes_created;
+        return out;
+    }
+
     // Gate D: the same scheduler, answered by a Python callback.
     //
     // The GIL is released for the entire run. The only thread that ever takes
@@ -718,6 +792,8 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def("search_with_callback", &Game::search_with_callback, py::arg("state"),
              py::arg("config"), py::arg("temperature") = 0.0, py::arg("trace") = false,
              py::arg("callback") = py::none(), py::arg("mode") = "value_only")
+        .def("search3p_with_callback", &Game::search3p_with_callback, py::arg("state"),
+             py::arg("config"), py::arg("temperature") = 0.0, py::arg("callback") = py::none())
         .def("schedule", &Game::schedule, py::arg("opening"), py::arg("config"))
         .def("play_episodes", &Game::play_episodes, py::arg("jobs"), py::arg("config"),
              py::arg("callback"), py::arg("mode") = "value_only")

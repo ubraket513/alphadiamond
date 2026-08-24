@@ -112,8 +112,9 @@ The C++ core is the authority. Progress and the remaining order live in
 ```text
 native self-play default            done (selfplay_backend defaults to auto)
 dependent ratchet                   done (tests/test_engine_retirement.py)
-arena on the native core            done (Soo; Min is 3P and stays)
-GUI agent on native                 done (two-seat path)
+arena on the native core            done (Soo and Min)
+GUI agent on native                 done (both seat counts)
+three-player native search          done (SearchSession3P)
 self-play runners on native         blocked on a native deadline
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
@@ -128,7 +129,18 @@ goes through it.
 
 `tests/native/test_search_factory.py` proves the choice is real rather than
 nominal, including end to end: the agent's two-seat move actually constructs
-`NativeSearch2P`.
+`NativeSearch2P`. `arena.py` has already left the list -- both its searches now
+go through the selector.
+
+The three-player search is `SearchSession3P`
+(`native/src/mcts3p.cpp`). It is not the 2P tree with a wider value: Min backs a
+utility vector -- one component per seat, placement-ordered 1/0/-1 at a terminal
+-- through every ancestor unchanged, where Soo negates a scalar once per edge.
+`tests/native/test_search_3p_parity.py` compares it with `MCTS3P` per position
+on the selected action, the visit distribution, the evaluator request sequence
+and every q vector *by seat*, with an evaluator that is deliberately asymmetric
+between seats: symmetric values would hide a search maximising the wrong
+component.
 
 Nothing here rewrites the training loop, the optimizer tooling, the experiment
 orchestration or the rating code. The brief is explicit that those stay in
@@ -157,13 +169,14 @@ Left, and deliberately unmeasured until someone needs them:
    sampling. A golden file cannot capture a distribution the way it captures a
    deterministic answer; the likely shape is a fixed-seed expectation, since
    the native RNG is seeded explicitly.
-2. **Everything three-player is still on the Python search** -- `MinArena`,
-   `runner_3p`, the agent's three-seat path. The native MCTS is two-player and
-   `MCTS3P` has no native counterpart at all. This is the largest single piece
-   of remaining work in milestone 4.
-3. **`selfplay/runner_2p` needs a native deadline.** It bounds a game by wall
-   clock; `SearchSession` has no such notion, and the selector refuses to drop
-   the bound silently.
+2. **The self-play runners need a native deadline.** `runner_2p` and
+   `runner_3p` bound a game by wall clock; neither `SearchSession` has such a
+   notion, and the selector refuses to drop the bound silently. This is the
+   last thing between the runners and the native core.
+3. **Min self-play still runs the Python pool.** `SearchSession3P` is the
+   single-search shape; the batched scheduler and `play_episodes` are 2P only,
+   so native Min self-play needs the vector value threaded through the pool as
+   well.
 4. **The `apps/` / `python/` restructure from section 4 of the brief has not
    been done.** It rewrites hundreds of documented command paths and deserves
    its own change; the boundaries it would express are already established in

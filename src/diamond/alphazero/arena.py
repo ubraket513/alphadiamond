@@ -17,8 +17,7 @@ from typing import Any
 
 from .config import ArenaConfig, MCTSConfig
 from .evaluator.base import Evaluator
-from .mcts.search_3p import MCTS3P
-from .search_factory import SearchFactory, two_player_search
+from .search_factory import SearchFactory, three_player_search, two_player_search
 
 GameFactory = Callable[[tuple[int, ...]], Any]
 def _balanced_matchups(
@@ -129,6 +128,7 @@ class MinArena:
         baseline: Evaluator,
         mcts_config: MCTSConfig,
         arena_config: ArenaConfig,
+        search_factory: SearchFactory | None = None,
     ) -> None:
         self.candidate = candidate
         self.baseline = baseline
@@ -136,6 +136,7 @@ class MinArena:
         if arena_config.games % len(_balanced_matchups((1, 2, 3))) != 0:
             raise ValueError("Min arena games must be a multiple of 18")
         self.arena_config = arena_config
+        self.search_factory = search_factory or three_player_search()
 
     def run(self, game_factory: GameFactory) -> MinArenaResult:
         matchups = _balanced_matchups((1, 2, 3))
@@ -156,7 +157,11 @@ class MinArena:
                     self.mcts_config,
                     seed=self.arena_config.seed + game_index * self.arena_config.max_moves + moves,
                 )
-                action = MCTS3P(game, evaluator, config).run(state, temperature=0.0).selected_action
+                action = (
+                    self.search_factory(game, evaluator, config)
+                    .run(state, temperature=0.0)
+                    .selected_action
+                )
                 state = game.apply_action(state, action)
                 moves += 1
             if not game.is_terminal(state):

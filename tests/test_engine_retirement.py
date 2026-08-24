@@ -45,10 +45,10 @@ ALLOWED = {
     "src/diamond/alphazero/native/__init__.py",
     "src/diamond/alphazero/native/topology.py",
     # Training, research and orchestration, still on the Python engine.
+    # (arena.py left this list when both its searches moved to the selector.)
     "src/diamond/agents/alphazero_agent.py",
     "src/diamond/agents/base.py",
     "src/diamond/agents/random_agent.py",
-    "src/diamond/alphazero/arena.py",
     "src/diamond/alphazero/bootstrap/evaluator.py",
     "src/diamond/alphazero/bootstrap/heuristic.py",
     "src/diamond/alphazero/bootstrap/probe.py",
