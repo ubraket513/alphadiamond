@@ -39,10 +39,10 @@ endif()
 
 # Packaging. Models ship *beside* the executable rather than compiled into it,
 # so a release can carry a different default model, and a model can be replaced,
-# without relinking. Build the directory first:
+# without relinking. Build a validated runtime-only directory first:
 #
-#   python tools/export_deployment.py artifacts/soo-spike --family soo
-#   python tools/build_model_index.py dist/models --artifact soo=artifacts/soo-spike
+#   alphadiamond-release stage dist/models \
+#       --artifact artifacts/soo-spike --default soo
 #
 # then `cmake --build --preset native-release --target package`.
 set(DIAMOND_MODELS_DIR "${CMAKE_SOURCE_DIR}/dist/models"

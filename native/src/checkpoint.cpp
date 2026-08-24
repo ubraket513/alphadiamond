@@ -64,6 +64,52 @@ CheckpointInfo inspect_checkpoint_v2(const std::filesystem::path& root) {
     return state_info(root / "generations" / generation);
 }
 
+CheckpointInfo validate_checkpoint_v2(const std::filesystem::path& root) {
+    const auto info = inspect_checkpoint_v2(root);
+    try {
+        torch::serialize::InputArchive state;
+        state.load_from((info.generation / kState).string());
+        torch::serialize::InputArchive optimizer;
+        optimizer.load_from((info.generation / kOptimizer).string());
+        return info;
+    } catch (const c10::Error& error) {
+        throw CheckpointError(std::string("checkpoint v2 archive is unreadable: ") + error.what());
+    }
+}
+
+CheckpointInfo migrate_checkpoint_v2(const std::filesystem::path& source,
+                                     const std::filesystem::path& destination) {
+    const auto info = validate_checkpoint_v2(source);
+    if (std::filesystem::exists(destination))
+        throw CheckpointError("checkpoint migration destination already exists");
+
+    const auto parent = destination.has_parent_path()
+        ? destination.parent_path() : std::filesystem::current_path();
+    const auto filename = destination.filename().string();
+    if (filename.empty()) throw CheckpointError("checkpoint migration destination is invalid");
+    static std::atomic_uint64_t sequence{0};
+    const auto staged = parent / ("." + filename + ".checkpoint-migrate-" +
+                                  std::to_string(++sequence));
+    std::error_code ignored;
+    if (std::filesystem::exists(staged))
+        throw CheckpointError("checkpoint migration staging path already exists");
+    try {
+        std::filesystem::create_directories(staged / "generations");
+        const auto generation = info.generation.filename();
+        std::filesystem::copy(info.generation, staged / "generations" / generation,
+                              std::filesystem::copy_options::recursive);
+        atomic_write(staged / kPointer, generation.string() + "\n");
+        std::filesystem::rename(staged, destination);
+        return {destination / "generations" / generation, info.training_step};
+    } catch (const std::filesystem::filesystem_error& error) {
+        std::filesystem::remove_all(staged, ignored);
+        throw CheckpointError(std::string("cannot migrate checkpoint v2: ") + error.what());
+    } catch (...) {
+        std::filesystem::remove_all(staged, ignored);
+        throw;
+    }
+}
+
 CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer) {
     trainer.compatibility().validate();
     std::filesystem::create_directories(root / "generations");

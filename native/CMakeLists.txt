@@ -152,6 +152,25 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_options(diamond_training PRIVATE /bigobj)
     endif()
 
+    add_library(diamond_release STATIC src/promotion.cpp)
+    add_library(alphadiamond::diamond_release ALIAS diamond_release)
+    target_link_libraries(diamond_release PUBLIC alphadiamond::diamond_training)
+    target_include_directories(diamond_release PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_compile_features(diamond_release PUBLIC cxx_std_20)
+
+    add_executable(alphadiamond-checkpoint src/checkpoint_main.cpp)
+    target_link_libraries(alphadiamond-checkpoint PRIVATE alphadiamond::diamond_training)
+    target_compile_features(alphadiamond-checkpoint PRIVATE cxx_std_20)
+
+    add_executable(alphadiamond-release src/release_main.cpp)
+    target_link_libraries(alphadiamond-release PRIVATE alphadiamond::diamond_release)
+    target_compile_features(alphadiamond-release PRIVATE cxx_std_20)
+
+    install(TARGETS alphadiamond-checkpoint alphadiamond-release
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
     # The direct native self-play -> replay -> training path is deliberately
     # separate from the schema-only replay library: it owns LibTorch models.
     add_library(diamond_native_pipeline STATIC
@@ -248,6 +267,13 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_features(model_index_test PRIVATE cxx_std_20)
         add_test(NAME model_index_test
                  COMMAND model_index_test "${CMAKE_CURRENT_BINARY_DIR}/model-index-scratch")
+
+        add_executable(promotion_test tests/promotion_test.cpp)
+        target_link_libraries(promotion_test PRIVATE alphadiamond::diamond_release)
+        target_compile_features(promotion_test PRIVATE cxx_std_20)
+        add_test(NAME promotion_test
+                 COMMAND promotion_test "${CMAKE_CURRENT_BINARY_DIR}/promotion-scratch")
+        set_tests_properties(promotion_test PROPERTIES LABELS release)
 
         add_executable(model_parity_test tests/model_parity_test.cpp)
         target_link_libraries(model_parity_test PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
@@ -399,7 +425,7 @@ if(DIAMOND_BUILD_LIBTORCH)
                 "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
-                                 native_pipeline_smoke_test PROPERTIES
+                                 native_pipeline_smoke_test promotion_test PROPERTIES
                 ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
         endif()
         add_test(NAME training_step_parity_test
