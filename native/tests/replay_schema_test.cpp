@@ -20,7 +20,8 @@ void copy_fixture(const std::filesystem::path& source, const std::filesystem::pa
 int main(int argc, char** argv) {
     try {
     REQUIRE(argc == 3, "usage: replay_schema_test <fixture-dir> <scratch-dir>");
-    const diamond_pipeline::Compatibility compatibility{"soo", "1.2.3"};
+    const diamond_pipeline::Compatibility compatibility =
+        diamond_pipeline::Compatibility::soo("1.2.3", {.residual_blocks = 1, .width = 16});
     const auto fixture_dir = std::filesystem::path(argv[1]);
     const auto scratch = std::filesystem::path(argv[2]);
     std::filesystem::remove_all(scratch);

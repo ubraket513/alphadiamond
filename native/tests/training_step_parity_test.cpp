@@ -49,7 +49,9 @@ void check_close(float actual, float expected, const std::string& name) {
 }
 
 diamond_training::Compatibility compatibility_for(const std::string& family) {
-    return diamond_training::Compatibility{family, "1.0.0"};
+    const diamond_training::NetworkConfig network{.residual_blocks = 1, .width = 8};
+    return family == "soo" ? diamond_training::Compatibility::soo("1.0.0", network)
+                           : diamond_training::Compatibility::min("1.0.0", network);
 }
 
 diamond_training::TrainingConfig parity_config() {

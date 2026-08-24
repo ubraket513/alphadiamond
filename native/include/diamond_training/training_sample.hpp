@@ -1,19 +1,39 @@
 #pragma once
 
 #include <cstdint>
-#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace diamond_training {
 
+struct NetworkConfig {
+    int64_t residual_blocks = 0;
+    int64_t width = 0;
+
+    bool operator==(const NetworkConfig&) const = default;
+};
+
+// This is the compatibility gate persisted by the Python v1 replay format.
+// Keep the members typed: turning nested JSON or numeric fields into strings
+// changes the canonical bytes, and therefore the namespace and chunk hashes.
 struct Compatibility {
-    std::string family;
+    std::string model_name;
     std::string model_version;
-    // A legacy v1 replay persists the complete compatibility gate.  New native
-    // callers may leave this empty; readers retain a parsed legacy gate here.
-    std::map<std::string, std::string> metadata;
+    int64_t player_count = 0;
+    std::string ruleset_version;
+    std::string board_topology_version;
+    std::string ruleset_fingerprint;
+    std::string encoder_version;
+    std::string action_space_version;
+    std::string seat_layout_version;
+    std::string value_semantics_version;
+    NetworkConfig network_config;
+
+    static Compatibility soo(std::string version, NetworkConfig network);
+    static Compatibility min(std::string version, NetworkConfig network);
+    std::string family() const;
+    void validate() const;
 
     bool operator==(const Compatibility&) const = default;
 };

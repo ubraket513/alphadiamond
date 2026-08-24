@@ -56,6 +56,7 @@ add_library(diamond_pipeline STATIC
     src/json.cpp
     src/replay.cpp
     src/replay_store.cpp
+    src/training_sample.cpp
 )
 add_library(alphadiamond::diamond_pipeline ALIAS diamond_pipeline)
 target_include_directories(diamond_pipeline PUBLIC

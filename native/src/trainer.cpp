@@ -57,8 +57,7 @@ Trainer::Trainer(diamond_model::DiamondModel model, Compatibility compatibility,
       optimizer_(model_->parameters(), torch::optim::AdamWOptions(config.learning_rate)
                                       .weight_decay(config.weight_decay)) {
     if (!model_) throw std::invalid_argument("trainer model is required");
-    if (compatibility_.family.empty() || compatibility_.model_version.empty())
-        throw std::invalid_argument("trainer compatibility is required");
+    compatibility_.validate();
     if (!std::isfinite(config_.learning_rate) || config_.learning_rate <= 0.0)
         throw std::invalid_argument("trainer learning rate must be positive and finite");
     if (!std::isfinite(config_.weight_decay) || config_.weight_decay < 0.0)
