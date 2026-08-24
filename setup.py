@@ -21,6 +21,7 @@ SOURCES = [
     "native/src/encoder.cpp",
     "native/src/evaluator.cpp",
     "native/src/mcts.cpp",
+    "native/src/mcts3p.cpp",
     "native/src/prior.cpp",
     "native/src/profile.cpp",
     "native/src/selfplay.cpp",

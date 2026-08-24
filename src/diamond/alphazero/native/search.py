@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..evaluator.base import EvalRequest, Evaluator
-from ..search_result import SearchResult2P
+from ..search_result import SearchResult2P, SearchResult3P
 from . import native_game, require_native
 
 VALUE_ONLY = "value_only"
@@ -147,4 +147,83 @@ class NativeSearch2P:
         )
 
 
-__all__ = ["NativeSearch2P"]
+class NativeSearch3P:
+    """A drop-in for :class:`MCTS3P` whose tree lives in C++.
+
+    Min's search differs from Soo's in what a value is, not in how the tree is
+    walked: the evaluator returns one component per seat, and that vector is
+    backed through every ancestor unchanged rather than negated once per edge.
+    The C++ side stores it by seat and hands back q vectors in the same order.
+    """
+
+    @staticmethod
+    def can_drive(game: Any) -> bool:
+        players = getattr(game, "players", None)
+        if players is None or len(players) != 3:
+            return False
+        board = getattr(game, "board", None) or getattr(getattr(game, "game", None), "board", None)
+        return board is not None and len(board) == 73
+
+    def __init__(self, game: Any, evaluator: Evaluator, config: Any) -> None:
+        if not self.can_drive(game):
+            raise ValueError("the native 3P search needs a three-seat game on the 73-hole board")
+        self.module = require_native()
+        self.game = game
+        self.evaluator = evaluator
+        self.native = native_game(tuple(game.players))
+        self.config = _Config(
+            simulations=int(config.simulations),
+            c_puct=float(config.c_puct),
+            dirichlet_alpha=float(getattr(config, "dirichlet_alpha", 0.3)),
+            dirichlet_epsilon=float(getattr(config, "dirichlet_epsilon", 0.0)),
+            seed=int(getattr(config, "seed", 0)),
+        )
+
+    def _callback(self, features: Any, actions: Any, canonical: Any) -> tuple[Any, Any]:
+        import numpy as np
+
+        request = EvalRequest(
+            node_features=tuple(tuple(float(v) for v in node) for node in features[0]),
+            legal_action_ids=tuple(int(a) for a in actions),
+            # Per node, not per search: the encoder rotates the seat order to
+            # the player to act, and the value components come back in that
+            # order. Sending the root's would mislabel every deeper node.
+            canonical_player_ids=tuple(int(p) for p in canonical),
+        )
+        result = self.evaluator.evaluate((request,))[0]
+        priors = np.array(
+            [result.priors[action] for action in request.legal_action_ids], dtype=np.float32
+        )
+        values = np.array(result.value, dtype=np.float32)
+        return priors, values
+
+    def run(self, state: Any, temperature: float = 0.0) -> SearchResult3P:
+        module = self.module
+        config = module.MCTSConfig(
+            simulations=self.config.simulations,
+            c_puct=self.config.c_puct,
+            dirichlet_alpha=self.config.dirichlet_alpha,
+            dirichlet_epsilon=self.config.dirichlet_epsilon,
+            seed=self.config.seed,
+        )
+        result = self.native.search3p_with_callback(
+            _native_state(module, state),
+            config,
+            temperature=float(temperature),
+            callback=self._callback,
+        )
+
+        actions = [int(action) for action in result["root_actions"]]
+        seats = [int(player) for player in result["player_ids"]]
+        return SearchResult3P(
+            selected_action=int(result["selected_action"]),
+            visit_counts=dict(zip(actions, (int(v) for v in result["visit_counts"]))),
+            policy=dict(zip(actions, (float(v) for v in result["policy"]))),
+            q_values={
+                action: {seat: float(vector[index]) for index, seat in enumerate(seats)}
+                for action, vector in zip(actions, result["q_vectors"])
+            },
+        )
+
+
+__all__ = ["NativeSearch2P", "NativeSearch3P"]
