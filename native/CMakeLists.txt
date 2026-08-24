@@ -175,6 +175,18 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_options(diamond_native_pipeline PRIVATE /bigobj)
     endif()
 
+    add_library(diamond_orchestration STATIC
+        src/config.cpp
+        src/coordinator.cpp
+        src/run_state.cpp
+    )
+    add_library(alphadiamond::diamond_orchestration ALIAS diamond_orchestration)
+    target_link_libraries(diamond_orchestration PUBLIC alphadiamond::diamond_pipeline)
+    target_include_directories(diamond_orchestration PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_compile_features(diamond_orchestration PUBLIC cxx_std_20)
+
     add_executable(alphadiamond-pipeline src/pipeline_main.cpp)
     target_link_libraries(alphadiamond-pipeline PRIVATE alphadiamond::diamond_native_pipeline)
     target_compile_features(alphadiamond-pipeline PRIVATE cxx_std_20)
@@ -316,6 +328,29 @@ if(DIAMOND_BUILD_LIBTORCH)
         add_test(NAME native_pipeline_smoke_test
                  COMMAND native_pipeline_smoke_test "${CMAKE_CURRENT_BINARY_DIR}/native-pipeline-smoke-scratch")
         set_tests_properties(native_pipeline_smoke_test PROPERTIES LABELS pipeline)
+
+        add_executable(run_state_test tests/run_state_test.cpp)
+        target_link_libraries(run_state_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(run_state_test PRIVATE tests)
+        target_compile_features(run_state_test PRIVATE cxx_std_20)
+        add_test(NAME run_state_test
+                 COMMAND run_state_test "${CMAKE_CURRENT_BINARY_DIR}/run-state-scratch")
+        set_tests_properties(run_state_test PROPERTIES LABELS orchestration)
+
+        add_executable(config_test tests/config_test.cpp)
+        target_link_libraries(config_test PRIVATE alphadiamond::diamond_orchestration)
+        target_compile_features(config_test PRIVATE cxx_std_20)
+        add_test(NAME config_test
+                 COMMAND config_test "${PROJECT_SOURCE_DIR}/configs/alphazero")
+        set_tests_properties(config_test PROPERTIES LABELS orchestration)
+
+        add_executable(coordinator_resume_test tests/coordinator_resume_test.cpp)
+        target_link_libraries(coordinator_resume_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(coordinator_resume_test PRIVATE tests)
+        target_compile_features(coordinator_resume_test PRIVATE cxx_std_20)
+        add_test(NAME coordinator_resume_test
+                 COMMAND coordinator_resume_test "${CMAKE_CURRENT_BINARY_DIR}/coordinator-resume-scratch")
+        set_tests_properties(coordinator_resume_test PROPERTIES LABELS orchestration)
         if(WIN32)
             list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
             get_filename_component(DIAMOND_TORCH_PREFIX
