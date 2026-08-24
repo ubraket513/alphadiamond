@@ -143,8 +143,10 @@ fails, and removing one requires deleting its line. It now counts in two piles,
 because "30 dependents" could not distinguish running the rules from naming a
 dataclass in a type hint:
 
-* **behaviour: 6** -- the work queue, and it must reach zero before
-  `diamond.game` can be deleted. `search_factory` left it with decision 1.
+* **behaviour: 5** -- the work queue, and it must reach zero before
+  `diamond.game` can be deleted. `search_factory` left it with decision 1, and
+  `orchestration/benchmark` followed: its rated matches now run on the native
+  search through the same selector the arena uses.
 * **definitions and types: 14** -- the board, the seats and the position
   shapes, which survive until the trainer speaks the native `State`.
 
@@ -237,9 +239,8 @@ make test-parity      # bridge: Python <-> C++ (needs the pybind build)
 make golden           # regenerate tests/golden from the Python oracle
 ```
 
-The next concrete task is a three-player native search (`MCTS3P`'s
-counterpart). It is what unblocks `MinArena`, `runner_3p` and the agent's
-three-seat path in one go -- and after it, a wall-clock deadline in
-`SearchSession` unblocks `runner_2p`. Each one ends with a line struck from
-`ALLOWED` in `tests/test_engine_retirement.py`; that deletion is the unit of
-progress.
+The next concrete task is the rest of the behaviour queue: the two self-play
+runners and the Python worker pool that drives them (decision 1), then
+`game_adapter`'s oracle role (decision 2), then the two smokes. Each one ends
+with a line struck from `BEHAVIOUR_ALLOWED` in
+`tests/test_engine_retirement.py`; that deletion is the unit of progress.

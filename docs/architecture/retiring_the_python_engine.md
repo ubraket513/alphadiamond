@@ -24,7 +24,7 @@ Everything else that imports it is migration debt, counted and frozen by
 number could not distinguish a module that *runs the rules* from one that names
 a dataclass in a type hint:
 
-* **behaviour** (7) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
+* **behaviour** (5) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
   reach zero before `diamond.game` can go, and it is the work queue.
 * **definitions and types** (14) -- `standard_board`, `build_players`,
   `GameState`. Not rules; C++ receives the same tables through the topology
@@ -42,22 +42,31 @@ of why each entry was there.
 
 Phase A is under way. `search_factory` has already left the behaviour queue --
 it no longer names a Python search to fall back to -- taking the count from 7
-to 6.
+to 6. `orchestration/benchmark` followed it: its rated matches now go through
+`two_player_search()` / `three_player_search()`, the same selector the arena and
+the GUI agent use. 6 to 5.
+
+That entry was mis-described in decision 1 and in the table below as a
+*comparison* against native. It was not: the stage played its rated games on
+`MCTS2P`/`MCTS3P` because that was the only search when it was written. So it
+did not need to leave the shipped package -- it needed the selector, and the
+matches it rates are now rated by the engine that plays them in production,
+which is the point of rating them at all.
 
 ## The behaviour queue was two decisions, not seven tasks
 
-Reading the seven, none is independent work:
+Reading the seven, none was independent work (`search_factory` and
+`orchestration/benchmark` have since left):
 
 | Module | Waits on |
 |---|---|
 | `game_adapter` | the corpus generator: it is what `tools/build_golden.py` drives |
 | `search_factory` | the Python search existing at all |
 | `selfplay/runner_2p`, `runner_3p` | the Python self-play backend |
-| `orchestration/benchmark` | the Python search, which it benchmarks on purpose |
 | `smoke`, `milestone2_smoke` | scripting games with `find_legal_move` |
 
-So the queue drains on two decisions, both of which are product calls rather
-than refactors:
+So the rest of the queue drains on two decisions, both of which are product
+calls rather than refactors:
 
 1. **Does the trainer keep a fallback that runs without the extension?** Today
    `selfplay_backend` resolves to `python` on a host with no compiled backend.
@@ -96,7 +105,6 @@ Deletion is not one commit. In rough dependency order:
    - `selfplay/runner_3p` passes a deadline for the same reason as
      `runner_2p`. `MinArena` and the agent's three-seat path now run on
      `SearchSession3P`, the native vector search.
-   - `orchestration/benchmark` measures the Python search deliberately.
 2. **Arena runs on the native core.** Done for Soo: `Game.search_with_callback`
    suspends the C++ tree on every node and asks the Python evaluator for that
    node's answer, so two different networks can alternate moves inside one game
@@ -143,6 +151,7 @@ three-player native search          done (SearchSession3P)
 native wall-clock deadline          done (set_budget on both sessions)
 Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
 Soo/Min training on native by default  done (selfplay_backend auto)
+rated benchmark matches on native   done (ProductionBenchmarkStage)
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last

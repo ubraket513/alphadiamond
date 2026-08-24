@@ -74,8 +74,6 @@ BEHAVIOUR_ALLOWED = {
     # The Python self-play path, still reachable through selfplay_backend.
     "src/diamond/alphazero/selfplay/runner_2p.py",
     "src/diamond/alphazero/selfplay/runner_3p.py",
-    # Benchmarks the Python search deliberately, to compare against native.
-    "src/diamond/alphazero/orchestration/benchmark.py",
     # The smokes script games with find_legal_move.
     "src/diamond/alphazero/milestone2_smoke.py",
     "src/diamond/alphazero/smoke.py",
@@ -97,6 +95,7 @@ DEFINITIONS_ALLOWED = {
     "src/diamond/alphazero/native/__init__.py",
     "src/diamond/alphazero/native/topology.py",
     "src/diamond/alphazero/network/trunk.py",
+    "src/diamond/alphazero/orchestration/benchmark.py",
     "src/diamond/alphazero/orchestration/production.py",
     "src/diamond/alphazero/orchestration/selfplay_workers.py",
     "src/diamond/alphazero/rating/openings.py",

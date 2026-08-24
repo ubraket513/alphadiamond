@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ from diamond.alphazero.rating.openings import OpeningSuite
 from diamond.alphazero.rating.participants import CheckpointParticipant
 from diamond.alphazero.rating.protocol import BenchmarkProtocol, EloConfig, TrueSkillConfig
 from diamond.alphazero.rating.registry import RatingRegistry
+from diamond.alphazero.rating.schedule import schedule_soo_pair
 from diamond.alphazero.trainer import AlphaZeroTrainer
 
 
@@ -199,3 +201,56 @@ def test_min_benchmark_runs_36_matches_per_opening_for_three_distinct_artifacts(
     assert len({event.event_id for event in events}) == 36
     assert all(len(set(event.participant_ids)) == 3 for event in events)
     assert registry.events == events
+
+
+class _FirstLegalSearch:
+    """Records who was asked to move, and plays the lowest legal action."""
+
+    seats: list[int] = []
+
+    def __init__(self, game, evaluator, config) -> None:
+        self._game = game
+        self._evaluator = evaluator
+
+    def run(self, state, *, temperature: float):
+        _FirstLegalSearch.seats.append(self._game.current_player_id(state))
+        action = min(self._game.legal_action_ids(state))
+        return SimpleNamespace(selected_action=action)
+
+
+def test_the_default_match_runner_plays_through_the_injected_search(
+    tmp_path: Path,
+) -> None:
+    """`_run_match` no longer names an engine: it asks the search factory.
+
+    The seats it reports are the scheduled turn order, and the ranking it
+    returns is in participant ids rather than seat ids -- which is the part a
+    swapped engine could get wrong without any test noticing.
+    """
+    compatibility = _compatibility("Soo")
+    suite = OpeningSuite.generate(player_count=2, seed=7, opening_count=1, max_depth=0)
+    protocol = _protocol(compatibility, suite)
+    registry = RatingRegistry(protocol)
+    stage = ProductionBenchmarkStage(
+        protocol=protocol,
+        opening_suite=suite,
+        checkpoint_paths=tuple,
+        artifacts_root=tmp_path / "benchmark-artifacts",
+        registry=registry,
+        registry_path=tmp_path / "ratings" / "registry.json",
+        model_pool=InferenceModelPool(device="cpu"),
+        inference_config=InferenceConfig(2, 2, 8),
+        search_factory=_FirstLegalSearch,
+    )
+    match = schedule_soo_pair(
+        opening_suite=suite, participant_ids=("candidate", "champion")
+    )[0]
+    _FirstLegalSearch.seats = []
+
+    ranking = stage._run_match(
+        match, suite.openings[0], {"candidate": object(), "champion": object()}
+    )
+
+    # max_game_moves is 2, so the game is unfinished and no ranking is claimed.
+    assert ranking is None
+    assert _FirstLegalSearch.seats == list(match.turn_order)
