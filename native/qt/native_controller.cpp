@@ -751,9 +751,33 @@ bool NativeController::loadGame(const QUrl& path) {
 }
 
 void NativeController::loadTopology() {
-    QString root = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("artifacts/soo-spike"));
-    if (!QDir(root).exists()) root = QDir::current().filePath(QStringLiteral("artifacts/soo-spike"));
-    soo::load_topology_from_dir(root.toStdString());
+    // The board tables are exported data, and three places legitimately have
+    // them: a packaged release ships them inside its default model, a
+    // development tree has an exported artifact, and a plain source checkout
+    // has the committed golden copy the native tests read. Without the last
+    // one the application cannot start from a fresh clone -- artifacts/ is not
+    // in the repository -- which is how this was found: the Qt tests aborted in
+    // CI with "native topology is not configured".
+    //
+    // They are the same tables by construction: tests/test_golden_is_current.py
+    // regenerates the golden copy from the Python board on every run, and the
+    // exporter writes the artifact from that same board.
+    const QStringList bases = {QCoreApplication::applicationDirPath(), QDir::currentPath()};
+    const QStringList relatives = {QStringLiteral("models/soo"),
+                                   QStringLiteral("artifacts/soo-spike"),
+                                   QStringLiteral("tests/golden/topology")};
+    for (const QString& base : bases) {
+        for (const QString& relative : relatives) {
+            const QString candidate = QDir(base).filePath(relative);
+            if (!QDir(candidate).exists()) continue;
+            if (soo::load_topology_from_dir(candidate.toStdString())) return;
+            // models/soo holds one directory per version; try those too.
+            const QDir versions(candidate);
+            for (const QString& version : versions.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                if (soo::load_topology_from_dir(versions.filePath(version).toStdString())) return;
+            }
+        }
+    }
 }
 
 void NativeController::rebuildPieceModel() {
