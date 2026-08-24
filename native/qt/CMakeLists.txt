@@ -1,4 +1,7 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia)
+# 6.6 is a hard floor, not a preference: the QML uses Dial.startAngle and
+# Dial.endAngle, which do not exist before it. A too-old Qt otherwise builds
+# cleanly and fails when the application loads its interface.
+find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia)
 
 if(DIAMOND_BUILD_QT_SOO)
     find_package(Torch REQUIRED)
@@ -31,8 +34,9 @@ set_target_properties(diamond_qt_backend PROPERTIES AUTOMOC ON)
 if(DIAMOND_BUILD_QT_SOO)
     target_link_libraries(diamond_qt_backend PUBLIC alphadiamond::diamond_model ${TORCH_LIBRARIES})
     target_include_directories(diamond_qt_backend PRIVATE ${TORCH_INCLUDE_DIRS})
-    target_compile_definitions(diamond_qt_backend PRIVATE
-        DIAMOND_QT_HAS_SOO _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
+    target_compile_definitions(diamond_qt_backend
+        PUBLIC DIAMOND_QT_HAS_SOO
+        PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE QT_NO_KEYWORDS)
 endif()
 if(MSVC)
     target_compile_options(diamond_qt_backend PRIVATE /W4)

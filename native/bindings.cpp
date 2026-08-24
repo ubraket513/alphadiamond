@@ -334,15 +334,7 @@ class Game {
         return soo::to_physical_action(action, match_, state.current_player);
     }
 
-    // Gate B: one deterministic search, single-threaded, no Python callback.
-    py::dict search(const State& state, const MCTSConfig& config, double temperature,
-                    bool trace, const std::string& evaluator_name) const {
-        DeterministicEvaluator hashed;
-        UniformPriorEvaluator uniform;
-        Evaluator& evaluator = pick(evaluator_name, hashed, uniform);
-        MCTS2P search(match_, evaluator, config);
-        const SearchResult result = search.run(state, temperature, trace);
-
+    static py::dict pack_search(const SearchResult& result) {
         py::dict out;
         out["selected_action"] = result.selected_action;
         out["root_actions"] = py::cast(result.root_actions);
@@ -350,6 +342,8 @@ class Game {
         out["q_values"] = py::cast(result.q_values);
         out["policy"] = py::cast(result.policy);
         out["root_priors"] = py::cast(result.root_priors);
+        out["root_network_value"] = result.root_network_value;
+        out["root_mean_value"] = result.root_mean_value;
         out["simulations_run"] = result.simulations_run;
         out["evaluator_calls"] = result.evaluator_calls;
         out["nodes_created"] = result.nodes_created;
@@ -359,6 +353,49 @@ class Game {
         }
         out["trace"] = trace_out;
         return out;
+    }
+
+    // Gate B: one deterministic search, single-threaded, no Python callback.
+    py::dict search(const State& state, const MCTSConfig& config, double temperature,
+                    bool trace, const std::string& evaluator_name) const {
+        DeterministicEvaluator hashed;
+        UniformPriorEvaluator uniform;
+        Evaluator& evaluator = pick(evaluator_name, hashed, uniform);
+        MCTS2P search(match_, evaluator, config);
+        return pack_search(search.run(state, temperature, trace));
+    }
+
+    // One search, answered by a Python callback: the arena's shape, where two
+    // different networks alternate moves in the same game.
+    //
+    // Unlike schedule_with_callback this keeps the GIL. There is no evaluator
+    // thread to deadlock against -- the session suspends on the calling thread,
+    // the callback runs there too, and a batch is one position. That is the
+    // right trade here: an arena move is latency-bound on a single forward
+    // pass, and the alternative (a scheduler per move) would pay for threads it
+    // cannot fill.
+    py::dict search_with_callback(const State& state, const MCTSConfig& config, double temperature,
+                                  bool trace, const py::object& callback,
+                                  const std::string& mode) const {
+        if (mode != "value_only" && mode != "policy_value") {
+            throw std::invalid_argument("mode must be 'value_only' or 'policy_value'");
+        }
+        PythonBatchEvaluator evaluator(callback, mode == "policy_value", match_);
+        SearchSession session(match_, config);
+        session.begin(state, temperature, trace);
+        while (session.advance() == SearchSession::Status::NeedsEvaluation) {
+            EvalOutcome outcome;
+            BatchItem item;
+            item.state = &session.pending_state();
+            item.encoded = &session.pending_features();
+            item.actions = &session.pending_actions();
+            item.outcome = &outcome;
+            evaluator.prepare(item);
+            std::vector<BatchItem> batch{item};
+            evaluator.evaluate(batch);
+            session.supply(outcome);
+        }
+        return pack_search(session.result());
     }
 
     // Gate D: the same scheduler, answered by a Python callback.
@@ -678,6 +715,9 @@ PYBIND11_MODULE(_diamond_native, m) {
         .def("search", &Game::search, py::arg("state"), py::arg("config"),
              py::arg("temperature") = 0.0, py::arg("trace") = false,
              py::arg("evaluator") = "hash")
+        .def("search_with_callback", &Game::search_with_callback, py::arg("state"),
+             py::arg("config"), py::arg("temperature") = 0.0, py::arg("trace") = false,
+             py::arg("callback") = py::none(), py::arg("mode") = "value_only")
         .def("schedule", &Game::schedule, py::arg("opening"), py::arg("config"))
         .def("play_episodes", &Game::play_episodes, py::arg("jobs"), py::arg("config"),
              py::arg("callback"), py::arg("mode") = "value_only")

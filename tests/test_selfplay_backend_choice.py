@@ -51,3 +51,9 @@ def test_auto_follows_extension_availability(monkeypatch: pytest.MonkeyPatch):
 
 def test_auto_is_an_accepted_backend():
     assert "auto" in az_train.SELFPLAY_BACKENDS
+
+
+def test_auto_is_the_default():
+    """The C++ core is the authority, so a run reaches for it unprompted."""
+    source = (ROOT / "tools" / "az_train.py").read_text(encoding="utf-8")
+    assert 'workers.get("selfplay_backend", "auto")' in source

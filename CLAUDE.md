@@ -37,6 +37,14 @@ separate products with separate build and test commands. Read
 code between them -- it defines what the golden fixtures are for and the rule
 for retiring a Python parity gate.
 
+**The C++ core is the source of truth** for rules, encoding, search and
+self-play. `src/diamond/game` and `src/diamond/alphazero/mcts` are the oracle
+behind `tests/golden/` and the other half of the bridge gates, and nothing
+else; `tests/test_engine_retirement.py` fails if new code depends on them. See
+[docs/architecture/retiring_the_python_engine.md](docs/architecture/retiring_the_python_engine.md),
+and [docs/architecture/migration_progress.md](docs/architecture/migration_progress.md)
+for what is done and what is left against the plan in `migrate-and-cleanup.md`.
+
 ## Build and test
 
 CMake is the build system and CTest runs the native tests; the Makefile is only

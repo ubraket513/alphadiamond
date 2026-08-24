@@ -1,7 +1,15 @@
 """Pure game engine: board topology, rules, state and history.
 
-This package stays independent of any GUI toolkit so it can be tested
-headlessly and used by the AlphaZero training and native-parity pipelines.
+**No longer the source of truth.** The C++ core under ``native/`` is the
+authority for rules, encoding, search and self-play; this package is kept as
+the oracle that generates ``tests/golden/`` and as the other half of the bridge
+parity gates, and it is scheduled for deletion once neither job needs it. New
+production code should reach for ``diamond.alphazero.native`` instead --
+``tests/test_engine_retirement.py`` fails if it does not.
+
+See ``docs/architecture/retiring_the_python_engine.md``.
+
+The package stays independent of any GUI toolkit so it can be tested headlessly.
 """
 
 from .board import Board, BoardPosition, Camp, standard_board
@@ -23,13 +31,14 @@ from .state import (
 )
 
 __all__ = [
+    "DEFAULT_PLAYERS",
+    "DIRECTIONS",
+    "EMPTY",
+    "SCHEMA_VERSION",
     "Board",
     "BoardPosition",
     "Camp",
     "Cube",
-    "DEFAULT_PLAYERS",
-    "DIRECTIONS",
-    "EMPTY",
     "GameSession",
     "GameState",
     "GameStatus",
@@ -39,7 +48,6 @@ __all__ = [
     "MoveRecord",
     "PlayerKind",
     "PlayerSpec",
-    "SCHEMA_VERSION",
     "find_legal_move",
     "find_winner",
     "initial_state",

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..config import MCTSConfig
 from ..deadline import Deadline
 from ..evaluator.base import EvalRequest, Evaluator
+from ..search_result import SearchResult2P
 from .puct import add_dirichlet_noise, exploration_bonus, select_from_visits
 from .tree import ScalarEdge, ScalarNode
 
@@ -20,14 +20,6 @@ class TwoPlayerSearchGame(Protocol):
     def is_terminal(self, state: Any) -> bool: ...
     def terminal_scalar_value(self, state: Any, player_id: int) -> float: ...
     def evaluation_request(self, state: Any) -> EvalRequest: ...
-
-
-@dataclass(frozen=True, slots=True)
-class SearchResult2P:
-    selected_action: int
-    visit_counts: dict[int, int]
-    policy: dict[int, float]
-    q_values: dict[int, float]
 
 
 class MCTS2P:
@@ -105,10 +97,10 @@ class MCTS2P:
         request = self.game.evaluation_request(node.state)
         result = self.evaluator.evaluate((request,))[0]
         if not isinstance(result.value, float):
-            # noqa-reason: every contract violation in this module raises
+            # Every contract violation in this module raises
             # ValueError, and callers catch it; TypeError here would be both
             # inconsistent and a behaviour change.
-            raise ValueError(  # noqa: TRY004
+            raise ValueError(
                 "2P evaluator must return a scalar float value"
             )
         # Check the priors against the legal set this request was built from,

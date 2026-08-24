@@ -152,11 +152,49 @@ jobs:
       - name: Gate A-F
         run: pytest tests/native -v --durations=10
 
-  # There is no `gui` job. The PySide test suite it ran was deleted with the
-  # last GUI test (5c499e7), so `pytest -m gui` collected nothing and exited 5
-  # -- a job that cannot pass and guards nothing. The Qt application under test
-  # now is the native one, and its lane joins CI with the change that fixes
-  # diamond_qt_controller_contract; see docs/architecture/products.md.
+  # The shipped application, built and exercised headless. This replaces the
+  # old `gui` job: the PySide suite it ran was deleted with the last GUI test
+  # (5c499e7), and the Qt application under test now is the native one.
+  #
+  # Built without the Torch-backed Soo search, which is what the C++ contract
+  # test is written to tolerate: `analysisAvailable()` reports the build, not
+  # the search.
+  native-qt:
+    name: native-qt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-libav libpulse0
+
+      # The distribution's Qt is 6.4; the application's QML needs 6.6 (see
+      # native/qt/CMakeLists.txt). Only the toolchain comes from here -- the
+      # build and the tests themselves still run without Python.
+      - name: Install Qt 6.8
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+          modules: 'qtmultimedia'
+          cache: true
+
+      - name: Configure
+        run: cmake --preset native-qt
+
+      - name: Build
+        run: cmake --build --preset native-qt --parallel
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --preset native-qt
 
   # Scoped to the files a change actually touches. The tree still carries
   # pre-existing ruff findings; linting everything would make this job red on

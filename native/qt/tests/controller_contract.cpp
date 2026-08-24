@@ -392,8 +392,16 @@ int main(int argc, char** argv) {
     const int ai_turn = ai_controller.turnNumber();
     const QString first_ai_move = ai_controller.proposalSummary();
     if (!require(ai_controller.canConfirm(), "AI proposal cannot be confirmed")) return 1;
-    if (!require(ai_controller.analysisAvailable() &&
-                 !ai_controller.latestSearchCompute().isEmpty() &&
+    // analysisAvailable() reports whether this build has the Torch-backed Soo
+    // search, not what the search just did: it is false in a build without
+    // DIAMOND_QT_HAS_SOO however well the fallback search ran. Asserting it
+    // unconditionally tested the build flag rather than the behaviour, which is
+    // why this contract failed in the default Qt build.
+#ifdef DIAMOND_QT_HAS_SOO
+    if (!require(ai_controller.analysisAvailable(),
+                 "the Soo build must offer analysis for a two-seat match")) return 1;
+#endif
+    if (!require(!ai_controller.latestSearchCompute().isEmpty() &&
                  ai_controller.positionTelemetry().size() == 1,
                  "completed AI search did not publish pending telemetry")) return 1;
 
