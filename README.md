@@ -10,7 +10,7 @@ confirming it.
 
 The primary Windows application is a native Qt 6 executable. Two-player human
 play uses the exported Soo AlphaZero model through LibTorch and the existing
-native C++ MCTS; Python remains the training and model-export environment only.
+native C++ MCTS; training, checkpointing, and model release are native C++ as well.
 
 ---
 
@@ -67,36 +67,21 @@ Nothing reaches the authoritative game state until the Controller confirms.
 ```
 
 **Dependency rule:** QML never computes legality. All authoritative rule
-decisions and AI proposal validation happen in the native C++ engine. The
-retired Python/PySide GUI is no longer shipped; Python is used only for
-training, deployment export, and headless parity/reference tests.
+decisions and AI proposal validation happen in the native C++ engine. The retired Python/PySide GUI and bridge are no longer shipped; training,
+deployment release, and contract tests execute through native C++ targets.
 
 ### Layout
 
 ```
 native/
-├── include/soo/         engine, state, rules, MCTS interfaces
-├── include/diamond_model/ LibTorch Soo model/evaluator
-├── src/                 reusable native engine/model implementation
-└── qt/                  NativeController, worker, audio, native chrome, host
-src/diamond/
-├── alphazero/           authoritative Python training/export pipeline
-├── game/ + agents/      headless training/parity reference implementation
-├── assets/              bundled fonts and move sound
-└── qml/                 shared visual source used unchanged by native Qt
-    ├── Main.qml  Board.qml  Hole.qml  Piece.qml
-    ├── SidePanel.qml  GamePanel.qml
-    ├── AiPanel.qml  HistoryPanel.qml
-    ├── PanelSection.qml  ActionButton.qml
-    ├── AppDialog.qml        the one styled shell every pop-up uses
-    ├── NewMatchDialog.qml   seat count, turn order, agent seat
-    ├── ResultDialog.qml     final standings
-    ├── TitleBar.qml         custom window chrome: menus + caption buttons
-    ├── TitleMenu.qml        one flat menu in the title bar
-    ├── WindowButton.qml     minimise / maximise / close
-    ├── SoundDialog.qml      mute + volume, from View ▸ Sounds
-    ├── SegmentedControl.qml ReorderButton.qml PanelScrollBar.qml
-    └── Style/Theme.qml   ← every colour, size and duration lives here
+├── include/             rules, search, model, training, pipeline, release APIs
+├── src/                 reusable native implementation and command-line tools
+├── benchmarks/          explicit native performance probes
+├── tests/               CTest contract and pipeline acceptance tests
+└── qt/
+    ├── qml/             application QML and shared theme
+    ├── assets/          bundled fonts and move sound
+    └── *.cpp/*.hpp      controller, worker, audio, native chrome, host
 ```
 
 The app and native contract test both link the reusable `diamond_qt_backend`
@@ -601,7 +586,7 @@ dialog from the board lattice behind it.
 
 ### Typography
 
-The UI is set in **Google Sans Flex**, bundled in `src/diamond/assets/fonts/`
+The UI is set in **Google Sans Flex**, bundled in `native/qt/assets/fonts/`
 under the SIL Open Font License (Regular/Medium/Bold). It is embedded in the
 native Qt resources and registered at startup, which hands the resolved family name to QML — so
 the UI never asks for a family that might not exist. The font ships with the
@@ -659,22 +644,20 @@ For the primary Windows GUI:
 * CMake/Ninja, Qt 6 (Core, Gui, Qml, Quick, QuickControls2, Multimedia)
 * CPU LibTorch for the Soo-enabled build
 
-This checkout uses the mamba environment at
-`C:\ProgramData\miniforge3\envs\alphadiamond`. Python 3.11+ is still required
-for training and deployment export, but not by the packaged native executable.
+The validated Windows development environment is the mamba environment at
+`C:\ProgramData\miniforge3\envs\alphadiamond`; it supplies CMake, Qt, and
+CPU LibTorch. The build, trainer, release tools, tests, and packaged application
+run through native executables without an interpreter.
 
 ## Installation
 
-```powershell
+```bash
 mamba activate C:\ProgramData\miniforge3\envs\alphadiamond
-cmake -S . -B build-qt-soo-clean -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DDIAMOND_BUILD_QT_SOO=ON `
-  -DDIAMOND_BUILD_LIBTORCH_PROBE=ON
-cmake --build build-qt-soo-clean --parallel 1
-powershell -ExecutionPolicy Bypass -File .\tools\deploy_native_qt.ps1 `
-  -BuildDir build-qt-soo-clean -OutputDir dist\diamond-qt-soo `
-  -WithSoo -EnvironmentRoot $env:CONDA_PREFIX
+tools/native_training.sh cmake --preset native-package
+tools/native_training.sh cmake --build --preset native-package --parallel 1
+tools/deploy_native_qt.sh --build-dir build/native-package \
+  --output-dir dist/diamond-qt-soo --with-soo \
+  --environment-root "$CONDA_PREFIX"
 ```
 
 ## How to run
@@ -682,9 +665,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\deploy_native_qt.ps1 `
 Run the packaged Soo application through the launcher, which clears stale Qt
 platform settings and exposes the simulation count:
 
-```powershell
-.\tools\run_native_qt.ps1 -Soo
-.\tools\run_native_qt.ps1 -Soo -Simulations 256
+```bash
+tools/run_native_qt.sh --soo
+tools/run_native_qt.sh --soo --simulations 256
 ```
 
 The window opens at 1440 × 900 and stays usable down to 980 × 640; the board
@@ -699,10 +682,9 @@ environment, so development-machine DLLs cannot mask an incomplete package.
 
 ## How to run tests
 
-```powershell
-$env:QT_QPA_PLATFORM = "offscreen"
-ctest --test-dir build-qt-soo-clean --output-on-failure
-python -m pytest
+```bash
+QT_QPA_PLATFORM=offscreen tools/native_training.sh ctest \
+  --preset native-package --output-on-failure
 ```
 
 See [docs/native-selfplay/native_windows_runtime.md](docs/native-selfplay/native_windows_runtime.md) for the
@@ -851,10 +833,8 @@ Undo works normally after a load.
 
 ## Training and deployment boundary
 
-Python/PyTorch remains authoritative for training and checkpoint creation; see
-[CLAUDE.md](CLAUDE.md) and
-[docs/architecture/products.md](docs/architecture/products.md).
-`tools/export_deployment.py`
-produces the versioned portable artifact consumed by the Windows LibTorch
-runtime. The native application neither imports Python nor starts a Python or
-WSL subprocess.
+`alphadiamond-train` owns native CPU training and checkpoint-v2 resume.
+`alphadiamond-checkpoint` validates versioned checkpoints, while
+`alphadiamond-release` validates and stages runtime-only model artifacts. The
+Qt application loads the staged artifact directly through LibTorch; no bridge,
+interpreter, or WSL subprocess exists in the supported runtime.

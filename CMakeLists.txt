@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.21)
 
 project(alphadiamond LANGUAGES CXX)
 
-option(DIAMOND_BUILD_PYBIND "Build the optional pybind11 extension" OFF)
 option(DIAMOND_BUILD_NATIVE_TESTS "Build portable native smoke tests" ON)
 option(DIAMOND_BUILD_LIBTORCH "Build native LibTorch model and training support" OFF)
 option(DIAMOND_BUILD_LIBTORCH_PROBE "Deprecated alias for DIAMOND_BUILD_LIBTORCH" OFF)
@@ -32,6 +31,24 @@ include(CTest)
 find_package(Threads REQUIRED)
 
 add_subdirectory(native)
+
+if(BUILD_TESTING)
+    add_test(NAME python_zero_policy
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR:PATH=${PROJECT_SOURCE_DIR}
+            -P ${PROJECT_SOURCE_DIR}/cmake/VerifyPythonZero.cmake)
+    add_test(NAME repository_hygiene
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR:PATH=${PROJECT_SOURCE_DIR}
+            -P ${PROJECT_SOURCE_DIR}/cmake/VerifyRepositoryHygiene.cmake)
+    add_test(NAME supported_commands_policy
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR:PATH=${PROJECT_SOURCE_DIR}
+            -P ${PROJECT_SOURCE_DIR}/cmake/VerifySupportedCommands.cmake)
+    set_tests_properties(
+        python_zero_policy repository_hygiene supported_commands_policy
+        PROPERTIES LABELS policy)
+endif()
 
 if(DIAMOND_BUILD_QT OR DIAMOND_BUILD_QT_SOO)
     add_subdirectory(native/qt)

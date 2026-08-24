@@ -71,14 +71,6 @@ target_compile_options(diamond_pipeline PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
-if(DIAMOND_BUILD_PYBIND)
-    find_package(pybind11 CONFIG REQUIRED)
-
-    pybind11_add_module(diamond_native MODULE ../native/bindings.cpp)
-    target_link_libraries(diamond_native PRIVATE alphadiamond::soo_search)
-    target_compile_features(diamond_native PRIVATE cxx_std_20)
-endif()
-
 if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     # Golden fixtures are committed data, not build output: the tests below run
     # on a machine with no Python, no pybind and no pytest.
@@ -113,6 +105,13 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(replay_store_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-store-scratch")
     target_link_libraries(replay_schema_test PRIVATE alphadiamond::diamond_pipeline)
     target_link_libraries(replay_store_test PRIVATE alphadiamond::diamond_pipeline)
+
+    add_executable(golden_manifest_test tests/golden_manifest_test.cpp)
+    target_link_libraries(golden_manifest_test PRIVATE alphadiamond::diamond_pipeline)
+    target_compile_features(golden_manifest_test PRIVATE cxx_std_20)
+    add_test(NAME golden_manifest_test
+        COMMAND golden_manifest_test "${DIAMOND_GOLDEN_DIR}")
+    set_tests_properties(golden_manifest_test PROPERTIES LABELS contract)
 endif()
 
 if(DIAMOND_BUILD_LIBTORCH)
@@ -275,9 +274,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     endif()
 
     if(BUILD_TESTING)
-        # Artifact fixtures are exported, not committed:
-        #   python tools/export_deployment.py artifacts/soo-spike --family soo
-        #   python tools/export_deployment.py artifacts/min-spike --family min
+        # Deployment artifacts are produced by the native release pipeline.
         # The tests register only for the artifacts that are present, so a
         # checkout without them configures cleanly instead of failing late.
         set(DIAMOND_SOO_ARTIFACT "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")

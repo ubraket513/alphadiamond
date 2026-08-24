@@ -1,10 +1,9 @@
 # Soo from scratch — training record
 
 
-> **Note, 2026-08-24.** Throughput figures here compare against "the Python
-> backend". That backend is deleted (decision 3): the numbers are the
-> measurements taken at the time, kept as evidence, and there is nothing left
-> to re-measure them against.
+> **Historical record.** Python-era throughput numbers and commands below are
+> preserved only as evidence. Current training, checkpoint, release, and smoke
+> operations use the native executables documented in the operating section.
 
 The first Soo training run on the native self-play backend, from a randomly
 initialised network. Live document: configuration and reasoning are settled,
@@ -75,14 +74,9 @@ other direction (§12.3: *deterministic* self-play does not terminate either,
 even with a trained network).
 
 **The switch to A0 (`bootstrap_prior = none`) is gated, not scheduled.** The
-criterion is the blueprint's own, implemented in `tools/cpu_off_probe.py`:
-
-> at least **8 of 10** games complete with `bootstrap_prior = none`
-
-It is an *operational* gate — can this network generate real terminal games on
-its own — and explicitly not a claim about playing strength. Run it with
-`tools/off_probe_soo_scratch.sh`; probes are archived under
-`probes/`.
+historical gate was the blueprint's own: at least **8 of 10**
+heuristic-free games complete. Its archived results remain under `probes/`; the
+retired probe is not a supported command.
 
 One throughput consequence to expect at the switch: heuristics-on is the native
 `value_only` path, heuristics-off is `policy_value`, which reached only 53 % of
@@ -106,8 +100,7 @@ optimum of 256 lanes / cap 128 / 50 µs cannot be assumed to carry over.
 
 ## 3. Configuration, and why
 
-`runtime/configs/soo-rtx5090-native.json`, driven by
-`tools/train_soo_scratch.sh`.
+`runtime/configs/soo-rtx5090-native.json`, the archived GPU-host configuration.
 
 | setting | value | reasoning |
 |---|---|---|
@@ -133,25 +126,24 @@ depend on the cadence.
 
 ## 4. Operating it
 
+A production run consumes a validated checkpoint-v2 root and the native JSON
+configuration:
+
 ```bash
-# a resumable block; re-running continues from latest.pt rather than restarting
-tools/train_soo_scratch.sh 6                       # B0, 6 hours
-tools/train_soo_scratch.sh 6 none A0               # after the gate passes
-
-# the heuristics-off gate
-tools/off_probe_soo_scratch.sh
-
-# progress
-grep -E '^\[i' /workspace/alphadiamond-training/train-b0.log | tail
+build/native-training/native/alphadiamond-train train \
+  --runtime-dir runtime --model Soo --run-id soo-production \
+  --config configs/alphazero/soo-production.json \
+  --checkpoint <checkpoint-v2-root>
 ```
 
-The run imports from a **pinned source snapshot**
-(`/workspace/alphadiamond-training/pinned-src`), asserted at startup, so repo
-work — including rebuilding the extension — cannot reach a run already in
-flight. `SIGTERM` finishes the current iteration and exits cleanly with state
-durable.
+Use the focused CPU smoke before a long run:
 
----
+```bash
+build/native-training/native/training_step_benchmark --repetitions 1
+```
+
+Both commands execute LibTorch training directly; no bridge or interpreter is
+in the runtime path.
 
 ## 5. Results
 

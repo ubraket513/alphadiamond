@@ -1,6 +1,8 @@
 schema_version: 1
-generated_from: "git ls-files '*.py' at f0f4a8a7a3928a3770afe16d5e1e246001961759"
-tracked_python_file_count: 183
+baseline_generated_from: "git ls-files '*.py' at f0f4a8a7a3928a3770afe16d5e1e246001961759"
+baseline_tracked_python_file_count: 183
+current_tracked_python_file_count: 0
+migration_status: "implementation complete; PR13 runtime acceptance pending"
 category_definitions:
   A: "Behavior already authoritative in native C++; prove/strengthen CTest, then remove the Python duplicate and its pytest together."
   B: "Pybind boundary behavior; retain only while a real Python caller and the boundary exist."

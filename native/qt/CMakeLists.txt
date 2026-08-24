@@ -48,8 +48,8 @@ qt_add_executable(diamond_qt
     native_chrome.hpp
 )
 
-set(QML_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../src/diamond/qml")
-set(ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../src/diamond/assets")
+set(QML_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+set(ASSET_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 
 qt_add_resources(diamond_qt qml_resources
     PREFIX "/qml"
@@ -134,7 +134,7 @@ if(BUILD_TESTING)
     )
 endif()
 
-set(MOVE_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/../../src/diamond/assets/sounds/move.m4a")
+set(MOVE_SOUND "${ASSET_ROOT}/sounds/move.m4a")
 foreach(sound_target diamond_qt diamond_qt_controller_contract)
     if(TARGET ${sound_target})
         add_custom_command(TARGET ${sound_target} POST_BUILD
@@ -146,3 +146,4 @@ foreach(sound_target diamond_qt diamond_qt_controller_contract)
 endforeach()
 
 install(TARGETS diamond_qt RUNTIME DESTINATION bin BUNDLE DESTINATION .)
+install(FILES "${MOVE_SOUND}" DESTINATION bin/assets/sounds)

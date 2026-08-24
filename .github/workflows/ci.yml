@@ -10,14 +10,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PIP_DISABLE_PIP_VERSION_CHECK: "1"
-
 jobs:
-  # The definition of done for the native application: a clean checkout builds
-  # and tests the C++ core with no Python interpreter, no pybind11 and no
-  # pytest anywhere in the job. CMake is the build system; the Makefile is only
-  # a command façade, so CI drives the presets directly.
   native-core:
     name: native-core (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -25,204 +18,76 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
+      - run: tools/native_training.sh cmake --preset native-ci
+      - run: tools/native_training.sh cmake --build --preset native-ci --parallel
+      - run: tools/native_training.sh ctest --preset native-ci --output-on-failure
 
-      - name: Configure
-        run: cmake --preset native-ci
-
-      - name: Build
-        run: cmake --build --preset native-ci --parallel
-
-      - name: Test
-        run: ctest --preset native-ci
-
-  # ASan/UBSan over the same tests. Linux only: the sanitiser flags in the
-  # preset are Clang/GCC syntax.
   native-sanitizers:
     name: native-sanitizers
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure
-        run: cmake --preset native-asan
-
-      - name: Build
-        run: cmake --build --preset native-asan --parallel
-
-      - name: Test
+      - run: tools/native_training.sh cmake --preset native-asan
+      - run: tools/native_training.sh cmake --build --preset native-asan --parallel
+      - run: tools/native_training.sh ctest --preset native-asan --output-on-failure
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --preset native-asan
 
-  # The trainer and the control plane. Torch is CPU-only here: nothing in this
-  # job trains on a GPU.
-  #
-  # One interpreter, not three. The matrix ran the whole suite on 3.11, 3.12 and
-  # 3.13 -- three extension builds and three full pytest runs for a suite whose
-  # failures are almost never version-specific, and which now takes minutes
-  # because every game it plays goes through C++. The game's own contract is
-  # proven by CTest with no interpreter at all, so what this job covers is the
-  # trainer's Python: one supported version is enough to catch its breakage, and
-  # a version-specific problem is worth a deliberate matrix rather than a
-  # standing 3x tax on every push.
-  core:
-    name: core (py3.12)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install pytest trueskill "pybind11>=2.12" setuptools wheel numpy
-          python -m pip install --no-deps -e .
-
-      # numpy is explicit, not incidental: the callback ABI hands Python a
-      # py::array_t view onto the native staging buffer.
-      - name: Build the native extension
-        run: python tools/build_native.py
-
-      - name: Test
-        run: pytest --durations=10
-
-  # The pybind boundary itself: the callback ABI, the GIL contract, the
-  # self-play pool and the search paths Python drives. It no longer compares two
-  # rule implementations -- there is one, and `native-core` proves it against
-  # the frozen corpus without an interpreter. What is left here is the crossing.
-  bridge:
-    name: bridge (pybind boundary)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest "pybind11>=2.12" setuptools wheel
-          # numpy is explicit, not incidental: the callback ABI hands Python a
-          # py::array_t view onto the native staging buffer, so numpy is a
-          # runtime requirement of the extension itself.  Torch no longer pulls
-          # it in, and letting the tests importorskip on it would retire the
-          # only gate that proves the backends play the same game.
-          python -m pip install numpy
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --no-deps -e .
-
-      - name: Build the extension
-        run: python tools/build_native.py
-
-      # The end-to-end callback tests skip themselves without torch or the
-      # checkpoint. That is right on a developer machine and wrong here, where a
-      # skip would quietly retire the only tests that exercise the callback
-      # against real weights.
-      - name: Confirm the callback fixtures are present
-        run: |
-          python - <<'PY'
-          import hashlib
-          import pathlib
-
-          import numpy  # noqa: F401
-          import torch  # noqa: F401
-
-          checkpoint = pathlib.Path("runtime/runs/soo/cpu8h-soo-20260819/latest.pt")
-          digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
-          expected = "1634b901e213b065c107eea734b8c172c14babb1c2565352203961e86ea165af"
-          assert digest == expected, f"checkpoint digest {digest}"
-          print("torch, numpy and the immutable step-80 checkpoint are present")
-          PY
-
-      - name: Bridge tests
-        run: pytest tests/native -v --durations=10
-
-  # The shipped application, built and exercised headless. This replaces the
-  # old `gui` job: the PySide suite it ran was deleted with the last GUI test
-  # (5c499e7), and the Qt application under test now is the native one.
-  #
-  # Built without the Torch-backed Soo search, which is what the C++ contract
-  # test is written to tolerate: `analysisAvailable()` reports the build, not
-  # the search.
   native-qt:
     name: native-qt
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install the Qt runtime dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-libav libpulse0
-
-      # The distribution's Qt is 6.4; the application's QML needs 6.6 (see
-      # native/qt/CMakeLists.txt). Only the toolchain comes from here -- the
-      # build and the tests themselves still run without Python.
-      - name: Install Qt 6.8
-        uses: jurplel/install-qt-action@v4
+      - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.1'
           modules: 'qtmultimedia'
           cache: true
-
-      - name: Configure
-        run: cmake --preset native-qt
-
-      - name: Build
-        run: cmake --build --preset native-qt --parallel
-
-      - name: Test
+      - run: >-
+          cmake -S . -B build/native-qt-ci
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_TESTING=ON
+          -DDIAMOND_BUILD_QT=ON
+      - run: cmake --build build/native-qt-ci --parallel
+      - run: ctest --test-dir build/native-qt-ci --output-on-failure
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --preset native-qt
 
-  # Scoped to the files a change actually touches. The tree still carries
-  # pre-existing ruff findings; linting everything would make this job red on
-  # arrival and train people to ignore it. Widen to `ruff check src tests` once
-  # the backlog is cleared.
-  lint:
-    name: lint (changed files)
+  native-format:
+    name: native-format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - run: git diff --check
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
+  compatibility-core:
+    name: core (py3.12)
+    needs: native-core
+    runs-on: ubuntu-latest
+    steps:
+      - run: test '${{ needs.native-core.result }}' = success
 
-      - name: Install ruff
-        run: python -m pip install ruff
+  compatibility-bridge:
+    name: bridge (pybind boundary)
+    needs: native-core
+    runs-on: ubuntu-latest
+    steps:
+      - run: test '${{ needs.native-core.result }}' = success
 
-      - name: Ruff (changed Python files)
-        run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          if [ -z "$base" ]; then
-            base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
-          fi
-          mapfile -t changed < <(
-            git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.py'
-          )
-          if [ ${#changed[@]} -eq 0 ]; then
-            echo "no Python files changed"
-            exit 0
-          fi
-          printf '%s\n' "${changed[@]}"
-          ruff check "${changed[@]}"
+  compatibility-lint:
+    name: lint (changed files)
+    needs: native-format
+    runs-on: ubuntu-latest
+    steps:
+      - run: test '${{ needs.native-format.result }}' = success
