@@ -4,7 +4,11 @@ project(alphadiamond LANGUAGES CXX)
 
 option(DIAMOND_BUILD_PYBIND "Build the optional pybind11 extension" OFF)
 option(DIAMOND_BUILD_NATIVE_TESTS "Build portable native smoke tests" ON)
-option(DIAMOND_BUILD_LIBTORCH_PROBE "Build the Q2 LibTorch parity probe" OFF)
+option(DIAMOND_BUILD_LIBTORCH "Build native LibTorch model and training support" OFF)
+option(DIAMOND_BUILD_LIBTORCH_PROBE "Deprecated alias for DIAMOND_BUILD_LIBTORCH" OFF)
+if(DIAMOND_BUILD_LIBTORCH_PROBE)
+    set(DIAMOND_BUILD_LIBTORCH ON CACHE BOOL "Build native LibTorch model and training support" FORCE)
+endif()
 option(DIAMOND_BUILD_QT "Build the native Qt/QML shell" OFF)
 option(DIAMOND_BUILD_QT_SOO "Build Qt shell with native LibTorch Soo search" OFF)
 

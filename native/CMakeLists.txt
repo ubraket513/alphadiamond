@@ -92,10 +92,11 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
 endif()
 
-if(DIAMOND_BUILD_LIBTORCH_PROBE)
+if(DIAMOND_BUILD_LIBTORCH)
     find_package(Torch REQUIRED)
     add_library(diamond_model STATIC
         src/deployment_artifact.cpp
+        src/json.cpp
         src/soo_model.cpp
         src/soo_evaluator.cpp
     )
@@ -180,7 +181,21 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
                 add_test(NAME model_parity_test
                          COMMAND model_parity_test soo "${DIAMOND_SOO_ARTIFACT}")
             endif()
+            if(WIN32)
+                list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
+                get_filename_component(DIAMOND_TORCH_PREFIX
+                    "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
+                set_tests_properties(model_parity_test PROPERTIES
+                    ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+            endif()
         endif()
+
+        add_executable(training_vector_manifest_test tests/training_vector_manifest_test.cpp)
+        target_link_libraries(training_vector_manifest_test PRIVATE alphadiamond::diamond_model)
+        target_compile_features(training_vector_manifest_test PRIVATE cxx_std_20)
+        add_test(NAME training_vector_manifest_test
+                 COMMAND training_vector_manifest_test
+                         "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
     endif()
 endif()
 

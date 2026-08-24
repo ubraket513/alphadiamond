@@ -1,5 +1,6 @@
 #include "diamond_model/deployment_artifact.hpp"
 #include "diamond_model/model_index.hpp"
+#include "diamond_support/json.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,151 +14,13 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
-#include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace diamond_model {
 namespace {
 
-struct JsonValue {
-    using Array = std::vector<JsonValue>;
-    using Object = std::map<std::string, JsonValue>;
-    std::variant<std::nullptr_t, bool, int64_t, std::string, Array, Object> value;
-};
-
-class JsonParser {
-  public:
-    explicit JsonParser(std::string_view text) : text_(text) {}
-
-    JsonValue parse() {
-        JsonValue result = parse_value();
-        whitespace();
-        if (position_ != text_.size()) error("trailing data");
-        return result;
-    }
-
-  private:
-    [[noreturn]] void error(const char* message) const {
-        throw std::runtime_error("invalid deployment metadata at byte " +
-                                 std::to_string(position_) + ": " + message);
-    }
-
-    void whitespace() {
-        while (position_ < text_.size() &&
-               std::isspace(static_cast<unsigned char>(text_[position_]))) ++position_;
-    }
-
-    bool consume(char expected) {
-        whitespace();
-        if (position_ < text_.size() && text_[position_] == expected) {
-            ++position_;
-            return true;
-        }
-        return false;
-    }
-
-    JsonValue parse_value() {
-        whitespace();
-        if (position_ >= text_.size()) error("unexpected end of input");
-        switch (text_[position_]) {
-            case '{': return JsonValue{parse_object()};
-            case '[': return JsonValue{parse_array()};
-            case '"': return JsonValue{parse_string()};
-            case 'n': literal("null"); return JsonValue{nullptr};
-            case 't': literal("true"); return JsonValue{true};
-            case 'f': literal("false"); return JsonValue{false};
-            default:
-                if (text_[position_] == '-' || std::isdigit(
-                        static_cast<unsigned char>(text_[position_])))
-                    return JsonValue{parse_integer()};
-                error("unexpected token");
-        }
-    }
-
-    JsonValue::Object parse_object() {
-        if (!consume('{')) error("expected object");
-        JsonValue::Object object;
-        if (consume('}')) return object;
-        for (;;) {
-            whitespace();
-            if (position_ >= text_.size() || text_[position_] != '"')
-                error("expected object key");
-            std::string key = parse_string();
-            if (!consume(':')) error("expected ':'");
-            if (!object.emplace(std::move(key), parse_value()).second)
-                error("duplicate object key");
-            if (consume('}')) return object;
-            if (!consume(',')) error("expected ','");
-        }
-    }
-
-    JsonValue::Array parse_array() {
-        if (!consume('[')) error("expected array");
-        JsonValue::Array array;
-        if (consume(']')) return array;
-        for (;;) {
-            array.push_back(parse_value());
-            if (consume(']')) return array;
-            if (!consume(',')) error("expected ','");
-        }
-    }
-
-    std::string parse_string() {
-        if (!consume('"')) error("expected string");
-        std::string result;
-        while (position_ < text_.size()) {
-            const char character = text_[position_++];
-            if (character == '"') return result;
-            if (static_cast<unsigned char>(character) < 0x20) error("control character in string");
-            if (character != '\\') {
-                result.push_back(character);
-                continue;
-            }
-            if (position_ >= text_.size()) error("unterminated string escape");
-            const char escaped = text_[position_++];
-            switch (escaped) {
-                case '"': result.push_back('"'); break;
-                case '\\': result.push_back('\\'); break;
-                case '/': result.push_back('/'); break;
-                case 'b': result.push_back('\b'); break;
-                case 'f': result.push_back('\f'); break;
-                case 'n': result.push_back('\n'); break;
-                case 'r': result.push_back('\r'); break;
-                case 't': result.push_back('\t'); break;
-                default: error("unsupported string escape");
-            }
-        }
-        error("unterminated string");
-    }
-
-    int64_t parse_integer() {
-        whitespace();
-        const size_t begin = position_;
-        if (text_[position_] == '-') ++position_;
-        if (position_ >= text_.size() || !std::isdigit(
-                static_cast<unsigned char>(text_[position_]))) error("invalid integer");
-        while (position_ < text_.size() && std::isdigit(
-                   static_cast<unsigned char>(text_[position_]))) ++position_;
-        if (position_ < text_.size() &&
-            (text_[position_] == '.' || text_[position_] == 'e' || text_[position_] == 'E'))
-            error("metadata numbers must be integers");
-        try {
-            return std::stoll(std::string(text_.substr(begin, position_ - begin)));
-        } catch (const std::exception&) {
-            error("integer is out of range");
-        }
-    }
-
-    void literal(std::string_view expected) {
-        if (text_.substr(position_, expected.size()) != expected) error("invalid literal");
-        position_ += expected.size();
-    }
-
-    std::string_view text_;
-    size_t position_ = 0;
-};
+using diamond_support::JsonValue;
 
 const JsonValue& field(const JsonValue::Object& object, const std::string& name) {
     const auto found = object.find(name);
@@ -402,7 +265,7 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
     static const std::set<std::string> source_keys = {
         "checkpoint_sha256", "training_commit", "training_step"};
 
-    const JsonValue parsed = JsonParser(read_text(root / "metadata.json")).parse();
+    const JsonValue parsed = diamond_support::parse_json(read_text(root / "metadata.json"));
     const auto* object = std::get_if<JsonValue::Object>(&parsed.value);
     if (!object) throw std::runtime_error("deployment metadata must be a JSON object");
     require_keys(*object, expected_keys, "metadata");
@@ -521,7 +384,7 @@ const ModelIndexEntry* ModelIndex::default_for(const std::string& family) const 
 }
 
 ModelIndex load_model_index(const std::filesystem::path& models_dir) {
-    const JsonValue parsed = JsonParser(read_text(models_dir / "index.json")).parse();
+    const JsonValue parsed = diamond_support::parse_json(read_text(models_dir / "index.json"));
     const auto* object = std::get_if<JsonValue::Object>(&parsed.value);
     if (!object) throw std::runtime_error("model index must be a JSON object");
     require_integer(*object, "index_version", 1);
