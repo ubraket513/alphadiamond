@@ -1,8 +1,9 @@
 # Python-Zero Migration — PR 00 Baseline
 
-**Status:** BLOCKED — the fourth prescribed correctness command started under
-the verified mamba environment, then failed during collection because the native
-extension `_diamond_native` was unavailable.
+**Status:** INCOMPLETE — the pre-repair mamba pytest run failed during collection
+because `_diamond_native` was unavailable. That extension was subsequently built
+and imported successfully, but the two post-repair pytest process completions
+lost their exit statuses and final summaries; neither is claimed PASS.
 
 **Recorded at:** 2026-08-24 (Windows PowerShell host)
 
@@ -173,10 +174,11 @@ process-local Visual Studio/MSVC environment:
 | Minimal import: `from diamond.alphazero.native import _diamond_native` with `PYTHONPATH=C:\tmp\codex-alphadiamond-pr00\src` | **FAIL** | 7.9 s | `ImportError: cannot import name '_diamond_native' from 'diamond.alphazero.native'`. |
 | Restore original editable source: `python -m pip install -e C:\Users\dzk55\alphadiamond` | PASS | 12.6 s | `pip` exited successfully and reinstalled editable `diamond-console` from the original user worktree. |
 
-The import diagnostic was run once and was not retried. Because it failed, the
-authorized post-repair pytest rerun was not started. No test or import diagnostic
+The import diagnostic was run once and was not retried. Because it failed, no
+post-repair pytest rerun was started at that point. No test or import diagnostic
 was run after restoration; the recorded successful `pip` exit is the only restore
-verification.
+verification. A later manual build diagnostic and its resulting test evidence are
+recorded below.
 
 ```text
 Traceback (most recent call last):
@@ -184,12 +186,40 @@ Traceback (most recent call last):
 ImportError: cannot import name '_diamond_native' from 'diamond.alphazero.native' (C:\tmp\codex-alphadiamond-pr00\src\diamond\alphazero\native\__init__.py)
 ```
 
+### Root-cause build diagnostic and post-repair test evidence
+
+The editable `.[native]` installation did **not** make an extension importable.
+One manually authorized, process-local build command,
+`python setup.py build_ext --inplace --verbose`, then completed successfully.
+It emitted MSVC warnings about ignored GCC-style options and pybind11 code-page
+warnings, but no build error. One subsequent minimal import diagnostic passed and
+loaded:
+
+```text
+C:\tmp\codex-alphadiamond-pr00\src\diamond\alphazero\native\_diamond_native.cp312-win_amd64.pyd
+```
+
+With that in-place extension and the required mamba interpreter, worktree
+`PYTHONPATH`, and process-local Visual Studio/MSVC environment, each prescribed
+pytest process was launched exactly once post-repair:
+
+| Process | Observed progress | Final status |
+| --- | --- | --- |
+| `pytest --ignore=tests/native --durations=10` | Progress reached 69%, with dots and skips shown. | **Indeterminate:** the tool lost the exit status and final summary. |
+| `pytest tests/native -v --durations=10` | Collected 41 items; output reached `tests\\native\\test_selfplay_pool.py ..`. | **Indeterminate:** the tool lost the exit status and final summary. |
+
+The native pytest process later exited, and its supplied
+`.pytest_cache/v/cache/lastfailed` value was `{}`. This is recorded as limited
+evidence only; it does not establish a suite pass. No benchmark, parity-
+environment, or branch-protection command was authorized after these
+indeterminate results.
+
 ## Benchmark baseline
 
-No benchmark subject was run. The correctness stop rule after the mamba pytest
-collection failure prevents warm-up and measurement repetitions. In addition, this
-Windows PowerShell environment has no POSIX `/usr/bin/time -v`; no substitute RSS
-result is fabricated.
+No benchmark subject was run. The post-repair pytest results are indeterminate,
+so no later baseline stage was authorized. In addition, this Windows PowerShell
+environment has no POSIX `/usr/bin/time -v`; no substitute RSS result is
+fabricated.
 
 | Subject | Status |
 | --- | --- |
@@ -202,11 +232,12 @@ result is fabricated.
 ## Environment, artifact, and protection recording
 
 The prescribed parity-environment commands (`python`/Torch, CMake version,
-C++ version, and clean-diff check) were not run after the mamba pytest collection
-failure. CPU/GPU, artifact sizes, and peak RSS are therefore **not captured**,
-rather than inferred. The controller verified Python 3.12.13, pytest 9.1.1,
-Torch 2.13.0+cpu, and TrueSkill 0.4.5 for the mamba interpreter; the repaired
-configure established the Visual Studio 18 2026 generator and MSVC 19.51.36248.0.
+C++ version, and clean-diff check) were not run after the indeterminate
+post-repair pytest results. CPU/GPU, artifact sizes, and peak RSS are therefore
+**not captured**, rather than inferred. The controller verified Python 3.12.13,
+pytest 9.1.1, Torch 2.13.0+cpu, and TrueSkill 0.4.5 for the mamba interpreter;
+the repaired configure established the Visual Studio 18 2026 generator and MSVC
+19.51.36248.0.
 
 The approved branch-protection PATCH and its readback were not run: the task
 requires stopping after a failed baseline command. No GitHub settings were
@@ -215,9 +246,9 @@ where the pytest baseline can start.
 
 ## Required unblock conditions
 
-1. Make the native extension importable by the verified mamba environment from
-   the PR worktree, then restart the prescribed baseline from the authorized
-   post-repair non-native pytest command; do not rerun successful commands.
+1. Recover authoritative exit statuses/final summaries for the already-launched
+   post-repair pytest processes before authorizing benchmark, environment, or
+   branch-protection stages.
 2. Add an approved tracked short-run benchmark manifest that pins the checkpoint
    SHA-256 and safe disposable commands for training, checkpoint/resume,
    self-play, and end-to-end measures.
