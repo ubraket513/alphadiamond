@@ -2,6 +2,7 @@
 // Python authority: diamond.alphazero.mcts.search_2p.MCTS2P.
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
@@ -104,6 +105,15 @@ class SearchSession {
         config_.simulations = simulations;
     }
 
+    // Wall-clock budget for this search, in seconds; <= 0 means unlimited.
+    //
+    // Mirrors MCTS2P's `deadline`: the first simulation always runs, so the
+    // returned visit distribution is usable even when the budget is already
+    // spent. Without this the native search cannot serve a caller that bounds a
+    // game by time, and dropping the bound silently would be worse than staying
+    // on the Python search.
+    void set_budget(double seconds) { budget_seconds_ = seconds; }
+
     Status advance();
     const Encoded& pending_features() const { return pending_encoded_; }
     const std::vector<int32_t>& pending_actions() const { return pending_actions_; }
@@ -148,6 +158,8 @@ class SearchSession {
     bool trace_ = false;
     double temperature_ = 0.0;
     Rng rng_;
+    double budget_seconds_ = 0.0;
+    std::chrono::steady_clock::time_point started_at_{};
     // Scratch for the Dirichlet draws and the temperature weights.  Both are
     // per-search and short; reusing one buffer keeps them off the allocator on
     // the search worker, which the scheduler cares about.

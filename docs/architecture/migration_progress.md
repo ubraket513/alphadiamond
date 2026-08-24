@@ -115,7 +115,8 @@ dependent ratchet                   done (tests/test_engine_retirement.py)
 arena on the native core            done (Soo and Min)
 GUI agent on native                 done (both seat counts)
 three-player native search          done (SearchSession3P)
-self-play runners on native         blocked on a native deadline
+native wall-clock deadline          done (set_budget on both sessions)
+self-play runners on the pool       next: batching, not the per-node bridge
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last
@@ -148,6 +149,14 @@ Python, and they do.
 
 ## Milestone 5 — measured additional ports
 
+* The per-node bridge measured before extending it
+  ([`bridge_search_findings.md`](../performance-profiling/bridge_search_findings.md)):
+  native + callback beats the Python search by 1.7-2.2x even against an
+  evaluator that returns a constant. The first unwarmed measurement said the
+  opposite -- 3.5x *slower* -- because the first native search in a process pays
+  the extension's one-time setup. That number would have justified abandoning
+  the bridge; warming up first is the difference between a finding and a wrong
+  decision.
 * Replay path measured before touching it
   ([`replay_pipeline_findings.md`](../performance-profiling/replay_pipeline_findings.md)):
   ingestion is 2.98 µs/sample and needs nothing; the batch path cost ~310 ms
@@ -169,10 +178,13 @@ Left, and deliberately unmeasured until someone needs them:
    sampling. A golden file cannot capture a distribution the way it captures a
    deterministic answer; the likely shape is a fixed-seed expectation, since
    the native RNG is seeded explicitly.
-2. **The self-play runners need a native deadline.** `runner_2p` and
-   `runner_3p` bound a game by wall clock; neither `SearchSession` has such a
-   notion, and the selector refuses to drop the bound silently. This is the
-   last thing between the runners and the native core.
+2. **The self-play runners belong on the pool, not the bridge.** Both native
+   sessions now take a wall-clock budget, so the deadline is no longer what
+   holds them back. What does is batching: self-play wants many games in flight
+   so one evaluator call answers a batch, and the per-node bridge gives that up
+   to gain about 2x on the tree
+   ([measured](../performance-profiling/bridge_search_findings.md)). The native
+   pool already batches; that is where they go.
 3. **Min self-play still runs the Python pool.** `SearchSession3P` is the
    single-search shape; the batched scheduler and `play_episodes` are 2P only,
    so native Min self-play needs the vector value threaded through the pool as

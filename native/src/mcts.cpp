@@ -51,6 +51,7 @@ void SearchSession::begin(const State& state, double temperature, bool trace) {
     root_state_ = state;
     path_.clear();
     path_.reserve(64);
+    started_at_ = std::chrono::steady_clock::now();
     root_ = arena_.add_node(state, search_current_player(state, match_), false);
     node_ = root_;
     phase_ = Phase::Root;
@@ -227,6 +228,16 @@ SearchSession::Status SearchSession::advance() {
                 break;
 
             case Phase::Descend: {
+                // Python checks `simulation and deadline.expired`: the first
+                // simulation is never skipped, so a result is always usable.
+                if (simulation_ > 0 && budget_seconds_ > 0.0) {
+                    const std::chrono::duration<double> elapsed =
+                        std::chrono::steady_clock::now() - started_at_;
+                    if (elapsed.count() >= budget_seconds_) {
+                        finalize();
+                        return Status::Ready;
+                    }
+                }
                 if (simulation_ >= config_.simulations) {
                     finalize();
                     phase_ = Phase::Done;

@@ -53,6 +53,7 @@ void SearchSession3P::begin(const State& state, double temperature) {
     simulation_ = 0;
     path_.clear();
 
+    started_at_ = std::chrono::steady_clock::now();
     VectorNode root;
     root.state = state;
     root.seat = seat_of(state);
@@ -240,6 +241,14 @@ SearchSession3P::Status SearchSession3P::advance() {
             }
 
             case Phase::Descend: {
+                if (simulation_ > 0 && budget_seconds_ > 0.0) {
+                    const std::chrono::duration<double> elapsed =
+                        std::chrono::steady_clock::now() - started_at_;
+                    if (elapsed.count() >= budget_seconds_) {
+                        finalize();
+                        return Status::Ready;
+                    }
+                }
                 if (simulation_ >= config_.simulations) {
                     finalize();
                     return Status::Ready;

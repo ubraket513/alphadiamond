@@ -377,12 +377,13 @@ class Game {
     // cannot fill.
     py::dict search_with_callback(const State& state, const MCTSConfig& config, double temperature,
                                   bool trace, const py::object& callback,
-                                  const std::string& mode) const {
+                                  const std::string& mode, double budget_seconds) const {
         if (mode != "value_only" && mode != "policy_value") {
             throw std::invalid_argument("mode must be 'value_only' or 'policy_value'");
         }
         PythonBatchEvaluator evaluator(callback, mode == "policy_value", match_);
         SearchSession session(match_, config);
+        session.set_budget(budget_seconds);
         session.begin(state, temperature, trace);
         while (session.advance() == SearchSession::Status::NeedsEvaluation) {
             EvalOutcome outcome;
@@ -404,9 +405,11 @@ class Game {
     // in that position's canonical player order -- because a three-player game
     // is not zero-sum between two sides.
     py::dict search3p_with_callback(const State& state, const MCTSConfig& config,
-                                    double temperature, const py::object& callback) const {
+                                    double temperature, const py::object& callback,
+                                    double budget_seconds) const {
         if (match_.count != 3) throw std::invalid_argument("MCTS3P requires a three-seat match");
         SearchSession3P session(match_, config);
+        session.set_budget(budget_seconds);
         session.begin(state, temperature);
 
         while (session.advance() == SearchSession3P::Status::NeedsEvaluation) {
@@ -791,9 +794,11 @@ PYBIND11_MODULE(_diamond_native, m) {
              py::arg("evaluator") = "hash")
         .def("search_with_callback", &Game::search_with_callback, py::arg("state"),
              py::arg("config"), py::arg("temperature") = 0.0, py::arg("trace") = false,
-             py::arg("callback") = py::none(), py::arg("mode") = "value_only")
+             py::arg("callback") = py::none(), py::arg("mode") = "value_only",
+             py::arg("budget_seconds") = 0.0)
         .def("search3p_with_callback", &Game::search3p_with_callback, py::arg("state"),
-             py::arg("config"), py::arg("temperature") = 0.0, py::arg("callback") = py::none())
+             py::arg("config"), py::arg("temperature") = 0.0, py::arg("callback") = py::none(),
+             py::arg("budget_seconds") = 0.0)
         .def("schedule", &Game::schedule, py::arg("opening"), py::arg("config"))
         .def("play_episodes", &Game::play_episodes, py::arg("jobs"), py::arg("config"),
              py::arg("callback"), py::arg("mode") = "value_only")

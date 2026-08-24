@@ -32,11 +32,10 @@ def two_player_search() -> SearchFactory:
     from .native.search import NativeSearch2P
 
     def factory(game: Any, evaluator: Evaluator, config: MCTSConfig, **kwargs: Any) -> Any:
-        # `deadline` and other Python-search extras are not implemented natively;
-        # a caller that needs one keeps the Python search rather than silently
-        # losing its wall-clock bound.
-        if not kwargs and NativeSearch2P.can_drive(game):
-            return NativeSearch2P(game, evaluator, config)
+        # `deadline` is understood natively now; anything else the Python search
+        # grows stays with the Python search rather than being silently dropped.
+        if set(kwargs) <= {"deadline"} and NativeSearch2P.can_drive(game):
+            return NativeSearch2P(game, evaluator, config, **kwargs)
         return MCTS2P(game, evaluator, config, **kwargs)
 
     return factory
@@ -52,8 +51,8 @@ def three_player_search() -> SearchFactory:
     from .native.search import NativeSearch3P
 
     def factory(game, evaluator, config, **kwargs):
-        if not kwargs and NativeSearch3P.can_drive(game):
-            return NativeSearch3P(game, evaluator, config)
+        if set(kwargs) <= {"deadline"} and NativeSearch3P.can_drive(game):
+            return NativeSearch3P(game, evaluator, config, **kwargs)
         return MCTS3P(game, evaluator, config, **kwargs)
 
     return factory
