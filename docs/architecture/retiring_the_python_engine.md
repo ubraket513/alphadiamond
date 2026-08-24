@@ -11,7 +11,11 @@ deletion once neither job needs them.
    Python implementation. The native tests then run with no interpreter at all.
    A C++ test that compared one C++ function with another would prove nothing
    about the port, so *something* has to be the independent answer, and today
-   that something is Python.
+   that something is Python. The generator now carries its own adapter
+   (`PythonRulesGame`, in that script): `AlphaZeroGameAdapter` asks the native
+   core, and a corpus regenerated from the implementation it exists to pin
+   would prove nothing. Verified: the tools-local oracle reproduces every
+   frozen file byte for byte.
 2. **The bridge.** `tests/native/` no longer compares the two engines -- those
    five gates were retired once `tools/mutation_check.py` showed their C++
    replacements catching the same mistakes. What remains tests the pybind
@@ -24,7 +28,7 @@ Everything else that imports it is migration debt, counted and frozen by
 number could not distinguish a module that *runs the rules* from one that names
 a dataclass in a type hint:
 
-* **behaviour** (1) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
+* **behaviour** (0) -- runs `legal_moves`, `GameSession`, `MCTS2P`. This must
   reach zero before `diamond.game` can go, and it is the work queue.
 * **definitions and types** (14) -- `standard_board`, `build_players`,
   `GameState`. Not rules; C++ receives the same tables through the topology
@@ -71,7 +75,22 @@ geometry -- camp positions, neighbours -- is board definition and stays; the
 legality answer now comes from the native core, asked with the finishing seat to
 move rather than the state's current one. 3 to 1.
 
-What is left in the behaviour queue is `game_adapter`, alone.
+Last was `game_adapter` itself, and it was the only one that was a port rather
+than a one-line swap: it *is* what arena, benchmark, probe and the worker path
+apply moves through. It keeps `GameState` -- that type crosses process
+boundaries in `SelfPlayJob` and is what the Qt agent and the arena speak, and
+replacing it is Phase B -- and asks the native `Game` for legality and for
+successors, converting by field copy at the boundary.
+`tests/native/test_game_adapter_parity.py` holds both implementations to the
+same answer for every legal action of all 1,327 fixture positions: 61,139
+successors, identical in occupancy, seat to move, turn number, status and
+podium. `resolve_action` went with it -- the GUI agent needs a `Move` with its
+jump path, and that path is already in the request's own legal moves, so the
+agent matches the chosen action against them instead of re-resolving through a
+second implementation.
+
+**The behaviour queue is empty. Phase A is done.** What `diamond.game` still
+supplies is definitions: the board, the seats, `GameState`. That is Phase B.
 
 ## The behaviour queue was two decisions, not seven tasks
 
@@ -164,6 +183,8 @@ Min self-play on the native pool    done (EpisodeSearch, per-seat targets)
 Soo/Min training on native by default  done (selfplay_backend auto)
 rated benchmark matches on native   done (ProductionBenchmarkStage)
 episode runners on the selector     done (runner_2p, runner_3p)
+smoke fixtures on native legality   done (both smokes)
+game_adapter on the native Game     done (behaviour queue empty)
 freeze the golden corpus            then
 retire the Python parity gates      one at a time, each with its C++ replacement
 delete src/diamond/game             last

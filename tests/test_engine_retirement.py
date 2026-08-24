@@ -12,9 +12,9 @@ that names a dataclass in a type hint, and those retire at completely different
 times:
 
 * **behaviour** -- ``legal_moves``, ``GameSession``, ``MCTS2P``: what the C++
-  core replaced. This list must reach zero before ``diamond.game`` can be
-  deleted, and it is the work queue. ``search_factory`` left it when the
-  Python-search fallback was retired (decision 1).
+  core replaced. This list had to reach zero before ``diamond.game`` could be
+  deleted, and it is now empty: the searches come from ``search_factory`` and
+  ``game_adapter`` applies moves through the native ``Game``. It stays empty.
 * **definitions and types** -- ``standard_board``, ``build_players``,
   ``GameState``: the board, the seats, and the shapes that describe a position.
   Not rules; C++ receives the same tables through the topology export, and they
@@ -64,14 +64,20 @@ here: it fills each seat's home camp and applies nothing, so it is the opening's
 definition -- the same thing the topology export hands C++."""
 
 # ---------------------------------------------------------------------------
-# The work queue: modules that still run the Python engine. Every entry is debt
-# with a reason, and the reason decides when it goes.
+# The work queue, drained. An entry here is a module that runs the Python
+# engine; there are none, and adding one is what this file exists to refuse.
 # ---------------------------------------------------------------------------
-BEHAVIOUR_ALLOWED = {
-    # The oracle's adapter: what tools/build_golden.py drives to produce the
-    # frozen answers. Retires with the corpus generator.
-    "src/diamond/alphazero/game_adapter.py",
-}
+BEHAVIOUR_ALLOWED: set[str] = set()
+"""Empty, and it stays empty.
+
+Nothing shipped runs the Python engine any more: the searches come from
+``search_factory``, the smokes ask the core for legality, and ``game_adapter``
+-- the last entry -- applies moves through the native ``Game``
+(``tests/native/test_game_adapter_parity.py`` holds the two to the same
+successor for every legal action of every fixture position).
+
+Phase A is done. What ``diamond.game`` still supplies is definitions: the board,
+the seats, and ``GameState``. That is Phase B, below."""
 
 # ---------------------------------------------------------------------------
 # Not the work queue: the board, the seats, and the dataclasses that describe a
@@ -85,6 +91,7 @@ DEFINITIONS_ALLOWED = {
     "src/diamond/alphazero/bootstrap/heuristic.py",
     "src/diamond/alphazero/bootstrap/probe.py",
     "src/diamond/alphazero/encoder.py",
+    "src/diamond/alphazero/game_adapter.py",
     "src/diamond/alphazero/identity.py",
     "src/diamond/alphazero/milestone2_smoke.py",
     "src/diamond/alphazero/native/__init__.py",

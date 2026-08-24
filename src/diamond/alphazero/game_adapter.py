@@ -1,15 +1,32 @@
-"""Thin AlphaZero adapter over the authoritative Diamond rules/session."""
+"""AlphaZero adapter over the authoritative Diamond rules.
+
+The rules are the C++ core's. This holds the Python-side shape of a position --
+``GameState``, ``PlayerSpec``, the action codec and the canonical encoder -- and
+asks the native ``Game`` for everything that *applies* rules: which actions are
+legal, and what a position becomes when one is played.
+
+**The state type stays Python on purpose.** A ``GameState`` crosses process
+boundaries in ``SelfPlayJob``, is stored in run state and is what the Qt agent
+and the arena already speak. Replacing it with the native ``State`` is Phase B
+of the migration (see docs/architecture/decisions.md); replacing the *rules*
+underneath it is Phase A, and is what this file does. The conversion either way
+is a field copy.
+
+Parity is not assumed: ``tests/native/test_game_adapter_parity.py`` runs the
+whole fixture corpus -- 1,327 positions, every legal action of each -- through
+both this adapter and the Python engine and requires identical successors.
+"""
 
 from __future__ import annotations
 
+from ..game.board import Board, standard_board
+from ..game.rules import IllegalMoveError
+from ..game.state import GameState, GameStatus, PlayerSpec, initial_state
 from .action_codec import ActionCodec, ActionSpaceSpec
 from .encoder import CanonicalEncoder
 from .evaluator.base import EvalRequest
-from ..game.board import Board, standard_board
-from ..game.move import Move
-from ..game.rules import IllegalMoveError, find_legal_move, legal_moves
-from ..game.session import GameSession
-from ..game.state import GameState, GameStatus, PlayerSpec, initial_state
+
+_NATIVE_FINISHED = 1
 
 
 class AlphaZeroGameAdapter:
@@ -28,6 +45,16 @@ class AlphaZeroGameAdapter:
         self._initial = initial if initial is not None else initial_state(self.players, self.board)
         if len(self._initial.occupancy) != len(self.board):
             raise ValueError("initial state does not match board topology")
+        # Imported here rather than at module scope: ``native`` reaches the
+        # bootstrap heuristic for its topology tables, and that package imports
+        # this one back.
+        from .native import native_game, require_native
+
+        self._module = require_native()
+        # No board-size check: ``Board()`` takes no arguments and there is one
+        # board. If a reduced board ever exists, the core will reject it and
+        # that rejection is the right answer, not a fallback.
+        self._native = native_game(self.players)
         self.codec = ActionCodec(
             ActionSpaceSpec(
                 board_size=len(self.board),
@@ -39,35 +66,40 @@ class AlphaZeroGameAdapter:
     def initial_state(self) -> GameState:
         return self._initial
 
-    def legal_moves(self, state: GameState) -> tuple[Move, ...]:
-        return legal_moves(self.board, state)
+    def _to_native(self, state: GameState):
+        return self._module.State(
+            occupancy=list(state.occupancy),
+            current_player=state.current_player_id,
+            turn_number=state.turn_number,
+            status=_NATIVE_FINISHED if state.status is GameStatus.FINISHED else 0,
+            finish_order=list(state.finish_order),
+        )
+
+    def _from_native(self, state) -> GameState:
+        return GameState(
+            occupancy=tuple(state.occupancy),
+            current_player_id=state.current_player_id,
+            turn_number=state.turn_number,
+            status=(
+                GameStatus.FINISHED
+                if int(state.status) == _NATIVE_FINISHED
+                else GameStatus.IN_PROGRESS
+            ),
+            finish_order=tuple(state.finish_order),
+        )
 
     def legal_action_ids(self, state: GameState) -> tuple[int, ...]:
-        return tuple(
-            self.codec.encode(move.source, move.destination)
-            for move in self.legal_moves(state)
-        )
-
-    def resolve_action(self, state: GameState, action_id: int) -> Move:
-        source, destination = self.codec.decode(action_id)
-        move = find_legal_move(
-            self.board,
-            state,
-            source,
-            destination,
-            player_id=state.current_player_id,
-        )
-        if move is None:
-            raise IllegalMoveError(
-                f"action {action_id} ({source} → {destination}) is not legal"
-            )
-        return move
+        return tuple(self._native.legal_action_ids(self._to_native(state)))
 
     def apply_action(self, state: GameState, action_id: int) -> GameState:
-        """Apply through ``GameSession.commit`` so ranking/turn rules stay authoritative."""
-        session = GameSession(self.players, board=self.board, initial=state)
-        session.commit(self.resolve_action(state, action_id))
-        return session.state
+        """Play ``action_id``; the core settles turn order and the podium."""
+        try:
+            successor = self._native.apply_action(self._to_native(state), action_id)
+        except (ValueError, IndexError) as error:
+            # The adapter's contract is one exception for "you cannot play
+            # that", whatever the core called it.
+            raise IllegalMoveError(f"action {action_id} is not legal: {error}") from error
+        return self._from_native(successor)
 
     def is_terminal(self, state: GameState) -> bool:
         return state.status is GameStatus.FINISHED
