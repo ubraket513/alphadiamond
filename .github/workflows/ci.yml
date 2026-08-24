@@ -173,7 +173,14 @@ jobs:
             libgl1-mesa-dev libegl1 libxkbcommon-x11-0 \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts \
             qml6-module-qtquick-window qml6-module-qtqml-workerscript \
-            qml6-module-qtquick-templates
+            qml6-module-qtquick-templates \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-libav libpulse0
+
+      # Audio is optional in the application, but Qt Multimedia's GStreamer
+      # backend segfaults rather than degrading when it cannot create its
+      # elements at all, so the plugins have to be installed even on a
+      # runner with no sound device.
 
       - name: Configure
         run: cmake --preset native-qt
