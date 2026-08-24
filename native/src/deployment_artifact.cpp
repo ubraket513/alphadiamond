@@ -456,8 +456,16 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
 
     const std::string model_hash = string_field(*object, "model_sha256");
     if (!is_hex_digest(model_hash)) throw std::runtime_error("metadata model_sha256 is invalid");
-    if (sha256_file(root / "model.ts") != model_hash)
+    // model.ts is the exporter's TorchScript graph. Nothing in the shipped
+    // runtime loads it -- the model is built from the raw weight tensors, whose
+    // integrity runtime_sha256 covers below -- so a release package leaves it
+    // out rather than shipping every model twice. When it *is* present, as in a
+    // development artifact, its digest is still checked: an artifact carrying a
+    // graph that does not match its own metadata is malformed either way.
+    if (std::filesystem::exists(root / "model.ts") &&
+        sha256_file(root / "model.ts") != model_hash) {
         throw std::runtime_error("deployment model SHA-256 mismatch");
+    }
     const std::string runtime_hash = string_field(*object, "runtime_sha256");
     if (!is_hex_digest(runtime_hash)) throw std::runtime_error("metadata runtime_sha256 is invalid");
 

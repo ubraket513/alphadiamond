@@ -69,13 +69,28 @@ AlphaDiamond/
 The application reads `models/index.json`, validates the chosen artifact and
 verifies `runtime_sha256` before loading it.
 
-## One representation, eventually
+## One representation in the package
 
-v2 writes both a TorchScript graph and raw weight tensors. That was right while
-native inference was being proved against LibTorch; in a release package it
-stores every model twice. v3 ships exactly one canonical runtime
-representation, and keeps the second only as a conversion or diagnostic fixture
-if it is still earning its place.
+An artifact carries a TorchScript graph *and* raw weight tensors. Nothing in
+the shipped runtime opens the graph -- `DiamondModel` is built from the tensors
+-- so a release package would otherwise contain a second 3.1 MB copy of every
+model for a file no code reads. Measured: the package went from 11.5 MB to
+6.0 MB when it stopped shipping them.
+
+So the split is by audience rather than by format:
+
+* **development artifact** (`artifacts/soo-spike`): everything -- the graph, the
+  deterministic parity corpus, the MCTS fixture. This is what the contract test
+  and `model_parity_test` run against.
+* **release package** (`models/<family>/<version>`): `metadata.json`, the five
+  topology tables, and `weights/`. That is exactly the set `runtime_sha256`
+  covers, which was not a coincidence -- it was defined as the integrity of what
+  actually gets loaded.
+
+`model_sha256` names the graph, so in a package it is inert. The contract test
+asserts both directions rather than assuming: the graph's digest is enforced
+wherever the graph exists, a runtime-only package still validates, and
+corrupting a tensor in one is still caught.
 
 ## Min
 
