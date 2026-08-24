@@ -1,7 +1,8 @@
 # Python-Zero Migration — PR 00 Baseline
 
-**Status:** BLOCKED — the fourth prescribed correctness command could not start
-because the selected Python interpreter has no `pytest` module.
+**Status:** BLOCKED — the fourth prescribed correctness command started under
+the verified mamba environment, then failed during collection because the native
+extension `_diamond_native` was unavailable.
 
 **Recorded at:** 2026-08-24 (Windows PowerShell host)
 
@@ -40,8 +41,13 @@ operator then confirmed the Visual Studio CMake location and explicitly authoriz
 one re-attempt with a **process-local** environment repair: CMake's Visual Studio
 bin directory was prepended to `PATH` and `vcvars64.bat` was imported. No system
 or user environment value was persisted. The re-attempt and the next two commands
-passed; the fourth command then failed, so no later correctness command was run
-or diagnosed.
+passed; the fourth command then failed to launch under the original interpreter. The
+operator then provided a worktree virtual environment and explicitly authorized
+one retry using its exact interpreter. It also failed to launch with the same
+missing-module condition. The controller classified both as environment-repair
+launch failures, then authorized one required-suite run using only the verified
+mamba interpreter. That suite started and failed during collection when the native
+extension import failed, so no later correctness command was run or diagnosed.
 
 | Command | Status | Duration | Raw result |
 | --- | --- | --- | --- |
@@ -50,10 +56,13 @@ or diagnosed.
 | `cmake --build --preset native-ci --parallel` | PASS | 31.2 s | Native targets and test executables built successfully. |
 | `ctest --preset native-ci --output-on-failure` | PASS | 11.2 s | 9/9 passed, 0 failed; CTest real time 3.85 s. |
 | `python -m pytest --ignore=tests/native --durations=10` | **FAIL (launch)** | 6.9 s | See exact Python output below. |
+| `C:\tmp\codex-alphadiamond-pr00\.venv\Scripts\python.exe -m pytest --ignore=tests/native --durations=10` (authorized repaired retry) | **FAIL (launch)** | 9.0 s | See exact worktree-venv output below. |
+| `C:\ProgramData\miniforge3\envs\alphadiamond\python.exe -m pytest --ignore=tests/native --durations=10` (controller-authorized suite run) | **FAIL (collection)** | 14.0 s | 1 collection error in 4.82 s: `_diamond_native` import unavailable. |
 | `python -m pytest tests/native -v --durations=10` | NOT RUN | — | Stop rule after preceding failure. |
 
-The native CTest baseline has 9 passed, 0 failed. Pytest produced no collection,
-pass, fail, or skip count because its module could not launch.
+The native CTest baseline has 9 passed, 0 failed. The first two pytest invocations
+were environment-repair launch failures with no suite counts. The verified mamba
+run collected one module error and ran no tests.
 
 ```text
 cmake:
@@ -108,12 +117,54 @@ Total Test time (real) =   3.85 sec
 C:\ProgramData\miniforge3\python.exe: No module named pytest
 ```
 
+The operator-provided environment was invoked exactly as
+`C:\tmp\codex-alphadiamond-pr00\.venv\Scripts\python.exe`; no substitute Python
+was selected. Its exact retry output was:
+
+```text
+C:\tmp\codex-alphadiamond-pr00\.venv\Scripts\python.exe: No module named pytest
+```
+
+The controller verified the required mamba interpreter before authorizing its
+single suite run: `C:\ProgramData\miniforge3\envs\alphadiamond\python.exe`
+(Python 3.12.13; pytest 9.1.1; Torch 2.13.0+cpu; TrueSkill 0.4.5). Its exact
+result was:
+
+```text
+=================================== ERRORS ====================================
+______________ ERROR collecting tests/alphazero/test_trainer.py _______________
+tests\alphazero\test_trainer.py:34: in <module>
+    SooModel(NetworkConfig(width=16, residual_blocks=1), model_version="0.2.0"),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\diamond\alphazero\network\soo.py:31: in __init__
+    self.trunk = DiamondGraphTrunk(
+src\diamond\alphazero\network\trunk.py:123: in __init__
+    self.register_buffer("adjacency", directional_adjacency())
+                                      ^^^^^^^^^^^^^^^^^^^^^^^
+src\diamond\alphazero\network\trunk.py:24: in directional_adjacency
+    neighbours = neighbour_table()
+                 ^^^^^^^^^^^^^^^^^
+src\diamond\alphazero\native\topology.py:62: in neighbour_table
+    return topology_tables()["neighbour"]
+           ^^^^^^^^^^^^^^^^^
+src\diamond\alphazero\native\topology.py:41: in topology_tables
+    tables = require_native().export_tables()
+             ^^^^^^^^^^^^^^^^
+src\diamond\alphazero\native\__init__.py:73: in require_native
+    raise RuntimeError(native_error() or "native extension unavailable")
+E   RuntimeError: native extension unavailable: cannot import name '_diamond_native' from 'diamond.alphazero.native' (C:\tmp\codex-alphadiamond-pr00\src\diamond\alphazero\native\__init__.py)
+=========================== short test summary info ===========================
+ERROR tests/alphazero/test_trainer.py - RuntimeError: native extension unavai...
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 4.82s
+```
+
 ## Benchmark baseline
 
-No benchmark subject was run. The correctness stop rule after the pytest launch
-failure prevents warm-up and measurement repetitions. In addition, this Windows
-PowerShell environment has no POSIX `/usr/bin/time -v`; no substitute RSS result
-is fabricated.
+No benchmark subject was run. The correctness stop rule after the mamba pytest
+collection failure prevents warm-up and measurement repetitions. In addition, this
+Windows PowerShell environment has no POSIX `/usr/bin/time -v`; no substitute RSS
+result is fabricated.
 
 | Subject | Status |
 | --- | --- |
@@ -126,10 +177,11 @@ is fabricated.
 ## Environment, artifact, and protection recording
 
 The prescribed parity-environment commands (`python`/Torch, CMake version,
-C++ version, and clean-diff check) were not run after the pytest launch failure.
-Their values, CPU/GPU, artifact sizes, and peak RSS are therefore **not captured**,
-rather than inferred. The repaired configure did establish the Visual Studio 18
-2026 generator and MSVC 19.51.36248.0 only.
+C++ version, and clean-diff check) were not run after the mamba pytest collection
+failure. CPU/GPU, artifact sizes, and peak RSS are therefore **not captured**,
+rather than inferred. The controller verified Python 3.12.13, pytest 9.1.1,
+Torch 2.13.0+cpu, and TrueSkill 0.4.5 for the mamba interpreter; the repaired
+configure established the Visual Studio 18 2026 generator and MSVC 19.51.36248.0.
 
 The approved branch-protection PATCH and its readback were not run: the task
 requires stopping after a failed baseline command. No GitHub settings were
@@ -138,9 +190,9 @@ where the pytest baseline can start.
 
 ## Required unblock conditions
 
-1. Provide `pytest` to the selected `C:\ProgramData\miniforge3\python.exe`
-   environment, then restart the prescribed baseline from its first pytest
-   command; do not rerun the successful native configure/build/CTest commands.
+1. Make the native extension importable by the verified mamba environment, then
+   restart the prescribed baseline from its first pytest command; do not rerun the
+   successful native configure/build/CTest commands.
 2. Add an approved tracked short-run benchmark manifest that pins the checkpoint
    SHA-256 and safe disposable commands for training, checkpoint/resume,
    self-play, and end-to-end measures.
