@@ -229,6 +229,7 @@ class NativeController final : public QObject {
     void fail(const QString& message);
     QString playerColor(uint8_t id) const;
     QString playerName(uint8_t id) const;
+    QString resolvedAiPlayerName() const;
 
     soo::Match match_;
     soo::State state_;
@@ -250,6 +251,7 @@ class NativeController final : public QObject {
     QString status_message_ = QStringLiteral("Ready.");
     QString error_message_;
     QVariantList ai_seats_;
+    QString ai_player_name_;
     QVector<int32_t> ai_rejected_;
     QString ai_status_ = QStringLiteral("Ready");
     QVariantList ai_details_;

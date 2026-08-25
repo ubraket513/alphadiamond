@@ -8,6 +8,8 @@ PanelSection {
     title: "Decision Value"
 
     TelemetryChart {
+        objectName: "decisionValueChart"
+        accessibleName: "Decision value"
         points: root.controller.decisionTelemetry
         firstKey: "nnValue"
         secondKey: "mctsQ"

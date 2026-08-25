@@ -30,6 +30,8 @@ PanelSection {
     }
 
     TelemetryChart {
+        objectName: "positionOutlookChart"
+        accessibleName: "Position outlook"
         points: root.controller.positionTelemetry
         firstKey: "nnEstimate"
         secondKey: "mctsEstimate"

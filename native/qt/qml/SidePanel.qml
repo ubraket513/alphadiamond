@@ -45,9 +45,6 @@ Item {
             spacing: Theme.spacing
 
             GamePanel { controller: root.controller }
-            PositionOutlookPanel { controller: root.controller }
-            DecisionValuePanel { controller: root.controller }
-            MovePreferencePanel { controller: root.controller }
             SearchComputePanel { controller: root.controller }
             AiPanel { controller: root.controller }
         }

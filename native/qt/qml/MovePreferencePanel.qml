@@ -8,6 +8,8 @@ PanelSection {
     title: "Move Preference"
 
     TelemetryChart {
+        objectName: "movePreferenceChart"
+        accessibleName: "Move preference"
         points: root.controller.decisionTelemetry
         firstKey: "policyPrior"
         secondKey: "visitFraction"
