@@ -403,7 +403,14 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_definitions(inference_coordinator_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
         add_test(NAME inference_coordinator_test
                  COMMAND inference_coordinator_test "${CMAKE_CURRENT_BINARY_DIR}/inference-coordinator-scratch")
-        set_tests_properties(inference_coordinator_test PROPERTIES LABELS pipeline)
+        set_tests_properties(inference_coordinator_test PROPERTIES LABELS "cpu;pipeline")
+        if(DIAMOND_ENABLE_CUDA_TESTS AND CAFFE2_USE_CUDA)
+            target_compile_definitions(inference_coordinator_test PRIVATE DIAMOND_TEST_WITH_CUDA=1)
+            add_test(NAME inference_coordinator_test_cuda
+                     COMMAND inference_coordinator_test
+                             "${CMAKE_CURRENT_BINARY_DIR}/inference-coordinator-cuda-scratch" --cuda)
+            set_tests_properties(inference_coordinator_test_cuda PROPERTIES LABELS "cuda;pipeline")
+        endif()
 
         add_executable(native_pipeline_smoke_test tests/native_pipeline_smoke_test.cpp)
         target_link_libraries(native_pipeline_smoke_test PRIVATE alphadiamond::diamond_native_pipeline)
@@ -501,6 +508,10 @@ if(DIAMOND_BUILD_LIBTORCH)
                 ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
             if(TEST device_test_cuda)
                 set_tests_properties(device_test_cuda PROPERTIES ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            endif()
+            if(TEST inference_coordinator_test_cuda)
+                set_tests_properties(inference_coordinator_test_cuda PROPERTIES
+                    ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
             endif()
         endif()
         add_test(NAME training_step_parity_test
