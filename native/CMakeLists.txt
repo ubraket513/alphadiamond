@@ -247,6 +247,13 @@ if(DIAMOND_BUILD_LIBTORCH)
     install(TARGETS alphadiamond-train
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+    add_executable(alphadiamond-rating-sync src/rating_sync_main.cpp)
+    target_link_libraries(alphadiamond-rating-sync PRIVATE
+        alphadiamond::diamond_orchestration)
+    target_compile_features(alphadiamond-rating-sync PRIVATE cxx_std_20)
+    install(TARGETS alphadiamond-rating-sync
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
     add_executable(alphadiamond-pipeline src/pipeline_main.cpp)
     target_link_libraries(alphadiamond-pipeline PRIVATE alphadiamond::diamond_native_pipeline)
     target_compile_features(alphadiamond-pipeline PRIVATE cxx_std_20)
@@ -474,6 +481,22 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_features(rating_registry_test PRIVATE cxx_std_20)
         add_test(NAME rating_registry_test COMMAND rating_registry_test)
         set_tests_properties(rating_registry_test PROPERTIES LABELS orchestration)
+
+        add_executable(rating_store_transaction_test tests/rating_store_transaction_test.cpp)
+        target_link_libraries(rating_store_transaction_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(rating_store_transaction_test PRIVATE tests)
+        target_compile_features(rating_store_transaction_test PRIVATE cxx_std_20)
+        add_test(NAME rating_store_transaction_test COMMAND rating_store_transaction_test)
+        set_tests_properties(rating_store_transaction_test PROPERTIES LABELS orchestration)
+
+        add_executable(rating_sync_test tests/rating_sync_test.cpp)
+        target_link_libraries(rating_sync_test PRIVATE alphadiamond::diamond_orchestration)
+        target_include_directories(rating_sync_test PRIVATE tests)
+        target_compile_features(rating_sync_test PRIVATE cxx_std_20)
+        add_dependencies(rating_sync_test alphadiamond-rating-sync)
+        add_test(NAME rating_sync_test
+                 COMMAND rating_sync_test "$<TARGET_FILE:alphadiamond-rating-sync>")
+        set_tests_properties(rating_sync_test PROPERTIES LABELS orchestration)
 
         add_executable(cli_contract_test tests/cli_contract_test.cpp)
         target_link_libraries(cli_contract_test PRIVATE alphadiamond::diamond_orchestration)

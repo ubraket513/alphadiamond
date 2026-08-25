@@ -35,6 +35,20 @@ struct TrueSkillConfig final {
     void validate() const;
 };
 
+// A canonical artifact identity. Display text is intentionally not hashed.
+struct ParticipantIdentity final {
+    std::string participant_id;
+    std::string display_name;
+    diamond_support::JsonValue full_identity;
+
+    void validate() const;
+    bool operator==(const ParticipantIdentity&) const;
+};
+
+std::string canonical_participant_id(const diamond_support::JsonValue& full_identity);
+ParticipantIdentity make_participant_identity(diamond_support::JsonValue full_identity,
+                                              std::string display_name);
+
 struct SooRatingEvent final {
     uint64_t sequence_index = 0;
     std::string protocol_id;
@@ -46,9 +60,16 @@ struct SooRatingEvent final {
     std::string winner_id;
     std::string loser_id;
     std::string event_id;
+    // v2 only: stable, lexicographically sortable game identity; event_id then
+    // excludes sequence_index so independently assigned local indexes converge.
+    std::string game_id;
+    // v2 distributed events may carry self-authenticating participant
+    // registrations so a materializer does not depend on one device's catalog.
+    std::vector<ParticipantIdentity> participant_identities;
 
     void validate() const;
     diamond_support::JsonValue to_json() const;
+    bool operator==(const SooRatingEvent&) const = default;
 };
 
 struct MinRatingEvent final {
@@ -61,9 +82,12 @@ struct MinRatingEvent final {
     bool completed = false;
     std::array<std::string, 3> final_ranking;
     std::string event_id;
+    std::string game_id;
+    std::vector<ParticipantIdentity> participant_identities;
 
     void validate() const;
     diamond_support::JsonValue to_json() const;
+    bool operator==(const MinRatingEvent&) const = default;
 };
 
 SooRatingEvent make_soo_rating_event(uint64_t sequence_index, std::string protocol_id,
@@ -71,13 +95,16 @@ SooRatingEvent make_soo_rating_event(uint64_t sequence_index, std::string protoc
                                      std::array<int, 2> seat_assignment,
                                      std::array<int, 2> turn_order, std::string opening_id,
                                      bool completed, std::string winner_id = {},
-                                     std::string loser_id = {});
+                                     std::string loser_id = {}, std::string game_id = {},
+                                     std::vector<ParticipantIdentity> participant_identities = {});
 MinRatingEvent make_min_rating_event(uint64_t sequence_index, std::string protocol_id,
                                      std::array<std::string, 3> participant_ids,
                                      std::array<int, 3> seat_assignment,
                                      std::array<int, 3> turn_order, std::string opening_id,
                                      bool completed,
-                                     std::array<std::string, 3> final_ranking = {});
+                                     std::array<std::string, 3> final_ranking = {},
+                                     std::string game_id = {},
+                                     std::vector<ParticipantIdentity> participant_identities = {});
 
 double expected_elo_score(double rating_a, double rating_b, const EloConfig& config);
 std::array<double, 2> rate_soo_match(double winner_rating, double loser_rating,
@@ -109,11 +136,15 @@ class RatingRegistry final {
     explicit RatingRegistry(std::string protocol_id, TrueSkillConfig config);
 
     void add_participant(std::string participant_id, std::string display_name);
+    void add_participant(ParticipantIdentity identity);
     bool record_event(const SooRatingEvent& event);
     bool record_event(const MinRatingEvent& event);
+    void merge(const RatingRegistry& other);
     void rebuild();
 
     const std::vector<std::variant<SooRatingEvent, MinRatingEvent>>& events() const noexcept { return events_; }
+    const EloConfig& elo_config() const noexcept { return elo_; }
+    const TrueSkillConfig& trueskill_config() const noexcept { return trueskill_; }
     std::vector<SooLeaderboardEntry> soo_leaderboard() const;
     std::vector<MinLeaderboardEntry> min_leaderboard() const;
     diamond_support::JsonValue report_json() const;
@@ -125,9 +156,12 @@ class RatingRegistry final {
     EloConfig elo_;
     TrueSkillConfig trueskill_;
     std::map<std::string, std::string> participants_;
+    std::map<std::string, diamond_support::JsonValue> identities_;
     std::vector<std::variant<SooRatingEvent, MinRatingEvent>> events_;
     std::map<std::string, double> soo_ratings_;
     std::map<std::string, MinRating> min_ratings_;
+
+    void normalize_events();
 };
 
 }  // namespace diamond_orchestration
