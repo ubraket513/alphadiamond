@@ -1,4 +1,5 @@
 option(DIAMOND_BUILD_BENCHMARKS "Build explicit native benchmark executables" OFF)
+option(DIAMOND_ENABLE_CUDA_TESTS "Register tests that require a real CUDA-enabled LibTorch host" OFF)
 
 set(SOO_CORE_SOURCES
     src/board.cpp
@@ -137,6 +138,7 @@ if(DIAMOND_BUILD_LIBTORCH)
 
     add_library(diamond_training STATIC
         src/checkpoint.cpp
+        src/device.cpp
         src/training_sample.cpp
         src/trainer.cpp
     )
@@ -465,6 +467,25 @@ if(DIAMOND_BUILD_LIBTORCH)
                  COMMAND cli_contract_test "${CMAKE_CURRENT_BINARY_DIR}/cli-contract-scratch"
                          "$<TARGET_FILE:alphadiamond-train>")
         set_tests_properties(cli_contract_test PROPERTIES LABELS orchestration)
+
+        add_executable(device_test tests/device_test.cpp)
+        target_link_libraries(device_test PRIVATE alphadiamond::diamond_training)
+        add_dependencies(device_test alphadiamond-train)
+        target_include_directories(device_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(device_test PRIVATE cxx_std_20)
+        target_compile_definitions(device_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        add_test(NAME device_test
+                 COMMAND device_test "${CMAKE_CURRENT_BINARY_DIR}/device-test-scratch"
+                         "$<TARGET_FILE:alphadiamond-train>")
+        set_tests_properties(device_test PROPERTIES LABELS "cpu;device")
+        # CUDA acceptance is opt-in. CPU presets do not register this test;
+        # the test is enabled only on a CUDA-enabled LibTorch host.
+        if(DIAMOND_ENABLE_CUDA_TESTS AND CAFFE2_USE_CUDA)
+            add_test(NAME device_test_cuda
+                     COMMAND device_test "${CMAKE_CURRENT_BINARY_DIR}/device-test-cuda-scratch"
+                                 "$<TARGET_FILE:alphadiamond-train>" --cuda)
+            set_tests_properties(device_test_cuda PROPERTIES LABELS "cuda;device")
+        endif()
         if(WIN32)
             list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
             get_filename_component(DIAMOND_TORCH_PREFIX
@@ -476,8 +497,11 @@ if(DIAMOND_BUILD_LIBTORCH)
             string(REPLACE ";" "\\;" DIAMOND_TEST_PATH "${DIAMOND_TEST_PATH}")
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
-                                 native_pipeline_smoke_test promotion_test PROPERTIES
+                                 native_pipeline_smoke_test promotion_test device_test PROPERTIES
                 ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            if(TEST device_test_cuda)
+                set_tests_properties(device_test_cuda PROPERTIES ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            endif()
         endif()
         add_test(NAME training_step_parity_test
                  COMMAND training_step_parity_test

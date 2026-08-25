@@ -5,8 +5,6 @@
 #include <string>
 #include <string_view>
 
-#include "diamond_orchestration/report.hpp"
-
 namespace diamond_orchestration {
 namespace {
 
@@ -43,14 +41,6 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
         .training_steps =
             static_cast<std::size_t>(config.training.train_steps_per_iteration),
     };
-}
-
-void require_cpu_training_runtime(const ProductionConfig& config) {
-    if (config.runtime.device != "cpu") {
-        throw CommandArgumentError("runtime.device " + config.runtime.device +
-                                   " requires CUDA support; this native training build supports "
-                                   "cpu only");
-    }
 }
 
 }  // namespace diamond_orchestration

@@ -17,6 +17,7 @@
 #include "diamond_orchestration/training_wiring.hpp"
 #include "diamond_pipeline/pipeline.hpp"
 #include "diamond_training/checkpoint.hpp"
+#include "diamond_training/device.hpp"
 #include "diamond_training/trainer.hpp"
 #include "soo/board.hpp"
 
@@ -330,12 +331,36 @@ Object report(const CommandRequest& request) {
     }
 }
 Object service(const CommandRequest& request, const ProductionConfig& config) {
-    if (request.command != "report")
-        diamond_orchestration::require_cpu_training_runtime(config);
-    if (request.command == "train") return train(request, config, false);
-    if (request.command == "resume") return train(request, config, true);
-    if (request.command == "evaluate") return evaluate(request, config);
-    return report(request);
+    // Reporting is read-only and must remain available when inspecting a run
+    // created on a different device class than the current host.
+    if (request.command == "report") return report(request);
+
+    const auto resolved = [&] {
+        try {
+            return diamond_training::resolve_device(config.runtime.device);
+        } catch (const diamond_training::DeviceResolutionError& error) {
+            throw diamond_orchestration::CommandArgumentError(error.what());
+        }
+    }();
+
+    // Task 1 establishes the preflight contract. The model, evaluator, and
+    // trainer do not own CUDA tensors until the following CUDA-runtime tasks;
+    // rejecting here prevents them from silently continuing on CPU.
+    if (resolved.torch_device.is_cuda()) {
+        throw diamond_orchestration::CommandArgumentError(
+            "runtime.device " + resolved.canonical_name +
+            " resolved successfully, but CUDA execution is not installed yet");
+    }
+
+    auto canonical_config = config;
+    canonical_config.runtime.device = resolved.canonical_name;
+    Object details;
+    if (request.command == "train") details = train(request, canonical_config, false);
+    else if (request.command == "resume") details = train(request, canonical_config, true);
+    else details = evaluate(request, canonical_config);
+    details.emplace("requested_device", Json{resolved.requested_name});
+    details.emplace("canonical_device", Json{resolved.canonical_name});
+    return details;
 }
 }  // namespace
 

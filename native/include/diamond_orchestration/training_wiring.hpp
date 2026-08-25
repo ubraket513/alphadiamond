@@ -16,8 +16,4 @@ struct TrainingIterationWiring final {
 
 TrainingIterationWiring wire_training_iteration(const ProductionConfig& config);
 
-// Runtime-specific model construction is introduced with the native CUDA
-// backend. Until then, reject non-CPU requests before any run artifacts exist.
-void require_cpu_training_runtime(const ProductionConfig& config);
-
 }  // namespace diamond_orchestration

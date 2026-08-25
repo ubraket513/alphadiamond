@@ -148,7 +148,6 @@ int main(int argc, char** argv) {
     const auto cuda_report = report_object(cuda_report_path);
     CHECK_EQ(std::get<std::string>(cuda_report.at("status").value), std::string("error"));
     CHECK_EQ(std::get<std::string>(cuda_report.at("error").value),
-             std::string("runtime.device cuda requires CUDA support; this native training build "
-                         "supports cpu only"));
+             std::string("runtime.device cuda requires CUDA, but no CUDA device is available"));
     return soo_test::report("cli_contract_test");
 }
