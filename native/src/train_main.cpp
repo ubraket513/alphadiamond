@@ -152,7 +152,9 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config,
                const std::string& operation, const diamond_training::ResolvedDevice& device) {
     const auto wiring = diamond_orchestration::wire_training_iteration(config);
     auto native_model = model(config); const auto compatibility = wire(config);
-    diamond_training::Trainer trainer(native_model, compatibility, {config.training.learning_rate, config.training.weight_decay});
+    diamond_training::Trainer trainer(
+        native_model, compatibility,
+        {config.training.learning_rate, config.training.weight_decay}, device);
     try { (void)diamond_training::load_checkpoint_v2(request.checkpoint_path, trainer); }
     catch (const diamond_training::CheckpointError& error) { throw CommandArtifactError(error.what()); }
     diamond_pipeline::ModelPool models(1, device);

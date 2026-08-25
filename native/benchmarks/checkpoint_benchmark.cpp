@@ -31,8 +31,9 @@ int run(int argc, char** argv) {
     const auto args = parse_args(argc, argv);
     std::filesystem::remove_all(args.scratch);
     auto compatibility = diamond_training::Compatibility::soo("benchmark-1", {.residual_blocks = 1, .width = 8});
+    const auto device = diamond_training::resolve_device("cpu");
     diamond_training::Trainer trainer(diamond_model::DiamondModel(8, 1, 4, 1), compatibility,
-                                      {.learning_rate = 1e-3, .weight_decay = 1e-4});
+                                      {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
     auto operation = [&] { (void)diamond_training::save_checkpoint_v2(args.scratch, trainer); (void)diamond_training::validate_checkpoint_v2(args.scratch); };
     operation();
     const auto start = std::chrono::steady_clock::now();

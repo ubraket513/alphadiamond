@@ -44,14 +44,17 @@ void train_save_and_resume(const std::filesystem::path& checkpoint_root,
                            int64_t input_features, int64_t value_size) {
     const auto sample = sample_for(compatibility, input_features, value_size);
     const std::vector<diamond_training::TrainingSample> samples{sample};
+    const auto device = diamond_training::resolve_device("cpu");
     diamond_training::Trainer trainer(
-        diamond_model::DiamondModel(8, 1, input_features, value_size), compatibility, kTraining);
+        diamond_model::DiamondModel(8, 1, input_features, value_size), compatibility,
+        kTraining, device);
     require(trainer.train(samples).training_step == 1, "initial native training step failed");
     const auto saved = diamond_training::save_checkpoint_v2(checkpoint_root, trainer);
     require(saved.training_step == 1, "checkpoint did not record initial step");
 
     diamond_training::Trainer resumed(
-        diamond_model::DiamondModel(8, 1, input_features, value_size), compatibility, kTraining);
+        diamond_model::DiamondModel(8, 1, input_features, value_size), compatibility,
+        kTraining, device);
     require(diamond_training::load_checkpoint_v2(checkpoint_root, resumed).training_step == 1,
             "checkpoint restore did not recover initial step");
     require(resumed.train(samples).training_step == 2, "resumed native training step failed");

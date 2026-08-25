@@ -7,8 +7,10 @@ int main(int argc, char** argv) {
     const auto scratch = std::filesystem::path(argv[1]);
     std::filesystem::remove_all(scratch);
     auto compatibility = diamond_training::Compatibility::soo("1.0.0", {.residual_blocks = 1, .width = 8});
+    const auto device = diamond_training::resolve_device("cpu");
     auto model = diamond_model::DiamondModel(8, 1, 4, 1);
-    diamond_training::Trainer saved(model, compatibility, {.learning_rate = 1e-3, .weight_decay = 1e-4});
+    diamond_training::Trainer saved(
+        model, compatibility, {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
     {
         torch::NoGradGuard no_grad;
         saved.model()->parameters().front().fill_(0.25);
@@ -17,7 +19,9 @@ int main(int argc, char** argv) {
     CHECK(std::filesystem::exists(written.generation / "state.pt"));
     CHECK(std::filesystem::exists(written.generation / "optimizer.pt"));
     CHECK_EQ(diamond_training::inspect_checkpoint_v2(scratch).training_step, uint64_t{0});
-    diamond_training::Trainer restored(diamond_model::DiamondModel(8, 1, 4, 1), compatibility, {.learning_rate = 1e-3, .weight_decay = 1e-4});
+    diamond_training::Trainer restored(
+        diamond_model::DiamondModel(8, 1, 4, 1), compatibility,
+        {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
     {
         torch::NoGradGuard no_grad;
         restored.model()->parameters().front().zero_();

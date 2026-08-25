@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     models.activate(key);
     diamond_pipeline::ReplayStore replay(scratch / "replay", compatibility, 8, 7);
     diamond_training::Trainer trainer(model, compatibility,
-                                      {.learning_rate = 1e-3, .weight_decay = 1e-4});
+                                      {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
 
     diamond_pipeline::IterationRequest request;
     request.operation_id = "smoke-v2";

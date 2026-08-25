@@ -493,6 +493,17 @@ if(DIAMOND_BUILD_LIBTORCH)
                                  "$<TARGET_FILE:alphadiamond-train>" --cuda)
             set_tests_properties(device_test_cuda PROPERTIES LABELS "cuda;device")
         endif()
+        add_test(NAME training_step_parity_test
+                 COMMAND training_step_parity_test
+                         "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
+        set_tests_properties(training_step_parity_test PROPERTIES LABELS training)
+        if(DIAMOND_ENABLE_CUDA_TESTS AND CAFFE2_USE_CUDA)
+            add_test(NAME training_step_parity_test_cuda
+                     COMMAND training_step_parity_test
+                             "${PROJECT_SOURCE_DIR}/tests/golden/training-v1" --cuda)
+            set_tests_properties(training_step_parity_test_cuda PROPERTIES
+                LABELS "cuda;training")
+        endif()
         if(WIN32)
             list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
             get_filename_component(DIAMOND_TORCH_PREFIX
@@ -504,7 +515,8 @@ if(DIAMOND_BUILD_LIBTORCH)
             string(REPLACE ";" "\\;" DIAMOND_TEST_PATH "${DIAMOND_TEST_PATH}")
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
-                                 native_pipeline_smoke_test promotion_test device_test PROPERTIES
+                                 native_pipeline_smoke_test promotion_test device_test
+                                 training_step_parity_test PROPERTIES
                 ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
             if(TEST device_test_cuda)
                 set_tests_properties(device_test_cuda PROPERTIES ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
@@ -513,14 +525,10 @@ if(DIAMOND_BUILD_LIBTORCH)
                 set_tests_properties(inference_coordinator_test_cuda PROPERTIES
                     ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
             endif()
-        endif()
-        add_test(NAME training_step_parity_test
-                 COMMAND training_step_parity_test
-                         "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
-        set_tests_properties(training_step_parity_test PROPERTIES LABELS training)
-        if(WIN32)
-            set_tests_properties(training_step_parity_test PROPERTIES
-                ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            if(TEST training_step_parity_test_cuda)
+                set_tests_properties(training_step_parity_test_cuda PROPERTIES
+                    ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            endif()
         endif()
     endif()
 endif()

@@ -68,8 +68,9 @@ int run(int argc, char** argv) {
     auto model = diamond_model::DiamondModel(artifact.width, artifact.residual_blocks,
                                              artifact.input_features, artifact.value_size);
     model->load_weights(artifact.weights);
+    const auto device = diamond_training::resolve_device("cpu");
     diamond_training::Trainer trainer(model, compatibility,
-                                      {.learning_rate = 1e-3, .weight_decay = 1e-4});
+                                      {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
     const std::vector<diamond_training::TrainingSample> samples(
         static_cast<std::size_t>(args.batch_size), sample(compatibility, artifact.input_features));
     (void)trainer.train(samples);

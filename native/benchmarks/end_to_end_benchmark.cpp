@@ -115,7 +115,7 @@ diamond_pipeline::IterationResult run_once(const std::filesystem::path& scratch,
     const auto device = diamond_training::resolve_device("cpu");
     auto model = diamond_model::DiamondModel(8, 1, 4, 1);
     diamond_training::Trainer trainer(model, compatibility,
-                                      {.learning_rate = 1e-3, .weight_decay = 1e-4});
+                                      {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
     diamond_pipeline::ModelPool models(1, device);
     const auto key = models.install(compatibility, model);
     models.activate(key);
