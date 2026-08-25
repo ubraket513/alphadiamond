@@ -544,7 +544,7 @@ if(DIAMOND_BUILD_LIBTORCH)
             get_filename_component(DIAMOND_RUNTIME_ROOT
                 "${DIAMOND_TORCH_PREFIX}/../.." ABSOLUTE)
             set(DIAMOND_TEST_PATH
-                "${DIAMOND_RUNTIME_ROOT}/Library/bin;${DIAMOND_RUNTIME_ROOT}/Scripts;${DIAMOND_RUNTIME_ROOT};${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                "${DIAMOND_TORCH_PREFIX}/torch/lib;${DIAMOND_RUNTIME_ROOT}/Library/bin;${DIAMOND_RUNTIME_ROOT}/Scripts;${DIAMOND_RUNTIME_ROOT};$ENV{PATH}")
             string(REPLACE ";" "\\;" DIAMOND_TEST_PATH "${DIAMOND_TEST_PATH}")
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
