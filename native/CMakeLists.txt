@@ -204,6 +204,7 @@ if(DIAMOND_BUILD_LIBTORCH)
         src/report.cpp
         src/run_state.cpp
         src/schedule.cpp
+        src/training_wiring.cpp
     )
     add_library(alphadiamond::diamond_orchestration ALIAS diamond_orchestration)
     target_link_libraries(diamond_orchestration PUBLIC alphadiamond::diamond_pipeline)
@@ -457,10 +458,12 @@ if(DIAMOND_BUILD_LIBTORCH)
 
         add_executable(cli_contract_test tests/cli_contract_test.cpp)
         target_link_libraries(cli_contract_test PRIVATE alphadiamond::diamond_orchestration)
+        add_dependencies(cli_contract_test alphadiamond-train)
         target_include_directories(cli_contract_test PRIVATE tests)
         target_compile_features(cli_contract_test PRIVATE cxx_std_20)
         add_test(NAME cli_contract_test
-                 COMMAND cli_contract_test "${CMAKE_CURRENT_BINARY_DIR}/cli-contract-scratch")
+                 COMMAND cli_contract_test "${CMAKE_CURRENT_BINARY_DIR}/cli-contract-scratch"
+                         "$<TARGET_FILE:alphadiamond-train>")
         set_tests_properties(cli_contract_test PROPERTIES LABELS orchestration)
         if(WIN32)
             list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)

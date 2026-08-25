@@ -1,5 +1,7 @@
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -7,6 +9,7 @@
 
 #include "check.hpp"
 #include "diamond_orchestration/report.hpp"
+#include "diamond_orchestration/training_wiring.hpp"
 
 namespace {
 
@@ -37,11 +40,26 @@ JsonValue::Object report_object(const std::ostringstream& output) {
     return std::get<JsonValue::Object>(parsed.value);
 }
 
+JsonValue::Object report_object(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    REQUIRE(static_cast<bool>(input), "cannot open native CLI report");
+    const std::string contents{std::istreambuf_iterator<char>(input), {}};
+    const auto parsed = diamond_support::parse_json(contents);
+    return std::get<JsonValue::Object>(parsed.value);
+}
+
+std::string shell_quote(const std::filesystem::path& path) {
+    const auto value = path.string();
+    REQUIRE(value.find('"') == std::string::npos, "test path contains a quote");
+    return '"' + value + '"';
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    REQUIRE(argc == 2, "usage: cli_contract_test <scratch>");
+    REQUIRE(argc == 3, "usage: cli_contract_test <scratch> <alphadiamond-train>");
     const auto scratch = std::filesystem::path(argv[1]);
+    const auto training_executable = std::filesystem::path(argv[2]);
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
     const auto config = write_config(scratch);
@@ -85,5 +103,52 @@ int main(int argc, char** argv) {
         -> JsonValue::Object { throw std::runtime_error("broken"); };
     CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config), broken, internal_output),
              diamond_orchestration::kExitInternalError);
+
+    ProductionConfig wiring_config;
+    wiring_config.workers.logical_lanes = 7;
+    wiring_config.workers.search_threads = 2;
+    wiring_config.workers.games_per_iteration = 9;
+    wiring_config.inference.max_batch_size = 11;
+    wiring_config.inference.max_wait_us = 50;
+    wiring_config.training.batch_size = 3;
+    wiring_config.training.train_steps_per_iteration = 2;
+    const auto wiring = diamond_orchestration::wire_training_iteration(wiring_config);
+    CHECK_EQ(wiring.selfplay.lanes, 7);
+    CHECK_EQ(wiring.selfplay.threads, 2);
+    CHECK_EQ(wiring.selfplay.max_batch, 11);
+    CHECK_EQ(wiring.selfplay.max_wait_us, 50);
+    CHECK_EQ(wiring.games_per_iteration, std::size_t{9});
+    CHECK_EQ(wiring.training_batch_size, std::size_t{3});
+    CHECK_EQ(wiring.training_steps, std::size_t{2});
+
+    auto cuda_config = wiring_config;
+    cuda_config.runtime.device = "cuda";
+    const auto cuda_config_path = scratch / "cuda-config.json";
+    {
+        std::ofstream output(cuda_config_path, std::ios::binary | std::ios::trunc);
+        output << diamond_support::canonical_json(cuda_config.to_json());
+    }
+    const auto cuda_runtime = scratch / "cuda-runtime";
+    const auto cuda_report_path = scratch / "cuda-report.json";
+    const auto bootstrap_path = scratch / "missing-bootstrap.pt";
+    const std::string cuda_invocation =
+        shell_quote(training_executable) + " train --runtime-dir " + shell_quote(cuda_runtime) +
+        " --model Soo --run-id cuda-preflight --config " + shell_quote(cuda_config_path) +
+        " --checkpoint " + shell_quote(bootstrap_path) + " > " + shell_quote(cuda_report_path) +
+        " 2>&1";
+#ifdef _WIN32
+    // The MSVCRT system() wrapper invokes cmd.exe /c. When the executable is
+    // quoted, cmd requires a second pair of quotes around the whole command.
+    const std::string cuda_command = '"' + cuda_invocation + '"';
+#else
+    const std::string& cuda_command = cuda_invocation;
+#endif
+    CHECK(std::system(cuda_command.c_str()) != 0);
+    CHECK(!std::filesystem::exists(cuda_runtime));
+    const auto cuda_report = report_object(cuda_report_path);
+    CHECK_EQ(std::get<std::string>(cuda_report.at("status").value), std::string("error"));
+    CHECK_EQ(std::get<std::string>(cuda_report.at("error").value),
+             std::string("runtime.device cuda requires CUDA support; this native training build "
+                         "supports cpu only"));
     return soo_test::report("cli_contract_test");
 }

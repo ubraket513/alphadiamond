@@ -13,6 +13,7 @@
 #include "diamond_orchestration/coordinator.hpp"
 #include "diamond_orchestration/rating_store.hpp"
 #include "diamond_orchestration/report.hpp"
+#include "diamond_orchestration/training_wiring.hpp"
 #include "diamond_pipeline/pipeline.hpp"
 #include "diamond_training/checkpoint.hpp"
 #include "diamond_training/trainer.hpp"
@@ -20,6 +21,7 @@
 
 namespace {
 using Json = diamond_support::JsonValue;
+using Array = Json::Array;
 using Object = Json::Object;
 using diamond_orchestration::CommandArtifactError;
 using diamond_orchestration::CommandRequest;
@@ -94,7 +96,7 @@ soo::EpisodeConfig arena_episode_config(const ProductionConfig& config) {
     return {.lanes = 1,
             .threads = 1,
             .max_batch = 1,
-            .max_wait_us = static_cast<int>(config.inference.max_wait_ms * 1000),
+            .max_wait_us = static_cast<int>(config.inference.max_wait_us),
             .simulations = static_cast<int>(config.mcts.simulations),
             .max_moves = static_cast<int>(config.arena.max_moves),
             .temperature = 0.0,
@@ -154,6 +156,7 @@ Json describe(RunStage stage, const diamond_orchestration::RunState& state) {
 }
 struct Result { std::size_t games = 0; uint64_t step = 0; };
 Result iterate(const CommandRequest& request, const ProductionConfig& config, const std::string& operation) {
+    const auto wiring = diamond_orchestration::wire_training_iteration(config);
     auto native_model = model(config); const auto compatibility = wire(config);
     diamond_training::Trainer trainer(native_model, compatibility, {config.training.learning_rate, config.training.weight_decay});
     try { (void)diamond_training::load_checkpoint_v2(request.checkpoint_path, trainer); }
@@ -165,19 +168,25 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config, co
         static_cast<std::size_t>(config.replay.capacity), config.replay.seed);
     diamond_pipeline::IterationRequest job;
     job.operation_id = operation; job.model_key = key; job.compatibility = compatibility; job.match = game_match(config);
-    job.selfplay = {.lanes = static_cast<int>(config.workers.worker_count), .threads = static_cast<int>(config.workers.worker_count),
-        .max_batch = static_cast<int>(config.inference.max_batch_size), .max_wait_us = static_cast<int>(config.inference.max_wait_ms * 1000),
-        .simulations = static_cast<int>(config.mcts.simulations), .max_moves = static_cast<int>(config.self_play.max_moves),
-        .temperature = config.self_play.temperature, .temperature_moves = static_cast<int>(config.self_play.temperature_moves),
-        .dirichlet_alpha = config.mcts.dirichlet_alpha, .dirichlet_epsilon = config.mcts.dirichlet_epsilon};
+    job.selfplay = wiring.selfplay;
     const auto start = opening(job.match);
-    for (int64_t game = 0; game < config.workers.games_per_iteration; ++game)
+    for (std::size_t game = 0; game < wiring.games_per_iteration; ++game)
         job.jobs.push_back({start, config.run_seed + static_cast<uint64_t>(game)});
-    job.training_steps = 1; job.checkpoint_root = root(request) / "candidate-checkpoint";
+    job.training_batch_size = wiring.training_batch_size;
+    job.training_steps = wiring.training_steps;
+    job.checkpoint_root = root(request) / "candidate-checkpoint";
     const auto result = diamond_pipeline::run_iteration(job, models, replay, trainer, {});
+    Array training_batch_sizes;
+    training_batch_sizes.reserve(result.training_batch_sizes.size());
+    for (const auto batch_size : result.training_batch_sizes)
+        training_batch_sizes.emplace_back(Json{static_cast<int64_t>(batch_size)});
     write_json(root(request) / "iteration.json", Json{Object{{"operation_id", Json{result.operation_id}},
         {"completed_games", Json{static_cast<int64_t>(result.completed_games)}},
         {"aborted_games", Json{static_cast<int64_t>(result.aborted_games)}},
+        {"requested_training_steps", Json{static_cast<int64_t>(result.requested_training_steps)}},
+        {"completed_training_steps", Json{static_cast<int64_t>(result.completed_training_steps)}},
+        {"training_batch_sizes", Json{std::move(training_batch_sizes)}},
+        {"replay_size", Json{static_cast<int64_t>(result.replay_size)}},
         {"training_step", Json{static_cast<int64_t>(result.training_step)}}}});
     return {result.completed_games + result.aborted_games, result.training_step};
 }
@@ -312,6 +321,8 @@ Object report(const CommandRequest& request) {
     }
 }
 Object service(const CommandRequest& request, const ProductionConfig& config) {
+    if (request.command != "report")
+        diamond_orchestration::require_cpu_training_runtime(config);
     if (request.command == "train") return train(request, config, false);
     if (request.command == "resume") return train(request, config, true);
     if (request.command == "evaluate") return evaluate(request, config);
