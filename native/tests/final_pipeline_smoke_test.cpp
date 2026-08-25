@@ -55,7 +55,7 @@ void train_save_and_resume(const std::filesystem::path& checkpoint_root,
     diamond_training::Trainer resumed(
         diamond_model::DiamondModel(8, 1, input_features, value_size), compatibility,
         kTraining, device);
-    require(diamond_training::load_checkpoint_v2(checkpoint_root, resumed).training_step == 1,
+    require(diamond_training::load_checkpoint_v2(checkpoint_root, resumed, device).training_step == 1,
             "checkpoint restore did not recover initial step");
     require(resumed.train(samples).training_step == 2, "resumed native training step failed");
     require(diamond_training::save_checkpoint_v2(checkpoint_root, resumed).training_step == 2,

@@ -34,7 +34,7 @@ ModelKey ModelPool::install_checkpoint(const Compatibility& compatibility,
                                        diamond_model::DiamondModel staging) {
     if (!staging) throw std::invalid_argument("model pool requires a checkpoint staging model");
     try {
-        (void)diamond_training::load_checkpoint_v2_weights(checkpoint_root, staging);
+        (void)diamond_training::load_checkpoint_v2_weights(checkpoint_root, staging, device_);
     } catch (const diamond_training::CheckpointError& error) {
         throw IncompatibleCheckpointError(error.what());
     }

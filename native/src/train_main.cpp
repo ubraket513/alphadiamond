@@ -155,7 +155,7 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config,
     diamond_training::Trainer trainer(
         native_model, compatibility,
         {config.training.learning_rate, config.training.weight_decay}, device);
-    try { (void)diamond_training::load_checkpoint_v2(request.checkpoint_path, trainer); }
+    try { (void)diamond_training::load_checkpoint_v2(request.checkpoint_path, trainer, device); }
     catch (const diamond_training::CheckpointError& error) { throw CommandArtifactError(error.what()); }
     diamond_pipeline::ModelPool models(1, device);
     const auto key = models.install(compatibility, trainer.learner());

@@ -377,6 +377,16 @@ if(DIAMOND_BUILD_LIBTORCH)
         add_test(NAME checkpoint_v2_roundtrip_test
                  COMMAND checkpoint_v2_roundtrip_test "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-v2-roundtrip-scratch")
         set_tests_properties(checkpoint_v2_roundtrip_test PROPERTIES LABELS checkpoint)
+        if(DIAMOND_ENABLE_CUDA_TESTS AND CAFFE2_USE_CUDA)
+            target_compile_definitions(checkpoint_v2_roundtrip_test PRIVATE
+                DIAMOND_TEST_WITH_CUDA=1)
+            add_test(NAME checkpoint_v2_roundtrip_test_cuda
+                     COMMAND checkpoint_v2_roundtrip_test
+                             "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-v2-roundtrip-cuda-scratch"
+                             --cuda)
+            set_tests_properties(checkpoint_v2_roundtrip_test_cuda PROPERTIES
+                LABELS "cuda;checkpoint")
+        endif()
 
         add_executable(checkpoint_v2_reject_test tests/checkpoint_v2_reject_test.cpp)
         target_link_libraries(checkpoint_v2_reject_test PRIVATE alphadiamond::diamond_training)
@@ -523,6 +533,10 @@ if(DIAMOND_BUILD_LIBTORCH)
             endif()
             if(TEST inference_coordinator_test_cuda)
                 set_tests_properties(inference_coordinator_test_cuda PROPERTIES
+                    ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            endif()
+            if(TEST checkpoint_v2_roundtrip_test_cuda)
+                set_tests_properties(checkpoint_v2_roundtrip_test_cuda PROPERTIES
                     ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
             endif()
             if(TEST training_step_parity_test_cuda)

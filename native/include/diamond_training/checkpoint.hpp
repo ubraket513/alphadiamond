@@ -31,7 +31,9 @@ CheckpointInfo migrate_checkpoint_v2(const std::filesystem::path& source,
                                      const std::filesystem::path& destination);
 CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer);
 CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
-                                          diamond_model::DiamondModel model);
-CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer);
+                                          diamond_model::DiamondModel& model,
+                                          const ResolvedDevice& target);
+CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer,
+                                  const ResolvedDevice& target);
 
 }  // namespace diamond_training
