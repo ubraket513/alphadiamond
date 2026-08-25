@@ -23,9 +23,9 @@
 #ifdef DIAMOND_QT_HAS_SOO
 namespace {
 
-// A packaged application ships its models beside the executable and names the
-// default in models/index.json; a development tree has artifacts/soo-spike.
-// Try the package first so a release never silently picks up a stale spike.
+// Packaged and source builds both name the promoted default in models/index.json.
+// There is deliberately no spike/random fallback: a missing or malformed release
+// model must fail loudly instead of producing apparently valid weak play.
 QString resolve_soo_artifact() {
     const QStringList bases = {QCoreApplication::applicationDirPath(), QDir::currentPath()};
     for (const QString& base : bases) {
@@ -41,12 +41,8 @@ QString resolve_soo_artifact() {
             return QString::fromStdString((std::filesystem::path(models.toStdString())).string());
         }
     }
-    for (const QString& base : bases) {
-        const QString spike = QDir(base).filePath(QStringLiteral("artifacts/soo-spike"));
-        if (QDir(spike).exists()) return spike;
-    }
     return QDir(QCoreApplication::applicationDirPath())
-        .filePath(QStringLiteral("artifacts/soo-spike"));
+        .filePath(QStringLiteral("models"));
 }
 
 }  // namespace

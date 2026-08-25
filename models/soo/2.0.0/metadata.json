@@ -1,0 +1,39 @@
+{
+  "architecture": {
+    "residual_blocks": 6,
+    "type": "directional_residual",
+    "width": 128
+  },
+  "corpus_seed": 20260823,
+  "dtype": "float32",
+  "format_version": 3,
+  "game_contract": {
+    "action_space": "diamond73-srcdst-v1",
+    "encoder": "diamond-camp-relative-v1",
+    "topology": "diamond73-v1"
+  },
+  "model_family": "soo",
+  "model_sha256": "0797ffa409d79fabfcebfd69551c46b1b458d4a5f698572c6a4db40834e1920d",
+  "model_version": "2.0.0",
+  "runtime_sha256": "b6fe4f4d7667ea135aa94006abed680a009b75cc10c1268427f4995a16300ec6",
+  "source": {
+    "checkpoint_sha256": "ad0b80321136a1919aac56ec077bf4d786a1454399dc19a78e55c312d7e0a8eb",
+    "training_commit": "beb96937f22424788dd724233cff93e465b79e77",
+    "training_step": 44250
+  },
+  "tensor_shapes": {
+    "input": [
+      2,
+      73,
+      4
+    ],
+    "policy": [
+      2,
+      5329
+    ],
+    "value": [
+      2,
+      1
+    ]
+  }
+}

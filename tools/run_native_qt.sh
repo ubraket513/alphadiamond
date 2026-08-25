@@ -4,7 +4,7 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 deploy_dir='dist/diamond-qt'
 soo=0
-simulations=128
+simulations=1024
 
 usage() {
     echo "usage: tools/run_native_qt.sh [--deploy-dir DIR] [--soo] [--simulations N]" >&2

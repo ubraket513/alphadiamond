@@ -250,7 +250,7 @@ class NativeController final : public QObject {
     QVector<int32_t> ai_rejected_;
     QString ai_status_ = QStringLiteral("Ready");
     QVariantList ai_details_;
-    int ai_simulations_ = 128;
+    int ai_simulations_ = 1024;
     qint64 ai_started_at_ms_ = 0;
     int selected_position_ = -1;
     bool ai_thinking_ = false;

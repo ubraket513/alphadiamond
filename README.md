@@ -652,12 +652,8 @@ run through native executables without an interpreter.
 ## Installation
 
 ```bash
-mamba activate C:\ProgramData\miniforge3\envs\alphadiamond
-tools/native_training.sh cmake --preset native-package
-tools/native_training.sh cmake --build --preset native-package --parallel 1
-tools/deploy_native_qt.sh --build-dir build/native-package \
-  --output-dir dist/diamond-qt-soo --with-soo \
-  --environment-root "$CONDA_PREFIX"
+mamba activate C:/ProgramData/miniforge3/envs/alphadiamond
+tools/build_native_qt.sh
 ```
 
 ## How to run
@@ -667,7 +663,7 @@ platform settings and exposes the simulation count:
 
 ```bash
 tools/run_native_qt.sh --soo
-tools/run_native_qt.sh --soo --simulations 256
+tools/run_native_qt.sh --soo --simulations 2048
 ```
 
 The window opens at 1440 × 900 and stays usable down to 980 × 640; the board
@@ -775,7 +771,7 @@ computed against an old board can never be applied to the current one.
   network loaded by LibTorch on CPU.
 * Uses no root Dirichlet noise, temperature zero, and a deterministic
   visit-count/tie-break choice for human play.
-* Defaults to 128 simulations; use `-Simulations` or
+* Defaults to 1024 simulations for human play; use `--simulations` or
   `DIAMOND_MCTS_SIMULATIONS` to configure it.
 * Uses one Torch intra-op and one inter-op thread by default;
   `DIAMOND_TORCH_THREADS` changes the intra-op count.
@@ -833,7 +829,9 @@ Undo works normally after a load.
 
 ## Training and deployment boundary
 
-`alphadiamond-train` owns native CPU training and checkpoint-v2 resume.
+The bundled default Soo model is the promoted step-44250 checkpoint, identified
+by its release SHA-256 in `models/index.json`. `alphadiamond-train` owns native
+CPU training and checkpoint-v2 resume.
 `alphadiamond-checkpoint` validates versioned checkpoints, while
 `alphadiamond-release` validates and stages runtime-only model artifacts. The
 Qt application loads the staged artifact directly through LibTorch; no bridge,
