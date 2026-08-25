@@ -19,6 +19,7 @@
   "source": {
     "checkpoint_sha256": "ad0b80321136a1919aac56ec077bf4d786a1454399dc19a78e55c312d7e0a8eb",
     "training_commit": "beb96937f22424788dd724233cff93e465b79e77",
+    "training_simulations": 128,
     "training_step": 44250
   },
   "tensor_shapes": {
