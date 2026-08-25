@@ -28,6 +28,7 @@ Rectangle {
     signal loadRequested()
     signal soundsRequested()
     signal historyRequested()
+    signal modelsRequested()
     signal aboutRequested()
 
     readonly property bool maximised: window.visibility === Window.Maximized
@@ -171,6 +172,22 @@ Rectangle {
                     root.historyRequested()
                 else if (action === "sounds")
                     root.soundsRequested()
+            }
+        }
+
+        TitleMenu {
+            text: "Models"
+            model: [
+                { label: "Manage models…", action: "manage" },
+                { separator: true },
+                {
+                    label: "Next game: " + root.controller.modelCatalog.selectedModelLabel,
+                    enabled: false,
+                    action: "selected"
+                }
+            ]
+            onTriggered: function (action) {
+                if (action === "manage") root.modelsRequested()
             }
         }
 

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
 
 #include "soo/rules.hpp"
 
@@ -50,6 +51,9 @@ QString resolve_soo_artifact() {
 
 class SooSearchRuntime::Impl {
   public:
+    explicit Impl(QString artifactRoot) : artifact_root(std::move(artifactRoot)) {}
+
+    QString artifact_root;
     std::mutex mutex;
 #ifdef DIAMOND_QT_HAS_SOO
     std::unique_ptr<diamond_model::SooEvaluator> evaluator;
@@ -64,7 +68,8 @@ class SooSearchRuntime::Impl {
             torch::set_num_threads(threads);
             torch::set_num_interop_threads(1);
         });
-        const std::string root = resolve_soo_artifact().toStdString();
+        const std::string root = (artifact_root.isEmpty() ? resolve_soo_artifact()
+                                                           : artifact_root).toStdString();
         // Family-scoped: a Min bundle in the Soo slot is refused rather than
         // loaded with the wrong tensor shapes.
         const auto artifact = diamond_model::validate_deployment_artifact(root, "soo");
@@ -76,7 +81,8 @@ class SooSearchRuntime::Impl {
 #endif
 };
 
-SooSearchRuntime::SooSearchRuntime() : impl_(std::make_unique<Impl>()) {}
+SooSearchRuntime::SooSearchRuntime(QString artifactRoot)
+    : impl_(std::make_unique<Impl>(std::move(artifactRoot))) {}
 SooSearchRuntime::~SooSearchRuntime() = default;
 
 AiSearchResult SooSearchRuntime::search(const soo::State& state, const soo::Match& match,
