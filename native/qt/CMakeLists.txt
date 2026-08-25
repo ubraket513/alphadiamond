@@ -99,6 +99,14 @@ qt_add_resources(diamond_qt font_resources
         "${ASSET_ROOT}/fonts/GoogleSansFlex-Bold.ttf"
 )
 
+qt_add_resources(diamond_qt model_source_icons
+    PREFIX "/assets/models"
+    BASE "${ASSET_ROOT}"
+    FILES
+        "${ASSET_ROOT}/github.svg"
+        "${ASSET_ROOT}/huggingface.svg"
+)
+
 target_link_libraries(diamond_qt PRIVATE
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Multimedia
     diamond_qt_backend

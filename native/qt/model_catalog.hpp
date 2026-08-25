@@ -1,98 +1,86 @@
 #pragma once
 
-#include <QObject>
+#include <QByteArray>
 #include <QHash>
+#include <QObject>
 #include <QStringList>
 #include <QVariantList>
 
 class QNetworkAccessManager;
-class QNetworkReply;
-class QProcess;
+class QJsonObject;
+class QUrl;
 
 class ModelCatalog final : public QObject {
-    Q_OBJECT
-    Q_PROPERTY(QVariantList models READ models NOTIFY changed)
-    Q_PROPERTY(QString status READ status NOTIFY changed)
-    Q_PROPERTY(bool busy READ busy NOTIFY changed)
-    Q_PROPERTY(QString selectedModelId READ selectedModelId NOTIFY changed)
-    Q_PROPERTY(QString activeModelId READ activeModelId NOTIFY changed)
-    Q_PROPERTY(QString selectedModelLabel READ selectedModelLabel NOTIFY changed)
-    Q_PROPERTY(QString activeModelLabel READ activeModelLabel NOTIFY changed)
-    Q_PROPERTY(QString localRoot READ localRoot CONSTANT)
+  Q_OBJECT
+  Q_PROPERTY(QVariantList models READ models NOTIFY changed)
+  Q_PROPERTY(QString status READ status NOTIFY changed)
+  Q_PROPERTY(bool busy READ busy NOTIFY changed)
+  Q_PROPERTY(QString selectedModelId READ selectedModelId NOTIFY changed)
+  Q_PROPERTY(QString activeModelId READ activeModelId NOTIFY changed)
+  Q_PROPERTY(QString selectedModelLabel READ selectedModelLabel NOTIFY changed)
+  Q_PROPERTY(QString activeModelLabel READ activeModelLabel NOTIFY changed)
+  Q_PROPERTY(QString localRoot READ localRoot CONSTANT)
+public:
+  explicit ModelCatalog(QObject *parent = nullptr);
+  QVariantList models() const { return models_; }
+  QString status() const { return status_; }
+  bool busy() const { return busy_count_ > 0; }
+  QString selectedModelId() const { return selected_id_; }
+  QString activeModelId() const { return active_id_; }
+  QString selectedModelLabel() const;
+  QString activeModelLabel() const;
+  QString localRoot() const { return local_root_; }
+  QString selectedModelPath() const { return selected_path_; }
+  QString activeModelPath() const { return active_path_; }
+  Q_INVOKABLE void refresh();
+  Q_INVOKABLE void selectModel(const QString &modelId);
+  Q_INVOKABLE void downloadModel(const QString &modelId);
+  bool activateSelected(); // Commits pending selection at new-game boundary.
+Q_SIGNALS:
+  void changed();
 
-  public:
-    explicit ModelCatalog(QObject* parent = nullptr);
-
-    QVariantList models() const { return models_; }
-    QString status() const { return status_; }
-    bool busy() const { return busy_count_ > 0; }
-    QString selectedModelId() const { return selected_id_; }
-    QString activeModelId() const { return active_id_; }
-    QString selectedModelLabel() const;
-    QString activeModelLabel() const;
-    QString localRoot() const { return local_root_; }
-    QString selectedModelPath() const { return selected_path_; }
-    QString activeModelPath() const { return active_path_; }
-
-    Q_INVOKABLE void refresh();
-    Q_INVOKABLE void selectModel(const QString& modelId);
-    Q_INVOKABLE void downloadModel(const QString& source, const QString& modelId);
-
-    // Commits the pending selection at the new-game boundary.
-    bool activateSelected();
-
-  Q_SIGNALS:
-    void changed();
-
-  private:
-    struct LocalModel {
-        QString id;
-        QString path;
-        QString version;
-        int training_step = 0;
-        bool packaged = false;
-    };
-
-    void scanLocal();
-    void rebuildRows();
-    void setStatus(const QString& status);
-    void beginWork();
-    void endWork();
-    void fetchGitHub();
-    void fetchHuggingFace();
-    void parseGitHubIndex(const QByteArray& payload);
-    void parseGitHubTree(const QByteArray& payload);
-    void parseGitHubReleases(const QByteArray& payload);
-    void parseHuggingFace(const QByteArray& payload);
-    void startHfDownload(const QString& modelId);
-    void startGitHubDownload(const QString& modelId);
-    void completeDownload(bool success, const QString& error = {});
-    bool readLocalModel(const QString& path, bool packaged, LocalModel* model) const;
-    QString hfExecutable() const;
-    QString destinationFor(const QString& modelId) const;
-    QVariantMap remoteRow(const QString& source, const QString& modelId,
-                          const QString& version, int trainingStep,
-                          bool compatible, const QString& webUrl,
-                          const QString& note = {}) const;
-
-    QNetworkAccessManager* network_;
-    QVariantList models_;
-    QVariantList remote_models_;
-    QList<LocalModel> local_models_;
-    QHash<QString, QString> local_paths_;
-    QHash<QString, QStringList> github_files_;
-    QString local_root_;
-    QString selected_id_;
-    QString selected_path_;
-    QString active_id_;
-    QString active_path_;
-    QString status_ = QStringLiteral("Local models ready.");
-    int busy_count_ = 0;
-
-    QString download_source_;
-    QString download_id_;
-    QString download_staging_;
-    QString download_destination_;
-    int download_pending_ = 0;
-    QString download_error_;
+private:
+  struct LocalModel {
+    QString id, path, version, runtime_digest, latest_elo;
+    int training_step = 0, training_simulations = 0;
+  };
+  struct Artifact {
+    QString id, version, model_digest, runtime_digest, latest_elo, github_url,
+        hugging_face_url;
+    int training_step = 0, training_simulations = 0;
+    bool github = false, hugging_face = false;
+  };
+  void scanLocal();
+  void rebuildRows();
+  void setStatus(const QString &status);
+  void beginWork();
+  void endWork();
+  void fetchGitHub();
+  void fetchHuggingFace();
+  void parseGitHubIndex(const QByteArray &payload);
+  void parseGitHubTree(const QByteArray &payload);
+  void parseHuggingFaceTree(const QByteArray &payload);
+  void fetchHuggingFaceMetadata(const QString &modelId);
+  void addArtifact(const QString &source, const QJsonObject &metadata,
+                   const QString &webUrl);
+  void failDigestMismatch(const QString &modelId);
+  void startDownload(const QString &modelId, bool huggingFace);
+  void requestDownloadFile(const QString &relativePath, const QUrl &url);
+  void completeDownload(bool success, const QString &error = {});
+  bool readLocalModel(const QString &path, LocalModel *model) const;
+  bool validateDownloadedModel(const QString &path, QString *error) const;
+  QString destinationFor(const QString &modelId) const;
+  QNetworkAccessManager *network_;
+  QVariantList models_;
+  QList<LocalModel> local_models_;
+  QHash<QString, QString> local_paths_;
+  QHash<QString, Artifact> artifacts_;
+  QHash<QString, QStringList> github_files_, hugging_face_files_;
+  QString local_root_, selected_id_, selected_path_, active_id_, active_path_;
+  QString status_ = QStringLiteral("Local models ready."), catalog_error_;
+  int busy_count_ = 0;
+  QString download_id_, download_staging_, download_destination_,
+      download_error_;
+  int download_pending_ = 0;
+  bool download_from_hugging_face_ = false;
 };
