@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -42,6 +43,13 @@ diamond_training::Compatibility wire(const ProductionConfig& config) {
     const diamond_training::NetworkConfig network{config.network.residual_blocks, config.network.width};
     return config.model_name == "Soo" ? diamond_training::Compatibility::soo(config.model_version, network)
                                       : diamond_training::Compatibility::min(config.model_version, network);
+}
+std::optional<std::chrono::steady_clock::duration> selfplay_deadline(
+    const ProductionConfig& config) {
+    if (!config.self_play.max_game_seconds || *config.self_play.max_game_seconds <= 0.0)
+        return std::nullopt;
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(*config.self_play.max_game_seconds));
 }
 soo::Match game_match(const ProductionConfig& config) {
     soo::ensure_topology_configured();
@@ -169,6 +177,7 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config, co
     diamond_pipeline::IterationRequest job;
     job.operation_id = operation; job.model_key = key; job.compatibility = compatibility; job.match = game_match(config);
     job.selfplay = wiring.selfplay;
+    job.selfplay.max_game_duration = selfplay_deadline(config);
     const auto start = opening(job.match);
     for (std::size_t game = 0; game < wiring.games_per_iteration; ++game)
         job.jobs.push_back({start, config.run_seed + static_cast<uint64_t>(game)});

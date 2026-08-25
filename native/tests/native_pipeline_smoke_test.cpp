@@ -1,4 +1,7 @@
+#include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stop_token>
 #include <stdexcept>
 #include <string>
@@ -8,6 +11,7 @@
 #include "diamond_model/soo_model.hpp"
 #include "diamond_pipeline/pipeline.hpp"
 #include "diamond_training/trainer.hpp"
+#include "soo/board.hpp"
 
 namespace {
 
@@ -19,6 +23,39 @@ diamond_training::TrainingSample training_sample(
     sample.sparse_policy.emplace_back(0, 1.0F);
     sample.value_target.push_back(0.0F);
     return sample;
+}
+
+soo::Match soo_match() {
+    soo::ensure_topology_configured();
+    soo::Match match;
+    match.count = 2;
+    match.players[0] = {1, 0, 3};
+    match.players[1] = {2, 3, 0};
+    return match;
+}
+
+soo::State opening(const soo::Match& match) {
+    soo::State state;
+    for (std::size_t seat = 0; seat < match.count; ++seat) {
+        for (const uint8_t position : soo::topology().camp_positions[match.players[seat].camp])
+            state.occupancy[position] = match.players[seat].id;
+    }
+    state.current_player = match.players[0].id;
+    return state;
+}
+
+std::string replay_manifest(const std::filesystem::path& replay_root) {
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator entry(replay_root, error);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; entry != end && !error; entry.increment(error)) {
+        if (entry->path().filename() != "manifest.json") continue;
+        std::ifstream input(entry->path(), std::ios::binary);
+        REQUIRE(static_cast<bool>(input), "cannot open replay manifest");
+        return {std::istreambuf_iterator<char>(input), {}};
+    }
+    REQUIRE(!error, error.message().c_str());
+    return {};
 }
 
 }  // namespace
@@ -49,6 +86,31 @@ int main(int argc, char** argv) {
     CHECK_EQ(result.completed_games, std::size_t{0});
     CHECK_EQ(result.aborted_games, std::size_t{0});
     CHECK_EQ(result.training_step, uint64_t{0});
+
+    diamond_pipeline::IterationRequest deadline_request;
+    deadline_request.operation_id = "deadline-abort-v2";
+    deadline_request.model_key = key;
+    deadline_request.compatibility = compatibility;
+    deadline_request.match = soo_match();
+    deadline_request.jobs = {{opening(deadline_request.match), 19}};
+    deadline_request.selfplay.lanes = 1;
+    deadline_request.selfplay.threads = 1;
+    deadline_request.selfplay.max_batch = 1;
+    deadline_request.selfplay.max_wait_us = 1;
+    deadline_request.selfplay.simulations = 1;
+    deadline_request.selfplay.max_moves = 1000;
+    deadline_request.selfplay.max_game_duration = std::chrono::nanoseconds(1);
+    diamond_pipeline::IterationResult aborted;
+    try {
+        aborted = diamond_pipeline::run_iteration(deadline_request, models, replay, trainer, {});
+    } catch (const std::exception& error) {
+        REQUIRE(false, error.what());
+    }
+    CHECK_EQ(aborted.completed_games, std::size_t{0});
+    CHECK_EQ(aborted.aborted_games, std::size_t{1});
+    CHECK_EQ(aborted.new_samples, std::size_t{0});
+    CHECK_EQ(aborted.replay_size, std::size_t{0});
+    CHECK(replay_manifest(scratch / "replay").find("max_game_seconds") != std::string::npos);
 
     diamond_pipeline::Episode seed_episode;
     seed_episode.game_id = "seed-replay";

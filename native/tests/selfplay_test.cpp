@@ -6,6 +6,7 @@
 // across thread counts is how the scheduler is proven free of cross-lane
 // contamination -- and it is the property most easily lost to a shared buffer
 // or a reused RNG.
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -135,6 +136,37 @@ int main(int argc, char** argv) {
             CHECK(selected_is_legal);
         }
     }
+
+    // Three jobs on two lanes makes this job wait for a lane to be reseated.
+    // A preallocated, never-run Episode would also have zero moves, so require
+    // the queued job to make progress before accepting the scheduler contract.
+    CHECK(first[2].move_count > 0);
+    CHECK_EQ(first[2].completed || first[2].move_limit_exceeded, true);
+
+    // A positive monotonic deadline terminates an episode independently of
+    // the move limit. A one-nanosecond budget expires before a worker can
+    // advance the lane; this is deterministic and needs no wall-clock sleep.
+    auto timed = episodes;
+    timed.max_moves = 1000;
+    timed.max_game_duration = std::chrono::nanoseconds(1);
+    soo::EpisodeMetrics timeout_metrics;
+    const auto timed_out = soo::run_episodes(match, {{*opening, 17}}, timed, evaluator,
+                                             timeout_metrics);
+    REQUIRE(timed_out.size() == 1, "deadline run did not return one episode");
+    CHECK_EQ(timed_out[0].completed, false);
+    CHECK_EQ(timed_out[0].max_game_seconds_exceeded, true);
+    CHECK_EQ(timed_out[0].move_limit_exceeded, false);
+    CHECK_EQ(timed_out[0].move_count, 0);
+
+    auto deadline_disabled = episodes;
+    deadline_disabled.max_moves = 1;
+    deadline_disabled.max_game_duration = std::chrono::steady_clock::duration::zero();
+    soo::EpisodeMetrics disabled_metrics;
+    const auto zero_budget = soo::run_episodes(match, {{*opening, 23}}, deadline_disabled,
+                                                evaluator, disabled_metrics);
+    REQUIRE(zero_budget.size() == 1, "zero-deadline run did not return one episode");
+    CHECK_EQ(zero_budget[0].max_game_seconds_exceeded, false);
+    CHECK_EQ(zero_budget[0].move_limit_exceeded, true);
 
     std::fprintf(stderr, "scheduler moves=%llu episodes=%zu\n",
                  static_cast<unsigned long long>(parallel.moves), first.size());

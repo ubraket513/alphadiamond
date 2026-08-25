@@ -76,7 +76,9 @@ IterationResult run_iteration(const IterationRequest& request, ModelPool& models
             record.completed = episode.completed;
             record.final_order.assign(episode.finish_order.begin(), episode.finish_order.end());
             if (!episode.completed) {
-                record.aborted_reason = episode.move_limit_exceeded ? "max_moves" : "interrupted";
+                record.aborted_reason = episode.max_game_seconds_exceeded ? "max_game_seconds"
+                    : episode.move_limit_exceeded ? "max_moves" : "interrupted";
+                record.samples.clear();
                 ++result.aborted_games;
             } else {
                 ++result.completed_games;
