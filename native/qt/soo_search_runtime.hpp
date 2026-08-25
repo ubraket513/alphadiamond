@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QString>
+
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -9,7 +11,7 @@
 
 class SooSearchRuntime final {
   public:
-    SooSearchRuntime();
+    explicit SooSearchRuntime(QString artifactRoot = {});
     ~SooSearchRuntime();
 
     SooSearchRuntime(const SooSearchRuntime&) = delete;

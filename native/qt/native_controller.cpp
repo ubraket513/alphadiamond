@@ -22,6 +22,7 @@
 
 #include "soo/board.hpp"
 #include "soo/rules.hpp"
+#include "model_catalog.hpp"
 #include "native_move_player.hpp"
 #include "soo_search_runtime.hpp"
 
@@ -221,7 +222,8 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     history_model_ = new ContractListModel("history", this);
     player_model_ = new ContractListModel("players", this);
     ai_worker_ = new NativeAiWorker(this);
-    soo_runtime_ = std::make_shared<SooSearchRuntime>();
+    model_catalog_ = new ModelCatalog(this);
+    soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     sound_player_ = new NativeMovePlayer(this);
     connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
     animation_timer_ = new QTimer(this);
@@ -318,6 +320,8 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
 }
 
 NativeController::~NativeController() { shutdown(); }
+
+QObject* NativeController::modelCatalog() const { return model_catalog_; }
 
 void NativeController::cancelSearch() {
     ++generation_;
@@ -523,6 +527,8 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
         }
     }
     cancelSearch();
+    if (model_catalog_->activateSelected())
+        soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     ai_failure_latched_ = false;
     match_ = {};
     match_.count = static_cast<uint8_t>(order.size());
