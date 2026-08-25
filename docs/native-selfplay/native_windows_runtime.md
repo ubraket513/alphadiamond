@@ -76,7 +76,7 @@ Launch the application:
 
 ```bash
 tools/run_native_qt.sh --soo
-tools/run_native_qt.sh --soo --simulations 256
+tools/run_native_qt.sh --soo --simulations 2048
 ```
 
 The launcher forces the Windows QPA plugin so a stale offscreen setting cannot
@@ -85,11 +85,11 @@ hide an interactive launch.
 ## Search configuration and measured latency
 
 Human play uses temperature zero, no root Dirichlet noise, deterministic visit
-selection, 128 simulations by default, one Torch intra-op thread, and one
+selection, 1024 simulations by default, one Torch intra-op thread, and one
 interop thread. Override with:
 
 ```bash
-DIAMOND_MCTS_SIMULATIONS=256 DIAMOND_TORCH_THREADS=2 \
+DIAMOND_MCTS_SIMULATIONS=2048 DIAMOND_TORCH_THREADS=2 \
 tools/run_native_qt.sh --soo
 ```
 

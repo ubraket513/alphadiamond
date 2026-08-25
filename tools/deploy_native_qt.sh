@@ -123,19 +123,22 @@ copy_glob "$destination" \
 
 printf '%s\n' '[Paths]' 'Plugins = plugins' 'Qml2Imports = qml' >"$destination/qt.conf"
 
-artifact_source=$repo/artifacts/soo-spike
-[ -d "$artifact_source" ] || { echo "Soo artifacts not found: $artifact_source" >&2; exit 1; }
-mkdir -p -- "$destination/artifacts"
 if [ "$with_soo" -eq 1 ]; then
-    cp -R -- "$artifact_source" "$destination/artifacts/"
+    model_source=$repo/models
+    [ -f "$model_source/index.json" ] || {
+        echo "release model index not found: $model_source/index.json" >&2
+        exit 1
+    }
+    cp -R -- "$model_source" "$destination/"
 else
+    topology_source=$repo/tests/golden/topology
     shell_artifact=$destination/artifacts/soo-spike
     mkdir -p -- "$shell_artifact"
     for topology_file in \
         topology_neighbour.i8 topology_camp_positions.i32 topology_pairwise_distance.i32 \
         topology_physical_to_canonical.i32 topology_canonical_to_physical.i32
     do
-        cp -f -- "$artifact_source/$topology_file" "$shell_artifact/$topology_file"
+        cp -f -- "$topology_source/$topology_file" "$shell_artifact/$topology_file"
     done
 fi
 
