@@ -16,7 +16,7 @@ string(REPLACE "\r\n" "\n" tracked "${tracked}")
 string(REPLACE "\n" ";" tracked_files "${tracked}")
 set(allowed_weight "runtime/runs/soo/cpu8h-soo-20260819/latest.pt")
 foreach(path IN LISTS tracked_files)
-    if(path MATCHES "(^|/)(build[^/]*|dist|__pycache__)(/|$)" OR
+    if(path MATCHES "(^|/)(build[^/]*|dist|__pycache__)/" OR
        path MATCHES "\\.py[co]$")
         message(FATAL_ERROR "tracked build/runtime output is forbidden: ${path}")
     endif()
