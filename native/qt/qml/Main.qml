@@ -28,7 +28,7 @@ ApplicationWindow {
     // shortcuts stand down while one is open.
     readonly property bool dialogOpen:
         newGameDialog.visible || gameOverDialog.visible || placeDialog.visible
-        || aboutDialog.visible || soundDialog.visible
+        || aboutDialog.visible || soundDialog.visible || modelsDialog.visible
         || saveDialog.visible || loadDialog.visible
 
     // A frameless window paints its own surround. `color: "transparent"` above
@@ -50,6 +50,7 @@ ApplicationWindow {
         onLoadRequested: loadDialog.open()
         onSoundsRequested: soundDialog.open()
         onHistoryRequested: historyDrawer.open = true
+        onModelsRequested: modelsDialog.open()
         onAboutRequested: aboutDialog.open()
     }
 
@@ -239,6 +240,11 @@ ApplicationWindow {
                  + " sits out the rest of the match while the remaining places are decided."
         acceptText: "Continue"
         showReject: false
+    }
+
+    ModelsDialog {
+        id: modelsDialog
+        controller: window.ctrl
     }
 
     SoundDialog {

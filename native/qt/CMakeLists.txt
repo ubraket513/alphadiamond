@@ -1,7 +1,7 @@
 # 6.6 is a hard floor, not a preference: the QML uses Dial.startAngle and
 # Dial.endAngle, which do not exist before it. A too-old Qt otherwise builds
 # cleanly and fails when the application loads its interface.
-find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia)
+find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2 Multimedia)
 
 if(DIAMOND_BUILD_QT_SOO)
     find_package(Torch REQUIRED)
@@ -15,6 +15,8 @@ add_library(diamond_qt_backend STATIC
     ai_worker.hpp
     search_telemetry.cpp
     search_telemetry.hpp
+    model_catalog.cpp
+    model_catalog.hpp
     soo_search_runtime.cpp
     soo_search_runtime.hpp
     native_controller.cpp
@@ -23,7 +25,7 @@ add_library(diamond_qt_backend STATIC
     native_move_player.hpp
 )
 target_link_libraries(diamond_qt_backend PUBLIC
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Multimedia
+    Qt6::Core Qt6::Gui Qt6::Network Qt6::Qml Qt6::Quick Qt6::Multimedia
     alphadiamond::soo_core alphadiamond::soo_search
 )
 target_include_directories(diamond_qt_backend PUBLIC
@@ -66,6 +68,7 @@ qt_add_resources(diamond_qt qml_resources
         "${QML_ROOT}/PositionOutlookPanel.qml"
         "${QML_ROOT}/DecisionValuePanel.qml"
         "${QML_ROOT}/MovePreferencePanel.qml"
+        "${QML_ROOT}/ModelsDialog.qml"
         "${QML_ROOT}/SearchComputePanel.qml"
         "${QML_ROOT}/HistoryDrawer.qml"
         "${QML_ROOT}/Hole.qml"

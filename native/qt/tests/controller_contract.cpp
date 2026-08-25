@@ -140,11 +140,12 @@ int main(int argc, char** argv) {
 
     NativeController controller;
     if (!require(controller.nativeRulesReady(), "native topology did not load")) return 1;
+    if (!require(controller.modelCatalog() != nullptr, "model catalog is unavailable")) return 1;
     const QMetaObject* meta = controller.metaObject();
     for (const char* property : {"phase", "currentPlayerId", "isCurrentPlayerAi",
              "statusMessage", "errorMessage", "winnerId", "winnerName", "resultSummary",
              "proposalHopCount", "lastMoveText", "positionTelemetry", "decisionTelemetry",
-             "latestSearchCompute", "analysisAvailable", "perspectivePlayerId"}) {
+             "latestSearchCompute", "analysisAvailable", "perspectivePlayerId", "modelCatalog"}) {
         if (!require(meta->indexOfProperty(property) >= 0, "Python controller property is missing")) return 1;
     }
     for (const char* signal : {"errorRaised(QString)", "gameFinished(int)", "playerFinished(int,int)"}) {

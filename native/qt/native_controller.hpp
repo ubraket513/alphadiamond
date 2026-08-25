@@ -15,6 +15,7 @@
 #include "ai_worker.hpp"
 
 class QTimer;
+class ModelCatalog;
 class NativeMovePlayer;
 class SooSearchRuntime;
 
@@ -74,6 +75,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QObject* historyModel READ historyModel CONSTANT)
     Q_PROPERTY(QObject* playerModel READ playerModel CONSTANT)
     Q_PROPERTY(QObject* geometry READ geometry CONSTANT)
+    Q_PROPERTY(QObject* modelCatalog READ modelCatalog CONSTANT)
     Q_PROPERTY(QString phase READ phase NOTIFY changed)
     Q_PROPERTY(QString gameLabel READ gameLabel NOTIFY changed)
     Q_PROPERTY(int playerCount READ playerCount NOTIFY changed)
@@ -129,6 +131,7 @@ class NativeController final : public QObject {
     QObject* historyModel() const { return history_model_; }
     QObject* playerModel() const { return player_model_; }
     QObject* geometry() const { return geometry_; }
+    QObject* modelCatalog() const;
     QString phase() const;
     QString gameLabel() const { return QStringLiteral("Game #%1").arg(game_number_, 3, 10, QLatin1Char('0')); }
     int playerCount() const { return match_.count; }
@@ -263,6 +266,7 @@ class NativeController final : public QObject {
     // is closed while a search is still in flight.
     std::shared_ptr<SooSearchRuntime> soo_runtime_;
     NativeMovePlayer* sound_player_;
+    ModelCatalog* model_catalog_;
     GeometryModel* geometry_;
     ContractListModel* board_model_;
     ContractListModel* piece_model_;
