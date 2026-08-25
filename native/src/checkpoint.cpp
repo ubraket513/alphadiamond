@@ -64,6 +64,52 @@ CheckpointInfo inspect_checkpoint_v2(const std::filesystem::path& root) {
     return state_info(root / "generations" / generation);
 }
 
+CheckpointInfo validate_checkpoint_v2(const std::filesystem::path& root) {
+    const auto info = inspect_checkpoint_v2(root);
+    try {
+        torch::serialize::InputArchive state;
+        state.load_from((info.generation / kState).string());
+        torch::serialize::InputArchive optimizer;
+        optimizer.load_from((info.generation / kOptimizer).string());
+        return info;
+    } catch (const c10::Error& error) {
+        throw CheckpointError(std::string("checkpoint v2 archive is unreadable: ") + error.what());
+    }
+}
+
+CheckpointInfo migrate_checkpoint_v2(const std::filesystem::path& source,
+                                     const std::filesystem::path& destination) {
+    const auto info = validate_checkpoint_v2(source);
+    if (std::filesystem::exists(destination))
+        throw CheckpointError("checkpoint migration destination already exists");
+
+    const auto parent = destination.has_parent_path()
+        ? destination.parent_path() : std::filesystem::current_path();
+    const auto filename = destination.filename().string();
+    if (filename.empty()) throw CheckpointError("checkpoint migration destination is invalid");
+    static std::atomic_uint64_t sequence{0};
+    const auto staged = parent / ("." + filename + ".checkpoint-migrate-" +
+                                  std::to_string(++sequence));
+    std::error_code ignored;
+    if (std::filesystem::exists(staged))
+        throw CheckpointError("checkpoint migration staging path already exists");
+    try {
+        std::filesystem::create_directories(staged / "generations");
+        const auto generation = info.generation.filename();
+        std::filesystem::copy(info.generation, staged / "generations" / generation,
+                              std::filesystem::copy_options::recursive);
+        atomic_write(staged / kPointer, generation.string() + "\n");
+        std::filesystem::rename(staged, destination);
+        return {destination / "generations" / generation, info.training_step};
+    } catch (const std::filesystem::filesystem_error& error) {
+        std::filesystem::remove_all(staged, ignored);
+        throw CheckpointError(std::string("cannot migrate checkpoint v2: ") + error.what());
+    } catch (...) {
+        std::filesystem::remove_all(staged, ignored);
+        throw;
+    }
+}
+
 CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer) {
     trainer.compatibility().validate();
     std::filesystem::create_directories(root / "generations");
@@ -75,8 +121,8 @@ CheckpointInfo save_checkpoint_v2(const std::filesystem::path& root, Trainer& tr
     try {
         // Native LibTorch archives make this generation self-contained and
         // deliberately distinct from the legacy Python checkpoint reader.
-        torch::save(trainer.model(), staged / kState);
-        torch::save(trainer.optimizer(), staged / kOptimizer);
+        torch::save(trainer.model(), (staged / kState).string());
+        torch::save(trainer.optimizer(), (staged / kOptimizer).string());
         {
             std::ofstream step(staged / "training_step", std::ios::binary | std::ios::trunc);
             step << trainer.training_step();
@@ -107,7 +153,7 @@ CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
     const auto info = inspect_checkpoint_v2(root);
     if (!model) throw CheckpointError("checkpoint model destination is empty");
     try {
-        torch::load(model, info.generation / kState);
+        torch::load(model, (info.generation / kState).string());
         return info;
     } catch (const c10::Error& error) {
         throw CheckpointError(std::string("cannot load checkpoint model weights: ") + error.what());
@@ -117,7 +163,7 @@ CheckpointInfo load_checkpoint_v2_weights(const std::filesystem::path& root,
 CheckpointInfo load_checkpoint_v2(const std::filesystem::path& root, Trainer& trainer) {
     const auto info = load_checkpoint_v2_weights(root, trainer.model());
     try {
-        torch::load(trainer.optimizer(), info.generation / kOptimizer);
+        torch::load(trainer.optimizer(), (info.generation / kOptimizer).string());
         trainer.restore_checkpoint_state(trainer.config(), info.training_step);
         return info;
     } catch (const c10::Error& error) {

@@ -396,24 +396,20 @@ python az-bench/profiles/bench_native_gpu_ab.py --device cuda:0 \
 python az-bench/profiles/bench_native_callback.py --seconds 5 --device cuda:0
 ```
 
-**The training run and its instruments:**
+**The native training run and its instruments:**
 
 ```bash
-tools/train_soo_scratch.sh 6                     # B0, heuristics on
-tools/train_soo_scratch.sh 6 none A0             # A0 -- but see 3.0.1, use --simulations 128
+build/native-training/native/alphadiamond-train train \
+  --runtime-dir runtime --model Soo --run-id <run-id> \
+  --config configs/alphazero/soo-production.json \
+  --checkpoint <checkpoint-v2-root>
 
-# A0 readiness, on the production engine and production exploration.
-# 2 fixed seeds x 20 games is a regression probe; use fresh seeds and 768 games
-# for anything you intend to act on (pitfall 7.15).
-python tools/a0_gate.py --checkpoint <ckpt>
-python tools/a0_gate.py --checkpoint <ckpt> --games 192 \
-    --seeds 20260823 20260824 20260825 20260826 --lanes 256 --threads 12
+build/native-training/native/selfplay_benchmark --repetitions 5
+build/native-training/native/end_to_end_benchmark --repetitions 5 \
+  --scratch build/native-training/benchmark-e2e
 
-# What the unfinished games are doing.
-python tools/audit_aborted_games.py --checkpoint <ckpt> --games 192
-
-# Durable copy: this host has workspace_is_volume=false.
-python tools/backup_training_run.py --publish
+build/native-training/native/alphadiamond-release stage dist/models \
+  --artifact artifacts/soo-spike --default soo
 ```
 
 **GPU-host baseline** (RTX 5090 / Ryzen 9 9950X3D, 16 physical cores), ValueOnly:
@@ -603,24 +599,18 @@ one. Use the fixed 40-game set as a **regression probe** and a fresh large
 sample (768 games, SE ~0.7 pt) as a **promotion estimate**, and never mix them
 in one trajectory.
 
-### 7.16 The pinned snapshot goes stale against `tools/`
-`train_soo_scratch.sh` imports `diamond` from a pinned copy of `src/` so repo
-work cannot reach a run in flight — but `tools/az_train.py` is read from the
-working tree. Change a signature in `src/` and the two halves disagree, with a
-`TypeError` at the first self-play call rather than at startup. Re-pin the
-snapshot whenever `src/` changes.
+### 7.16 Native run isolation
+
+Native run state, replay, and checkpoint-v2 directories are versioned and
+transactional. A production run consumes a committed configuration and explicit
+checkpoint root, so working-tree script drift cannot alter a running process.
 
 ## 8. Repo conventions
 
-- **Branch + PR for everything**; `main` is the only long-lived branch and is
-  kept clean of stale branches.
-- **CI jobs**: `core` (3.11/3.12/3.13, no compiler, no pybind11 — proves the
-  extension stays optional), `gui` (Qt, offscreen), `lint` (changed files only),
-  `native (Gate A-F)` (builds the extension, installs CPU torch, asserts the
-  checkpoint digest, runs all gates).
-- **CI must not be allowed to skip silently.** Both the `gui` job and the
-  `native` job assert their fixtures are present in a dedicated step, so a
-  missing dependency is a red build rather than quiet skips. Follow that pattern.
-- `.serena/` is **deliberately deleted and untracked**. Do not re-add it; stage
-  explicit paths rather than `git add -A`.
-- Benchmarks live in `az-bench/profiles/bench_*.py`, out of production code.
+- `main` is the only long-lived branch; stacked migration branches are removed
+  after PR13 is accepted and merged.
+- CMake presets are the only build graph; `tools/native_training.sh` is the
+  cross-platform launcher.
+- CI jobs are native core, sanitizer, Qt, and formatting gates.
+- Missing fixtures or runtime DLLs are failures, never silent skips.
+- Benchmarks are native executables under `native/benchmarks/`.

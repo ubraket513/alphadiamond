@@ -185,7 +185,7 @@ Left, and deliberately unmeasured until someone needs them:
    been done.** It rewrites hundreds of documented command paths and deserves
    its own change; the boundaries it would express are already established in
    `products.md`.
-5. **`src/diamond/qml` and `src/diamond/assets` belong to the native
+5. **`native/qt/qml` and `native/qt/assets` belong to the native
    application**, not to the Python package that excludes them. They are the
    obvious first move if the restructure happens.
 6. **Branch protection** is on `main` with the CI checks required,
@@ -209,7 +209,7 @@ The migration's own work is finished. What is left is the ordinary backlog:
    is a separate, announced operation because it changes every commit hash.
 3. **The `apps/` / `python/` restructure** from section 4 of the brief. It
    rewrites hundreds of documented command paths and deserves its own change;
-   `src/diamond/qml` and `src/diamond/assets` belong to the native application
+   `native/qt/qml` and `native/qt/assets` belong to the native application
    and are the obvious first move.
 4. **Measured ports, when something needs them.**
    `PersistentReplayStore.load_buffer()` is called once per training step; on a

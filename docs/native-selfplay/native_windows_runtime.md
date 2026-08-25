@@ -4,9 +4,8 @@ Status: GUI renewal gates Q0–Q6 complete, 2026-08-23.
 
 The primary Windows GUI is now a native C++/Qt 6 application. It embeds and
 loads the existing QML, runs the authoritative native rules and MCTS, and uses
-LibTorch CPU inference for the two-player Soo seat. The deployed executable
-does not import Python or start a Python/WSL process. Python remains the
-authoritative training/export environment. The old PySide6 host, its GUI tests,
+LibTorch CPU inference for the two-player Soo seat. The deployed executable, model trainer, checkpoint/release tools, and tests are
+all native C++ and never start an interpreter or WSL process. The old PySide6 host, its GUI tests,
 dependencies, package data, and command entry point were removed after native
 controller/package parity was established; shared QML and assets remain the
 native application's visual source.
@@ -21,7 +20,7 @@ native application's visual source.
 | Q3 native Qt shell | Pass | existing QML and fonts embedded in resources; native icon/chrome/Snap Layout integration; no Python runtime |
 | Q4 controller parity | Pass | proposal/confirm/cancel, path, per-hop animation/sound, history, undo, save/load, new game, terminal state, model roles, illegal-action rejection |
 | Q5 human-vs-Soo | Pass | native `MCTS2P` + LibTorch evaluator on worker thread; deterministic settings; canonical action converted to physical seat coordinates |
-| Q6 native primary | Pass | PySide6/QtAwesome dependencies, Python GUI host, GUI-only tests, Python GUI package data, and legacy entry point removed; training/export dependencies preserved |
+| Q6 native primary | Pass | PySide6/QtAwesome dependencies, Python GUI host, GUI-only tests, Python GUI package data, and legacy entry point removed; native trainer/release path established |
 
 ## Runtime architecture
 
@@ -43,100 +42,45 @@ stays in the executable host because it owns the HWND/DWM boundary.
 
 The released GUI targets Windows 10/11 x64 and CPU LibTorch. It assumes neither
 CUDA nor Intel XPU support; XPU/OpenVINO remains an optional future backend, not
-a runtime dependency. Python/PyTorch may train and export on Windows or WSL,
-but only the versioned deployment artifact crosses into the Windows package.
-The executable never launches Python or WSL.
+a runtime dependency. The native CPU trainer and release CLI produce the versioned deployment artifact
+that crosses into the Windows package. The executable never launches an
+interpreter or WSL.
 
 ## Build and package
 
-Activate the requested environment and enter a Visual Studio developer shell:
+Run the native package preset from Windows Git Bash. The launcher initializes
+the Visual Studio x64 environment and uses the active mamba environment's CMake,
+Qt, and CPU LibTorch.
 
-```powershell
+```bash
 mamba activate C:\ProgramData\miniforge3\envs\alphadiamond
-& 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\Launch-VsDevShell.ps1' `
-  -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+tools/native_training.sh cmake --preset native-package
+tools/native_training.sh cmake --build --preset native-package --parallel 1
 ```
 
-Configure and build the release Soo application:
+`artifacts/soo-spike` must be a validated native deployment artifact produced by
+the trainer/release flow. Package it with all Qt and LibTorch dependencies:
 
-```powershell
-cmake -S . -B build-qt-soo-clean -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DDIAMOND_BUILD_QT_SOO=ON `
-  -DDIAMOND_BUILD_LIBTORCH_PROBE=ON
-cmake --build build-qt-soo-clean --parallel 1
+```bash
+tools/deploy_native_qt.sh --build-dir build/native-package \
+  --output-dir dist/diamond-qt-soo --with-soo \
+  --environment-root "$CONDA_PREFIX"
 ```
 
-The shell-only build, useful for controller work without LibTorch, is:
+The deployment copies Qt DLLs/plugins/QML, Visual C++ runtimes, the complete
+LibTorch `torch/lib` DLL set (including `c10.dll` and `torch_cpu.dll`), the Soo
+artifact, topology, and sound. It rejects Python/PySide leakage and runs every
+package-local smoke with development paths removed.
 
-```powershell
-cmake -S . -B build-qt-clean -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release -DDIAMOND_BUILD_QT=ON
-cmake --build build-qt-clean --parallel 1
+Launch the application:
+
+```bash
+tools/run_native_qt.sh --soo
+tools/run_native_qt.sh --soo --simulations 256
 ```
 
-Export the model artifact the application loads. This step is not optional for
-a Soo build: `deploy_native_qt.ps1 -WithSoo` fails outright if
-`artifacts/soo-spike` is absent, and the directory is generated rather than
-tracked, so it does not arrive with a clone.
-
-```powershell
-python tools\export_deployment.py artifacts\soo-spike `
-  --checkpoint runtime\runs\soo\soo-scratch-20260822\latest.pt
-```
-
-`soo-scratch-20260822/latest.pt` is the A0 checkpoint at training step 44,250 --
-the strongest network the project has produced, and the one the GUI should play
-humans with. It is not the same file as
-`runtime/runs/soo/cpu8h-soo-20260819/latest.pt`, which stays in the repository
-untouched: that one is the immutable step-80 checkpoint every native gate
-measurement is defined against, and a test asserts its SHA-256. Exporting from
-it would produce a working artifact that plays like an untrained network.
-
-Omitting `--checkpoint` also produces a valid artifact, from *random* weights.
-That is useful for shell and packaging work and useless for playing, so pass
-the flag whenever the build is meant to play.
-
-Verify the artifact against the native contract before packaging:
-
-```powershell
-ctest --test-dir .\build-qt-soo-clean -R "artifact_contract|model_parity"
-```
-
-`model_parity_test` replaced `soo_native_model_probe.exe`: same comparison,
-registered as a test and covering every bundled family rather than Soo alone.
-
-Create a self-contained package:
-
-```powershell
-.\tools\deploy_native_qt.ps1 `
-  -BuildDir build-qt-soo-clean `
-  -OutputDir dist\diamond-qt-soo `
-  -WithSoo `
-  -EnvironmentRoot $env:CONDA_PREFIX
-```
-
-The deployment step copies Qt DLLs, plugins and QML imports; Visual C++
-runtimes; LibTorch and its protobuf/UTF-8/Abseil dependency closure; the Soo
-artifact; and `assets/sounds/move.m4a`. It then runs package-local shell,
-engine, worker, persistent-failure, media-decode, and Soo smokes and fails if a
-DLL/plugin/artifact is missing. The shell-only package contains topology data
-but does not carry the unused model or weight files. Smokes run with conda,
-Python, and external Qt/QML paths removed; only the package and Windows system
-directories are available for DLL resolution.
-Only runtime plugin families are copied; Designer/QML tooling plugins are
-excluded, and deployment fails if a Python DLL, PySide plugin, or
-`site-packages` path appears in the native bundle.
-
-Run the application:
-
-```powershell
-.\tools\run_native_qt.ps1 -Soo
-.\tools\run_native_qt.ps1 -Soo -Simulations 256
-```
-
-The launcher forces the Windows QPA plugin so a stale
-`QT_QPA_PLATFORM=offscreen` cannot make an interactive launch invisible.
+The launcher forces the Windows QPA plugin so a stale offscreen setting cannot
+hide an interactive launch.
 
 ## Search configuration and measured latency
 
@@ -144,16 +88,15 @@ Human play uses temperature zero, no root Dirichlet noise, deterministic visit
 selection, 128 simulations by default, one Torch intra-op thread, and one
 interop thread. Override with:
 
-```powershell
-$env:DIAMOND_MCTS_SIMULATIONS = '256'
-$env:DIAMOND_TORCH_THREADS = '2'
+```bash
+DIAMOND_MCTS_SIMULATIONS=256 DIAMOND_TORCH_THREADS=2 \
+tools/run_native_qt.sh --soo
 ```
 
 Benchmark command:
 
-```powershell
-.\build-qt-soo-clean\native\soo_mcts_probe.exe `
-  .\artifacts\soo-spike 128 30 1
+```bash
+build/native-package/native/soo_mcts_probe.exe artifacts/soo-spike 128 30 1
 ```
 
 Measured on this 8-logical-CPU Windows host, Release build, B1 inference,

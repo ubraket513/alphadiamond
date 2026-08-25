@@ -39,4 +39,12 @@ struct ModelIndex {
 // validated here -- call validate_deployment_artifact before loading weights.
 ModelIndex load_model_index(const std::filesystem::path& models_dir);
 
+// Writes a canonical index.json for already-staged runtime artifacts.  Every
+// root must be exactly models_dir/<family>/<version>; this keeps index paths
+// package-relative and makes the emitted path unambiguous.  `index.json` must
+// not already exist, and every default family must name exactly one artifact.
+ModelIndex write_model_index(const std::filesystem::path& models_dir,
+                             const std::vector<std::filesystem::path>& artifact_roots,
+                             const std::vector<std::string>& default_families);
+
 }  // namespace diamond_model

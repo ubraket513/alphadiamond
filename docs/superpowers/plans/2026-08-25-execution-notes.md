@@ -1,6 +1,6 @@
 # Execution Notes
 
-- Use `tools/native_training.ps1` for every native CMake/CTest invocation; do not rely on inherited `PATH`.
+- Use `tools/native_training.sh` for every native CMake/CTest invocation; it initializes the Windows MSVC environment explicitly.
 - Before diagnosing a native test failure, rebuild its exact target through that wrapper so stale executables cannot mislead the diagnosis.
 - On Windows, close all files in a staged directory before promoting that directory. Capture `GetLastError()` immediately after a failed Win32 call, before cleanup.
 - If an implementation subagent requires more than two diagnosis/fix exchanges, the primary agent takes over the exact failing path directly.

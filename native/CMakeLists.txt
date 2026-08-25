@@ -1,3 +1,5 @@
+option(DIAMOND_BUILD_BENCHMARKS "Build explicit native benchmark executables" OFF)
+
 set(SOO_CORE_SOURCES
     src/board.cpp
     src/encoder.cpp
@@ -69,14 +71,6 @@ target_compile_options(diamond_pipeline PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
-if(DIAMOND_BUILD_PYBIND)
-    find_package(pybind11 CONFIG REQUIRED)
-
-    pybind11_add_module(diamond_native MODULE ../native/bindings.cpp)
-    target_link_libraries(diamond_native PRIVATE alphadiamond::soo_search)
-    target_compile_features(diamond_native PRIVATE cxx_std_20)
-endif()
-
 if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     # Golden fixtures are committed data, not build output: the tests below run
     # on a machine with no Python, no pybind and no pytest.
@@ -111,6 +105,13 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(replay_store_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-store-scratch")
     target_link_libraries(replay_schema_test PRIVATE alphadiamond::diamond_pipeline)
     target_link_libraries(replay_store_test PRIVATE alphadiamond::diamond_pipeline)
+
+    add_executable(golden_manifest_test tests/golden_manifest_test.cpp)
+    target_link_libraries(golden_manifest_test PRIVATE alphadiamond::diamond_pipeline)
+    target_compile_features(golden_manifest_test PRIVATE cxx_std_20)
+    add_test(NAME golden_manifest_test
+        COMMAND golden_manifest_test "${DIAMOND_GOLDEN_DIR}")
+    set_tests_properties(golden_manifest_test PROPERTIES LABELS contract)
 endif()
 
 if(DIAMOND_BUILD_LIBTORCH)
@@ -152,6 +153,25 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_options(diamond_training PRIVATE /bigobj)
     endif()
 
+    add_library(diamond_release STATIC src/promotion.cpp)
+    add_library(alphadiamond::diamond_release ALIAS diamond_release)
+    target_link_libraries(diamond_release PUBLIC alphadiamond::diamond_training)
+    target_include_directories(diamond_release PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_compile_features(diamond_release PUBLIC cxx_std_20)
+
+    add_executable(alphadiamond-checkpoint src/checkpoint_main.cpp)
+    target_link_libraries(alphadiamond-checkpoint PRIVATE alphadiamond::diamond_training)
+    target_compile_features(alphadiamond-checkpoint PRIVATE cxx_std_20)
+
+    add_executable(alphadiamond-release src/release_main.cpp)
+    target_link_libraries(alphadiamond-release PRIVATE alphadiamond::diamond_release)
+    target_compile_features(alphadiamond-release PRIVATE cxx_std_20)
+
+    install(TARGETS alphadiamond-checkpoint alphadiamond-release
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
     # The direct native self-play -> replay -> training path is deliberately
     # separate from the schema-only replay library: it owns LibTorch models.
     add_library(diamond_native_pipeline STATIC
@@ -192,11 +212,37 @@ if(DIAMOND_BUILD_LIBTORCH)
     )
     target_compile_features(diamond_orchestration PUBLIC cxx_std_20)
 
+    if(DIAMOND_BUILD_BENCHMARKS)
+        add_executable(training_step_benchmark benchmarks/training_step_benchmark.cpp)
+        target_link_libraries(training_step_benchmark PRIVATE alphadiamond::diamond_training)
+
+        add_executable(checkpoint_benchmark benchmarks/checkpoint_benchmark.cpp)
+        target_link_libraries(checkpoint_benchmark PRIVATE alphadiamond::diamond_training)
+
+        add_executable(replay_benchmark benchmarks/replay_benchmark.cpp)
+        target_link_libraries(replay_benchmark PRIVATE alphadiamond::diamond_pipeline)
+
+        add_executable(selfplay_benchmark benchmarks/selfplay_benchmark.cpp)
+        target_link_libraries(selfplay_benchmark PRIVATE alphadiamond::soo_search)
+
+        add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
+        target_link_libraries(end_to_end_benchmark PRIVATE
+            alphadiamond::diamond_native_pipeline)
+
+        foreach(benchmark IN ITEMS
+                training_step_benchmark checkpoint_benchmark replay_benchmark
+                selfplay_benchmark end_to_end_benchmark)
+            target_compile_features(${benchmark} PRIVATE cxx_std_20)
+        endforeach()
+    endif()
+
     add_executable(alphadiamond-train src/train_main.cpp)
     target_link_libraries(alphadiamond-train PRIVATE
         alphadiamond::diamond_orchestration
         alphadiamond::diamond_native_pipeline)
     target_compile_features(alphadiamond-train PRIVATE cxx_std_20)
+    install(TARGETS alphadiamond-train
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
     add_executable(alphadiamond-pipeline src/pipeline_main.cpp)
     target_link_libraries(alphadiamond-pipeline PRIVATE alphadiamond::diamond_native_pipeline)
@@ -228,9 +274,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     endif()
 
     if(BUILD_TESTING)
-        # Artifact fixtures are exported, not committed:
-        #   python tools/export_deployment.py artifacts/soo-spike --family soo
-        #   python tools/export_deployment.py artifacts/min-spike --family min
+        # Deployment artifacts are produced by the native release pipeline.
         # The tests register only for the artifacts that are present, so a
         # checkout without them configures cleanly instead of failing late.
         set(DIAMOND_SOO_ARTIFACT "${PROJECT_SOURCE_DIR}/artifacts/soo-spike")
@@ -246,6 +290,24 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_features(model_index_test PRIVATE cxx_std_20)
         add_test(NAME model_index_test
                  COMMAND model_index_test "${CMAKE_CURRENT_BINARY_DIR}/model-index-scratch")
+
+        add_executable(promotion_test tests/promotion_test.cpp)
+        target_link_libraries(promotion_test PRIVATE alphadiamond::diamond_release)
+        target_compile_features(promotion_test PRIVATE cxx_std_20)
+        add_test(NAME promotion_test
+                 COMMAND promotion_test "${CMAKE_CURRENT_BINARY_DIR}/promotion-scratch")
+        set_tests_properties(promotion_test PROPERTIES LABELS release)
+
+        add_executable(final_pipeline_smoke_test tests/final_pipeline_smoke_test.cpp)
+        target_link_libraries(final_pipeline_smoke_test PRIVATE
+            alphadiamond::diamond_release
+            alphadiamond::diamond_orchestration)
+        target_include_directories(final_pipeline_smoke_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(final_pipeline_smoke_test PRIVATE cxx_std_20)
+        target_compile_definitions(final_pipeline_smoke_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        if(MSVC)
+            target_compile_options(final_pipeline_smoke_test PRIVATE /bigobj)
+        endif()
 
         add_executable(model_parity_test tests/model_parity_test.cpp)
         target_link_libraries(model_parity_test PRIVATE alphadiamond::diamond_model ${TORCH_LIBRARIES})
@@ -264,6 +326,11 @@ if(DIAMOND_BUILD_LIBTORCH)
                 add_test(NAME model_parity_test
                          COMMAND model_parity_test
                                  soo "${DIAMOND_SOO_ARTIFACT}" min "${DIAMOND_MIN_ARTIFACT}")
+                add_test(NAME final_pipeline_smoke_test
+                         COMMAND final_pipeline_smoke_test
+                                 "${CMAKE_CURRENT_BINARY_DIR}/final-pipeline-smoke-scratch"
+                                 "${DIAMOND_SOO_ARTIFACT}" "${DIAMOND_MIN_ARTIFACT}")
+                set_tests_properties(final_pipeline_smoke_test PROPERTIES LABELS pipeline)
             else()
                 add_test(NAME soo_artifact_contract
                          COMMAND soo_artifact_contract "${DIAMOND_SOO_ARTIFACT}")
@@ -276,6 +343,10 @@ if(DIAMOND_BUILD_LIBTORCH)
                     "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
                 set_tests_properties(model_parity_test PROPERTIES
                     ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                if(TEST final_pipeline_smoke_test)
+                    set_tests_properties(final_pipeline_smoke_test PROPERTIES
+                        ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                endif()
             endif()
         endif()
 
@@ -397,7 +468,7 @@ if(DIAMOND_BUILD_LIBTORCH)
                 "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
-                                 native_pipeline_smoke_test PROPERTIES
+                                 native_pipeline_smoke_test promotion_test PROPERTIES
                 ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
         endif()
         add_test(NAME training_step_parity_test
