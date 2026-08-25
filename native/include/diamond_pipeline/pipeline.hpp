@@ -34,6 +34,7 @@ struct IterationResult {
     std::size_t requested_training_steps = 0;
     std::size_t completed_training_steps = 0;
     std::vector<std::size_t> training_batch_sizes;
+    std::vector<diamond_training::TrainingMetrics> training_metrics;
     std::size_t replay_size = 0;
     uint64_t training_step = 0;
 };

@@ -149,13 +149,22 @@ Json describe(RunStage stage, const diamond_orchestration::RunState& state) {
 }
 struct Result { std::size_t games = 0; uint64_t step = 0; };
 Result iterate(const CommandRequest& request, const ProductionConfig& config,
-               const std::string& operation, const diamond_training::ResolvedDevice& device) {
+               const diamond_orchestration::RunState& state, const std::string& operation,
+               const diamond_training::ResolvedDevice& device) {
+    const auto iteration = std::get<int64_t>(state.payload().at("iteration").value);
     const auto wiring = diamond_orchestration::wire_training_iteration(config);
     auto native_model = model(config); const auto compatibility = wire(config);
     diamond_training::Trainer trainer(
         native_model, compatibility,
         {config.training.learning_rate, config.training.weight_decay}, device);
-    try { (void)diamond_training::load_checkpoint_v2(request.checkpoint_path, trainer, device); }
+    auto checkpoint = request.checkpoint_path;
+    const auto candidate_checkpoint = root(request) / "candidate-checkpoint";
+    if (iteration > 0) {
+        if (!std::filesystem::exists(candidate_checkpoint / "CURRENT"))
+            throw CommandArtifactError("previous iteration candidate checkpoint is missing");
+        checkpoint = candidate_checkpoint;
+    }
+    try { (void)diamond_training::load_checkpoint_v2(checkpoint, trainer, device); }
     catch (const diamond_training::CheckpointError& error) { throw CommandArtifactError(error.what()); }
     diamond_pipeline::ModelPool models(1, device);
     const auto key = models.install(compatibility, trainer.learner());
@@ -167,8 +176,13 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config,
     job.selfplay = wiring.selfplay;
     job.selfplay.max_game_duration = selfplay_deadline(config);
     const auto start = opening(job.match);
-    for (std::size_t game = 0; game < wiring.games_per_iteration; ++game)
-        job.jobs.push_back({start, config.run_seed + static_cast<uint64_t>(game)});
+    for (std::size_t game = 0; game < wiring.games_per_iteration; ++game) {
+        const Array seed_identity{
+            Json{std::string("SELF_PLAY")}, Json{iteration}, Json{static_cast<int64_t>(game)},
+            Json{config.workers.retry_id}, Json{config.opening_suite.id},
+        };
+        job.jobs.push_back({start, state.derive_seed(seed_identity)});
+    }
     job.training_batch_size = wiring.training_batch_size;
     job.training_steps = wiring.training_steps;
     job.checkpoint_root = root(request) / "candidate-checkpoint";
@@ -177,37 +191,103 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config,
     training_batch_sizes.reserve(result.training_batch_sizes.size());
     for (const auto batch_size : result.training_batch_sizes)
         training_batch_sizes.emplace_back(Json{static_cast<int64_t>(batch_size)});
-    write_json(root(request) / "iteration.json", Json{Object{{"operation_id", Json{result.operation_id}},
+    Array training_metrics;
+    training_metrics.reserve(result.training_metrics.size());
+    for (const auto& metric : result.training_metrics) {
+        training_metrics.emplace_back(Json{Object{
+            {"backward_seconds", Json{metric.backward_seconds}},
+            {"collation_seconds", Json{metric.collation_seconds}},
+            {"forward_seconds", Json{metric.forward_seconds}},
+            {"h2d_seconds", Json{metric.h2d_seconds}},
+            {"optimizer_seconds", Json{metric.optimizer_seconds}},
+            {"peak_cuda_allocated_bytes", Json{static_cast<int64_t>(metric.peak_cuda_allocated_bytes)}},
+            {"peak_cuda_memory_available", Json{metric.peak_cuda_memory_available}},
+            {"peak_cuda_reserved_bytes", Json{static_cast<int64_t>(metric.peak_cuda_reserved_bytes)}},
+            {"policy_loss", Json{metric.policy_loss}},
+            {"samples_per_second", Json{metric.samples_per_second}},
+            {"total_loss", Json{metric.total_loss}},
+            {"total_step_seconds", Json{metric.total_step_seconds}},
+            {"training_step", Json{static_cast<int64_t>(metric.training_step)}},
+            {"value_loss", Json{metric.value_loss}},
+        }});
+    }
+    const Json iteration_report{Object{{"operation_id", Json{result.operation_id}},
+        {"iteration", Json{iteration}},
         {"completed_games", Json{static_cast<int64_t>(result.completed_games)}},
         {"aborted_games", Json{static_cast<int64_t>(result.aborted_games)}},
         {"requested_training_steps", Json{static_cast<int64_t>(result.requested_training_steps)}},
         {"completed_training_steps", Json{static_cast<int64_t>(result.completed_training_steps)}},
         {"training_batch_sizes", Json{std::move(training_batch_sizes)}},
+        {"training_metrics", Json{std::move(training_metrics)}},
         {"replay_size", Json{static_cast<int64_t>(result.replay_size)}},
-        {"training_step", Json{static_cast<int64_t>(result.training_step)}}}});
+        {"training_step", Json{static_cast<int64_t>(result.training_step)}}}};
+    write_json(root(request) / "iteration.json", iteration_report);
+    write_json(root(request) / "iterations" / std::to_string(iteration) / "iteration.json",
+               iteration_report);
     return {result.completed_games + result.aborted_games, result.training_step};
 }
 Object train(const CommandRequest& request, const ProductionConfig& config, bool resume,
              const diamond_training::ResolvedDevice& device) {
     diamond_orchestration::RunStateStore store(request.runtime_dir / "runs");
     const auto compatibility = wire(config);
+    const auto canonical_config = config.to_json();
+    const auto canonical_config_text = diamond_support::canonical_json(canonical_config);
+    const auto config_sha256 = diamond_support::sha256(canonical_config_text);
+    const auto config_path = root(request) / "resolved-config.json";
+    if (resume) {
+        std::ifstream input(config_path, std::ios::binary);
+        if (!input) throw CommandArtifactError("resolved run config is missing");
+        const std::string stored((std::istreambuf_iterator<char>(input)), {});
+        try {
+            if (diamond_support::canonical_json(diamond_support::parse_json(stored)) !=
+                canonical_config_text) {
+                throw CommandArtifactError(
+                    "resume config does not match the immutable resolved run config");
+            }
+        } catch (const CommandArtifactError&) {
+            throw;
+        } catch (const std::exception&) {
+            throw CommandArtifactError("resolved run config is invalid");
+        }
+    }
     const auto initial = resume ? store.load(request.model_name, request.run_id) :
         store.initialize(diamond_orchestration::RunState::initialize(request.run_id,
             Object{{"model_name", Json{compatibility.model_name}}, {"model_version", Json{compatibility.model_version}},
                    {"player_count", Json{static_cast<int64_t>(compatibility.player_count)}},
-                   {"value_semantics_version", Json{compatibility.value_semantics_version}}},
+                   {"value_semantics_version", Json{compatibility.value_semantics_version}},
+                   {"resolved_config_sha256", Json{config_sha256}}},
             Object{{"pipeline", Json{"native-pipeline-v2"}},
                    {"rating", Json{request.model_name == "Soo" ? "soo-elo-v1" : "min-trueskill-v1"}}}, config.run_seed));
+    if (!resume) write_json(config_path, canonical_config);
     Result result;
     diamond_orchestration::Coordinator coordinator(store, describe,
-        [&](RunStage stage, const diamond_orchestration::RunState&, const std::string& operation) {
+        [&](RunStage stage, const diamond_orchestration::RunState& state,
+            const std::string& operation) {
             write_json(root(request) / "stages" / (operation + ".json"),
                        Json{Object{{"operation_id", Json{operation}}, {"stage", Json{static_cast<int64_t>(stage)}}}});
-            if (stage == RunStage::train) result = iterate(request, config, operation, device);
+            if (stage == RunStage::train) {
+                const auto iteration_result = iterate(request, config, state, operation, device);
+                result.games += iteration_result.games;
+                result.step = iteration_result.step;
+            }
         });
-    const auto complete = coordinator.run(initial);
+    std::optional<uint64_t> max_iterations;
+    if (config.run_budget.max_iterations)
+        max_iterations = static_cast<uint64_t>(*config.run_budget.max_iterations);
+    std::optional<std::chrono::steady_clock::time_point> deadline;
+    if (config.run_budget.max_wall_clock_seconds) {
+        deadline = std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(*config.run_budget.max_wall_clock_seconds));
+    }
+    const auto complete = coordinator.run_bounded(initial, max_iterations, deadline);
+    const auto completed_iterations =
+        std::get<int64_t>(complete.payload().at("iteration").value) + 1;
     return {{"run_id", Json{complete.run_id()}}, {"stage", Json{"COMPLETE"}},
-            {"completed_games", Json{static_cast<int64_t>(result.games)}}, {"training_step", Json{static_cast<int64_t>(result.step)}}};
+            {"completed_iterations", Json{completed_iterations}},
+            {"completed_games", Json{static_cast<int64_t>(result.games)}},
+            {"config_sha256", Json{config_sha256}},
+            {"training_step", Json{static_cast<int64_t>(result.step)}}};
 }
 Object evaluate(const CommandRequest& request, const ProductionConfig& config,
                 const diamond_training::ResolvedDevice& device) {
@@ -333,15 +413,6 @@ Object service(const CommandRequest& request, const ProductionConfig& config) {
             throw diamond_orchestration::CommandArgumentError(error.what());
         }
     }();
-
-    // Task 1 establishes the preflight contract. The model, evaluator, and
-    // trainer do not own CUDA tensors until the following CUDA-runtime tasks;
-    // rejecting here prevents them from silently continuing on CPU.
-    if (resolved.torch_device.is_cuda()) {
-        throw diamond_orchestration::CommandArgumentError(
-            "runtime.device " + resolved.canonical_name +
-            " resolved successfully, but CUDA execution is not installed yet");
-    }
 
     auto canonical_config = config;
     canonical_config.runtime.device = resolved.canonical_name;

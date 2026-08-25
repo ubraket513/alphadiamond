@@ -103,7 +103,7 @@ IterationResult run_iteration(const IterationRequest& request, ModelPool& models
     for (std::size_t step = 0; step < request.training_steps; ++step) {
         if (stop.stop_requested()) throw CancelledError("native pipeline cancelled during training");
         auto samples = replay.sample(request.training_batch_size);
-        (void)trainer.train(samples);
+        result.training_metrics.push_back(trainer.train(samples));
         ++result.completed_training_steps;
         result.training_batch_sizes.push_back(samples.size());
     }

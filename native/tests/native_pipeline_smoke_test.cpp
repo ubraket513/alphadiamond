@@ -138,6 +138,11 @@ int main(int argc, char** argv) {
     CHECK_EQ(trained.training_batch_sizes.size(), std::size_t{2});
     CHECK_EQ(trained.training_batch_sizes[0], std::size_t{2});
     CHECK_EQ(trained.training_batch_sizes[1], std::size_t{2});
+    CHECK_EQ(trained.training_metrics.size(), std::size_t{2});
+    CHECK_EQ(trained.training_metrics[0].training_step, uint64_t{1});
+    CHECK_EQ(trained.training_metrics[1].training_step, uint64_t{2});
+    CHECK(trained.training_metrics[0].total_step_seconds > 0.0);
+    CHECK(trained.training_metrics[0].samples_per_second > 0.0);
     CHECK_EQ(trained.replay_size, std::size_t{4});
     CHECK_EQ(trained.training_step, uint64_t{2});
 
