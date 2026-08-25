@@ -92,10 +92,10 @@ case "$(uname -s)" in
         runtime_path=''
         if [ -n "$environment_root" ]; then
             for runtime_dir in \
+                "$environment_root/Lib/site-packages/torch/lib" \
                 "$environment_root/Library/bin" \
                 "$environment_root/Scripts" \
                 "$environment_root" \
-                "$environment_root/Lib/site-packages/torch/lib" \
                 "$environment_root/Library/lib/qt6/bin"
             do
                 if [ -d "$runtime_dir" ]; then

@@ -179,7 +179,7 @@ AppDialog {
                         Text {
                             text: "Training steps: " + modelData.trainingStep
                                   + "  ·  Latest ELO: "
-                                  + (modelData.latestElo === "" ? "—" : modelData.latestElo)
+                                  + (modelData.latestElo === "" ? "unavailable" : modelData.latestElo)
                                   + "  ·  Training simulations: "
                                   + modelData.trainingSimulations
                             color: Theme.textMuted

@@ -11,6 +11,7 @@
 #include <QPointF>
 #include <QSet>
 #include <QTimer>
+#include <QUuid>
 
 #include <cmath>
 #include <algorithm>
@@ -24,6 +25,9 @@
 #include "soo/rules.hpp"
 #include "model_catalog.hpp"
 #include "native_move_player.hpp"
+#ifdef DIAMOND_QT_HAS_RATINGS
+#include "rating_bridge.hpp"
+#endif
 #include "soo_search_runtime.hpp"
 
 namespace {
@@ -223,6 +227,11 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     player_model_ = new ContractListModel("players", this);
     ai_worker_ = new NativeAiWorker(this);
     model_catalog_ = new ModelCatalog(this);
+#ifdef DIAMOND_QT_HAS_RATINGS
+    rating_bridge_ = new RatingBridge({}, this);
+#else
+    rating_bridge_ = nullptr;
+#endif
     soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     sound_player_ = new NativeMovePlayer(this);
     connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
@@ -559,6 +568,14 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
     }
     ai_seats_ = aiSeats;
     ai_player_name_ = resolvedAiPlayerName();
+    rating_game_id_ = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddhhmmsszzz"))
+        + QLatin1Char('-') + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    rating_eligible_ = true;
+    rating_event_attempted_ = false;
+    rating_note_.clear();
+#ifdef DIAMOND_QT_HAS_RATINGS
+    rating_bridge_->syncPending();
+#endif
     state_ = {};
     state_.current_player = static_cast<uint8_t>(order.at(0).toInt());
     stopAnimation();
@@ -703,6 +720,9 @@ bool NativeController::loadGame(const QUrl& path) {
         }
     }
     if (!startMatch(order, ai)) return false;
+    // Replayed/save-loaded positions lack a locally scheduled game identity;
+    // never rate them, even if the next move ends the restored position.
+    rating_eligible_ = false;
     cancelSearch();
 
     const auto occupancy = root.value("occupancy").toArray();
@@ -1087,8 +1107,10 @@ void NativeController::stopAnimation() {
 void NativeController::finishMove() {
     announceFinishers();
     if (isGameOver()) {
+        recordTerminalRating();
         ai_status_ = QStringLiteral("Idle");
         status_message_ = QStringLiteral("Game over — %1").arg(resultSummary());
+        if (!rating_note_.isEmpty()) status_message_ += QStringLiteral(" %1").arg(rating_note_);
         Q_EMIT changed();
         Q_EMIT gameFinished(winnerId());
         return;
@@ -1103,6 +1125,30 @@ void NativeController::finishMove() {
     status_message_ = QStringLiteral("%1 to move.").arg(currentPlayerName());
     Q_EMIT changed();
     startHumanAnalysis();
+}
+
+void NativeController::recordTerminalRating() {
+    if (rating_event_attempted_) return;
+    rating_event_attempted_ = true;
+    if (!rating_eligible_) return;
+    if (match_.count != 2 || ai_seats_.size() != 1) {
+        rating_note_ = QStringLiteral("Rating not recorded: requires one model and one local human.");
+        return;
+    }
+    const int ai_seat = ai_seats_.constFirst().toInt();
+    if (ai_seat != 1 && ai_seat != 2) {
+        rating_note_ = QStringLiteral("Rating not recorded: invalid model seat.");
+        return;
+    }
+#ifdef DIAMOND_QT_HAS_RATINGS
+    const bool queued = rating_bridge_->recordTerminalSooMatch(
+        rating_game_id_, model_catalog_->activeModelPath(), model_catalog_->activeModelId(),
+        ai_player_name_, ai_seat, winnerId(), turnOrder());
+    if (queued || !rating_bridge_->syncState().isEmpty())
+        rating_note_ = rating_bridge_->syncState();
+#else
+    rating_note_ = QStringLiteral("Rating sync is unavailable in this build.");
+#endif
 }
 
 void NativeController::announceFinishers() {

@@ -17,6 +17,7 @@
 class QTimer;
 class ModelCatalog;
 class NativeMovePlayer;
+class RatingBridge;
 class SooSearchRuntime;
 
 class GeometryModel final : public QObject {
@@ -147,7 +148,7 @@ class NativeController final : public QObject {
     QString winnerName() const { return winnerId() ? playerName(static_cast<uint8_t>(winnerId())) : QString(); }
     QString resultSummary() const;
     bool canSelect() const { return !isGameOver() && !ai_thinking_ && !animating_ && !proposal_is_ai_; }
-    bool canUndo() const { return !history_.isEmpty() && !animating_; }
+    bool canUndo() const { return !isGameOver() && !history_.isEmpty() && !animating_; }
     bool canConfirm() const { return proposal_action_ >= 0; }
     bool canCancel() const { return (!proposal_is_ai_ && proposal_action_ >= 0) || selected_position_ >= 0; }
     bool hasProposal() const { return proposal_action_ >= 0; }
@@ -226,6 +227,7 @@ class NativeController final : public QObject {
     void appendTelemetryForCommit(uint8_t player, int32_t action);
     void publishLatestCompute(const SearchTelemetry& telemetry);
     void announceFinishers();
+    void recordTerminalRating();
     void fail(const QString& message);
     QString playerColor(uint8_t id) const;
     QString playerName(uint8_t id) const;
@@ -269,6 +271,7 @@ class NativeController final : public QObject {
     std::shared_ptr<SooSearchRuntime> soo_runtime_;
     NativeMovePlayer* sound_player_;
     ModelCatalog* model_catalog_;
+    RatingBridge* rating_bridge_;
     GeometryModel* geometry_;
     ContractListModel* board_model_;
     ContractListModel* piece_model_;
@@ -284,4 +287,8 @@ class NativeController final : public QObject {
     QVariantList decision_telemetry_;
     QVariantMap latest_search_compute_;
     int perspective_player_id_ = 1;
+    QString rating_game_id_;
+    QString rating_note_;
+    bool rating_eligible_ = true;
+    bool rating_event_attempted_ = false;
 };

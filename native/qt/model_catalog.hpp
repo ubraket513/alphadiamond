@@ -40,12 +40,13 @@ Q_SIGNALS:
   void changed();
 
 private:
+  friend struct ModelCatalogTestAccess;
   struct LocalModel {
-    QString id, path, version, runtime_digest, latest_elo;
+    QString id, path, version, model_digest, runtime_digest;
     int training_step = 0, training_simulations = 0;
   };
   struct Artifact {
-    QString id, version, model_digest, runtime_digest, latest_elo, github_url,
+    QString id, version, model_digest, runtime_digest, github_url,
         hugging_face_url;
     int training_step = 0, training_simulations = 0;
     bool github = false, hugging_face = false;
@@ -61,6 +62,11 @@ private:
   void parseGitHubTree(const QByteArray &payload);
   void parseHuggingFaceTree(const QByteArray &payload);
   void fetchHuggingFaceMetadata(const QString &modelId);
+  void fetchHuggingFaceRatings();
+  bool parseHuggingFaceRatings(const QByteArray &payload, bool persist);
+  void loadCachedRatings();
+  QString latestRating(const QString &id, const QString &modelDigest,
+                       const QString &runtimeDigest) const;
   void addArtifact(const QString &source, const QJsonObject &metadata,
                    const QString &webUrl);
   void failDigestMismatch(const QString &modelId);
@@ -76,6 +82,7 @@ private:
   QHash<QString, QString> local_paths_;
   QHash<QString, Artifact> artifacts_;
   QHash<QString, QStringList> github_files_, hugging_face_files_;
+  QHash<QString, QString> ratings_by_identity_;
   QString local_root_, selected_id_, selected_path_, active_id_, active_path_;
   QString status_ = QStringLiteral("Local models ready."), catalog_error_;
   int busy_count_ = 0;

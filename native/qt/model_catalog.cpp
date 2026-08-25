@@ -19,6 +19,7 @@
 #include <QUrl>
 #include <QUuid>
 
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 
@@ -33,6 +34,7 @@ const QRegularExpression kSemVer(QStringLiteral(
     "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|["
     "0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-"
     "Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"));
+const QRegularExpression kDigest(QStringLiteral("^[0-9a-fA-F]{64}$"));
 QString modelLabel(const QString &id) {
   const QStringList parts = id.split('/');
   if (parts.size() != 2)
@@ -61,11 +63,32 @@ int metaInt(const QJsonObject &root, const QJsonObject &source,
   return value.isDouble() ? value.toInt()
                           : root.value(QLatin1String(key)).toInt();
 }
-QString metaText(const QJsonObject &root, const QJsonObject &source,
-                 const char *key) {
-  const QString value = source.value(QLatin1String(key)).toVariant().toString();
-  return value.isEmpty() ? root.value(QLatin1String(key)).toVariant().toString()
-                         : value;
+QString ratingIdentityKey(const QString &id, const QString &modelDigest,
+                          const QString &runtimeDigest) {
+  return id + QChar(0x1f) + modelDigest.toLower() + QChar(0x1f) +
+         runtimeDigest.toLower();
+}
+QString ratingIdentityKey(const QJsonObject &identity) {
+  QList<QJsonObject> candidates{identity};
+  for (const char *key : {"artifact", "deployment", "model"}) {
+    const QJsonObject nested = identity.value(QLatin1String(key)).toObject();
+    if (!nested.isEmpty())
+      candidates.push_back(nested);
+  }
+  for (const QJsonObject &candidate : candidates) {
+    const QString family = candidate.value(QStringLiteral("model_family"))
+                               .toString(candidate.value(QStringLiteral("family")).toString());
+    const QString version = candidate.value(QStringLiteral("model_version"))
+                                .toString(candidate.value(QStringLiteral("version")).toString());
+    const QString modelDigest = candidate.value(QStringLiteral("model_sha256")).toString();
+    const QString runtimeDigest = candidate.value(QStringLiteral("runtime_sha256")).toString();
+    if (!family.isEmpty() && kSemVer.match(version).hasMatch() &&
+        kDigest.match(modelDigest).hasMatch() &&
+        kDigest.match(runtimeDigest).hasMatch())
+      return ratingIdentityKey(family + QLatin1Char('/') + version,
+                               modelDigest, runtimeDigest);
+  }
+  return {};
 }
 } // namespace
 
@@ -79,6 +102,7 @@ ModelCatalog::ModelCatalog(QObject *parent)
   selected_id_ = settings.value(QStringLiteral("models/selectedId")).toString();
   selected_path_ =
       settings.value(QStringLiteral("models/selectedPath")).toString();
+  loadCachedRatings();
   scanLocal();
   active_id_ = selected_id_;
   active_path_ = selected_path_;
@@ -129,11 +153,10 @@ bool ModelCatalog::readLocalModel(const QString &path,
   model->id = family + QLatin1Char('/') + version;
   model->path = QDir::cleanPath(path);
   model->version = version;
-  model->runtime_digest =
-      root.value(QStringLiteral("runtime_sha256")).toString();
+  model->model_digest = root.value(QStringLiteral("model_sha256")).toString();
+  model->runtime_digest = root.value(QStringLiteral("runtime_sha256")).toString();
   model->training_step = metaInt(root, source, "training_step");
   model->training_simulations = metaInt(root, source, "training_simulations");
-  model->latest_elo = metaText(root, source, "latest_elo");
   return true;
 }
 void ModelCatalog::scanLocal() {
@@ -181,7 +204,8 @@ void ModelCatalog::rebuildRows() {
                                {"version", a.version},
                                {"trainingStep", a.training_step},
                                {"trainingSimulations", a.training_simulations},
-                               {"latestElo", a.latest_elo},
+                               {"latestElo", latestRating(a.id, a.model_digest,
+                                                           a.runtime_digest)},
                                {"installed", installed},
                                {"compatible", true},
                                {"selected", a.id == selected_id_},
@@ -200,7 +224,8 @@ void ModelCatalog::rebuildRows() {
                       {"version", a.version},
                       {"trainingStep", a.training_step},
                       {"trainingSimulations", a.training_simulations},
-                      {"latestElo", a.latest_elo},
+                      {"latestElo", latestRating(a.id, a.model_digest,
+                                                  a.runtime_digest)},
                       {"installed", true},
                       {"compatible", true},
                       {"selected", a.id == selected_id_},
@@ -225,6 +250,7 @@ void ModelCatalog::refresh() {
   setStatus(QStringLiteral("Refreshing GitHub and Hugging Face…"));
   fetchGitHub();
   fetchHuggingFace();
+  fetchHuggingFaceRatings();
 }
 void ModelCatalog::fetchGitHub() {
   const auto request = [this](const QUrl &url, auto parser) {
@@ -270,6 +296,67 @@ void ModelCatalog::fetchHuggingFace() {
     reply->deleteLater();
     endWork();
   });
+}
+void ModelCatalog::fetchHuggingFaceRatings() {
+  QNetworkRequest request(
+      QUrl(QStringLiteral("https://huggingface.co/buckets/%1/resolve/ratings/"
+                          "ratings.json?download=true")
+               .arg(kHuggingFaceDataset)));
+  request.setRawHeader("User-Agent", "AlphaDiamond");
+  beginWork();
+  QNetworkReply *reply = network_->get(request);
+  connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    if (reply->error() == QNetworkReply::NoError) {
+      if (!parseHuggingFaceRatings(reply->readAll(), true))
+        setStatus(QStringLiteral(
+            "Hugging Face ratings are invalid; cached ratings retained."));
+    } else {
+      setStatus(QStringLiteral(
+          "Hugging Face ratings unavailable; cached ratings retained."));
+    }
+    reply->deleteLater();
+    endWork();
+  });
+}
+bool ModelCatalog::parseHuggingFaceRatings(const QByteArray &payload,
+                                           bool persist) {
+  const QJsonDocument document = QJsonDocument::fromJson(payload);
+  if (!document.isObject())
+    return false;
+  const QJsonObject root = document.object();
+  if (root.value(QStringLiteral("schema_version")).toInt() != 2 ||
+      !root.value(QStringLiteral("ratings")).isArray())
+    return false;
+  QHash<QString, QString> parsed;
+  for (const QJsonValue &value : root.value(QStringLiteral("ratings")).toArray()) {
+    const QJsonObject row = value.toObject();
+    const QString key =
+        ratingIdentityKey(row.value(QStringLiteral("full_identity")).toObject());
+    if (key.isEmpty())
+      continue; // Human and non-artifact participants have no model row.
+    const QJsonValue elo = row.value(QStringLiteral("elo"));
+    if (!elo.isDouble() || !std::isfinite(elo.toDouble()) || parsed.contains(key))
+      return false;
+    parsed.insert(key, QString::number(elo.toDouble(), 'f', 2));
+  }
+  ratings_by_identity_ = std::move(parsed);
+  if (persist) {
+    QSettings settings;
+    settings.setValue(QStringLiteral("models/huggingFaceRatings/v2"), payload);
+  }
+  rebuildRows();
+  return true;
+}
+void ModelCatalog::loadCachedRatings() {
+  QSettings settings;
+  parseHuggingFaceRatings(
+      settings.value(QStringLiteral("models/huggingFaceRatings/v2")).toByteArray(),
+      false);
+}
+QString ModelCatalog::latestRating(const QString &id, const QString &modelDigest,
+                                   const QString &runtimeDigest) const {
+  return ratings_by_identity_.value(
+      ratingIdentityKey(id, modelDigest, runtimeDigest));
 }
 void ModelCatalog::parseGitHubIndex(const QByteArray &payload) {
   const QJsonArray models = QJsonDocument::fromJson(payload)
@@ -375,7 +462,6 @@ void ModelCatalog::addArtifact(const QString &source,
   artifact.training_step = metaInt(metadata, provenance, "training_step");
   artifact.training_simulations =
       metaInt(metadata, provenance, "training_simulations");
-  artifact.latest_elo = metaText(metadata, provenance, "latest_elo");
   if (source == QStringLiteral("GitHub")) {
     artifact.github = true;
     artifact.github_url = webUrl;
