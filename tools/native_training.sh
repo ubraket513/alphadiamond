@@ -89,15 +89,25 @@ case "$(uname -s)" in
             esac
         done <"$environment_dump"
 
+        runtime_path=''
         if [ -n "$environment_root" ]; then
             for runtime_dir in \
-                "$environment_root/Library/lib/qt6/bin" \
                 "$environment_root/Library/bin" \
-                "$environment_root/Lib/site-packages/torch/lib"
+                "$environment_root/Scripts" \
+                "$environment_root" \
+                "$environment_root/Lib/site-packages/torch/lib" \
+                "$environment_root/Library/lib/qt6/bin"
             do
-                if [ -d "$runtime_dir" ]; then PATH=$PATH:$runtime_dir; fi
+                if [ -d "$runtime_dir" ]; then
+                    if [ -n "$runtime_path" ]; then
+                        runtime_path=$runtime_path:$runtime_dir
+                    else
+                        runtime_path=$runtime_dir
+                    fi
+                fi
             done
         fi
+        if [ -n "$runtime_path" ]; then PATH=$runtime_path:$PATH; fi
         PATH=$PATH:$inherited_path
         export PATH
 

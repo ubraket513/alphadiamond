@@ -21,6 +21,7 @@ struct IterationRequest {
     soo::Match match;
     std::vector<soo::EpisodeJob> jobs;
     soo::EpisodeConfig selfplay;
+    std::size_t training_batch_size = 1;
     std::size_t training_steps = 0;
     std::optional<std::filesystem::path> checkpoint_root;
 };
@@ -30,6 +31,10 @@ struct IterationResult {
     std::size_t completed_games = 0;
     std::size_t aborted_games = 0;
     std::size_t new_samples = 0;
+    std::size_t requested_training_steps = 0;
+    std::size_t completed_training_steps = 0;
+    std::vector<std::size_t> training_batch_sizes;
+    std::size_t replay_size = 0;
     uint64_t training_step = 0;
 };
 

@@ -308,6 +308,7 @@ size_t ReplayStore::ingest(std::span<const Episode> episodes) {
     } catch (...) { impl_->episodes=old_episodes; impl_->samples=old_samples; impl_->aborted_records=old_aborted; impl_->chunk_payloads=old_chunks; throw; }
     return accepted.size();
 }
+size_t ReplayStore::size() const noexcept { return impl_ ? impl_->samples.size() : 0; }
 std::vector<TrainingSample> ReplayStore::sample(size_t count) { if(count==0) return {}; if(count>impl_->samples.size()) throw std::invalid_argument("replay sample count exceeds available samples"); const auto old_rng=impl_->rng_state; const auto old_mt=impl_->mt_state; const auto old_index=impl_->mt_index; const auto old_gauss=impl_->mt_gauss_next; try { std::vector<TrainingSample> pool=impl_->samples, out; out.reserve(count); for(size_t i=0;i<count;++i){const size_t index=impl_->rng_algorithm=="python-mt19937"?mt_below(impl_->mt_state,impl_->mt_index,pool.size()):next_splitmix(impl_->rng_state)%pool.size();out.push_back(pool[index]);pool[index]=pool.back();pool.pop_back();} impl_->write_manifest(); return out; } catch (...) { impl_->rng_state=old_rng; impl_->mt_state=old_mt; impl_->mt_index=old_index; impl_->mt_gauss_next=old_gauss; throw; } }
 void ReplayStore::prune() {
     size_t total = 0, first = 0;

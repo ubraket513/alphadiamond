@@ -408,7 +408,7 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_features(native_pipeline_smoke_test PRIVATE cxx_std_20)
         target_compile_definitions(native_pipeline_smoke_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
         add_test(NAME native_pipeline_smoke_test
-                 COMMAND native_pipeline_smoke_test "${CMAKE_CURRENT_BINARY_DIR}/native-pipeline-smoke-scratch")
+                 COMMAND native_pipeline_smoke_test "${CMAKE_BINARY_DIR}/np-smoke")
         set_tests_properties(native_pipeline_smoke_test PROPERTIES LABELS pipeline)
 
         add_executable(run_state_test tests/run_state_test.cpp)
@@ -466,21 +466,23 @@ if(DIAMOND_BUILD_LIBTORCH)
             list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
             get_filename_component(DIAMOND_TORCH_PREFIX
                 "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
+            get_filename_component(DIAMOND_RUNTIME_ROOT
+                "${DIAMOND_TORCH_PREFIX}/../.." ABSOLUTE)
+            set(DIAMOND_TEST_PATH
+                "${DIAMOND_RUNTIME_ROOT}/Library/bin;${DIAMOND_RUNTIME_ROOT}/Scripts;${DIAMOND_RUNTIME_ROOT};${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+            string(REPLACE ";" "\\;" DIAMOND_TEST_PATH "${DIAMOND_TEST_PATH}")
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
                                  native_pipeline_smoke_test promotion_test PROPERTIES
-                ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
         endif()
         add_test(NAME training_step_parity_test
                  COMMAND training_step_parity_test
                          "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
         set_tests_properties(training_step_parity_test PROPERTIES LABELS training)
         if(WIN32)
-            list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
-            get_filename_component(DIAMOND_TORCH_PREFIX
-                "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
             set_tests_properties(training_step_parity_test PROPERTIES
-                ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
         endif()
     endif()
 endif()

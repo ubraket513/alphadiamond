@@ -16,6 +16,7 @@ class ReplayStore {
     ReplayStore(std::filesystem::path root, Compatibility compatibility,
                 std::size_t capacity, uint64_t seed);
     std::size_t ingest(std::span<const Episode> episodes);
+    std::size_t size() const noexcept;
     std::vector<TrainingSample> sample(std::size_t count);
     void prune();
     void restore_manifest(const std::filesystem::path& snapshot);
