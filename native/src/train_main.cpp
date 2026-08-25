@@ -4,7 +4,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -73,21 +72,6 @@ soo::State opening(const soo::Match& match) {
 diamond_model::DiamondModel model(const ProductionConfig& config) {
     return diamond_model::DiamondModel(config.network.width, config.network.residual_blocks,
         config.model_name == "Soo" ? 4 : 6, config.model_name == "Soo" ? 1 : 3);
-}
-diamond_pipeline::ModelKey checkpoint_key(const ProductionConfig& config,
-                                          const std::filesystem::path& checkpoint) {
-    try {
-        const auto info = diamond_training::inspect_checkpoint_v2(checkpoint);
-        std::ifstream state(info.generation / "state.pt", std::ios::binary);
-        if (!state) throw CommandArtifactError("cannot read checkpoint model state");
-        const std::string bytes((std::istreambuf_iterator<char>(state)), {});
-        if (bytes.empty()) throw CommandArtifactError("checkpoint model state is empty");
-        return {config.model_name, config.model_version, diamond_support::sha256(bytes)};
-    } catch (const CommandArtifactError&) {
-        throw;
-    } catch (const diamond_training::CheckpointError& error) {
-        throw CommandArtifactError(error.what());
-    }
 }
 soo::Match ordered_match(const ProductionConfig& config, const auto& turn_order) {
     auto match = game_match(config);
@@ -164,15 +148,16 @@ Json describe(RunStage stage, const diamond_orchestration::RunState& state) {
                        {"stage", Json{static_cast<int64_t>(stage)}}}};
 }
 struct Result { std::size_t games = 0; uint64_t step = 0; };
-Result iterate(const CommandRequest& request, const ProductionConfig& config, const std::string& operation) {
+Result iterate(const CommandRequest& request, const ProductionConfig& config,
+               const std::string& operation, const diamond_training::ResolvedDevice& device) {
     const auto wiring = diamond_orchestration::wire_training_iteration(config);
     auto native_model = model(config); const auto compatibility = wire(config);
     diamond_training::Trainer trainer(native_model, compatibility, {config.training.learning_rate, config.training.weight_decay});
     try { (void)diamond_training::load_checkpoint_v2(request.checkpoint_path, trainer); }
     catch (const diamond_training::CheckpointError& error) { throw CommandArtifactError(error.what()); }
-    diamond_pipeline::ModelPool models(1);
-    const auto key = checkpoint_key(config, request.checkpoint_path);
-    models.install(key, native_model); models.activate(key);
+    diamond_pipeline::ModelPool models(1, device);
+    const auto key = models.install(compatibility, trainer.learner());
+    models.activate(key);
     diamond_pipeline::ReplayStore replay(root(request) / "replay", compatibility,
         static_cast<std::size_t>(config.replay.capacity), config.replay.seed);
     diamond_pipeline::IterationRequest job;
@@ -200,7 +185,8 @@ Result iterate(const CommandRequest& request, const ProductionConfig& config, co
         {"training_step", Json{static_cast<int64_t>(result.training_step)}}}});
     return {result.completed_games + result.aborted_games, result.training_step};
 }
-Object train(const CommandRequest& request, const ProductionConfig& config, bool resume) {
+Object train(const CommandRequest& request, const ProductionConfig& config, bool resume,
+             const diamond_training::ResolvedDevice& device) {
     diamond_orchestration::RunStateStore store(request.runtime_dir / "runs");
     const auto compatibility = wire(config);
     const auto initial = resume ? store.load(request.model_name, request.run_id) :
@@ -215,23 +201,26 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
         [&](RunStage stage, const diamond_orchestration::RunState&, const std::string& operation) {
             write_json(root(request) / "stages" / (operation + ".json"),
                        Json{Object{{"operation_id", Json{operation}}, {"stage", Json{static_cast<int64_t>(stage)}}}});
-            if (stage == RunStage::train) result = iterate(request, config, operation);
+            if (stage == RunStage::train) result = iterate(request, config, operation, device);
         });
     const auto complete = coordinator.run(initial);
     return {{"run_id", Json{complete.run_id()}}, {"stage", Json{"COMPLETE"}},
             {"completed_games", Json{static_cast<int64_t>(result.games)}}, {"training_step", Json{static_cast<int64_t>(result.step)}}};
 }
-Object evaluate(const CommandRequest& request, const ProductionConfig& config) {
+Object evaluate(const CommandRequest& request, const ProductionConfig& config,
+                const diamond_training::ResolvedDevice& device) {
     const auto candidate_path = root(request) / "candidate-checkpoint";
+    const auto compatibility = wire(config);
     auto candidate_model = model(config);
     auto champion_model = model(config);
-    diamond_pipeline::ModelPool candidate(1);
-    diamond_pipeline::ModelPool champion(1);
-    const auto candidate_key = checkpoint_key(config, candidate_path);
-    const auto champion_key = checkpoint_key(config, request.checkpoint_path);
+    diamond_pipeline::ModelPool candidate(1, device);
+    diamond_pipeline::ModelPool champion(1, device);
+    diamond_pipeline::ModelKey candidate_key;
+    diamond_pipeline::ModelKey champion_key;
     try {
-        candidate.install_checkpoint(candidate_key, candidate_path, candidate_model);
-        champion.install_checkpoint(champion_key, request.checkpoint_path, champion_model);
+        candidate_key = candidate.install_checkpoint(compatibility, candidate_path, candidate_model);
+        champion_key = champion.install_checkpoint(
+            compatibility, request.checkpoint_path, champion_model);
         candidate.activate(candidate_key);
         champion.activate(champion_key);
     } catch (const std::exception& error) {
@@ -355,9 +344,9 @@ Object service(const CommandRequest& request, const ProductionConfig& config) {
     auto canonical_config = config;
     canonical_config.runtime.device = resolved.canonical_name;
     Object details;
-    if (request.command == "train") details = train(request, canonical_config, false);
-    else if (request.command == "resume") details = train(request, canonical_config, true);
-    else details = evaluate(request, canonical_config);
+    if (request.command == "train") details = train(request, canonical_config, false, resolved);
+    else if (request.command == "resume") details = train(request, canonical_config, true, resolved);
+    else details = evaluate(request, canonical_config, resolved);
     details.emplace("requested_device", Json{resolved.requested_name});
     details.emplace("canonical_device", Json{resolved.canonical_name});
     return details;

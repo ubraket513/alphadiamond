@@ -49,6 +49,7 @@ IterationResult run_iteration(const IterationRequest& request, ModelPool& models
     if (!(request.compatibility == trainer.compatibility()))
         throw PipelineError("iteration compatibility does not match trainer");
     models.require_ready(stop, std::chrono::steady_clock::now() + std::chrono::hours(24));
+    models.require_compatible(request.compatibility);
     if (!(models.active_key() == request.model_key))
         throw PipelineError("active model key does not match iteration request");
 

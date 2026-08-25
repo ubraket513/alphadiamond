@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 
 #include <torch/torch.h>
 
@@ -22,6 +23,23 @@ struct TrainingMetrics {
     uint64_t training_step;
 };
 
+enum class ModelRole {
+    actor,
+    learner,
+    candidate,
+};
+
+// Rebuilds a model from source architecture and copies every named parameter
+// and buffer to target. The result owns distinct storage and has the requested
+// runtime role applied.
+diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& source,
+                                           const Compatibility& compatibility,
+                                           torch::Device target, ModelRole role);
+
+// A versioned SHA-256 identity over sorted named parameters then named buffers.
+// FP32 tensor data is serialized canonically as contiguous CPU little-endian bytes.
+std::string canonical_model_digest(const diamond_model::DiamondModel& model);
+
 class Trainer {
   public:
     Trainer(diamond_model::DiamondModel model, Compatibility compatibility,
@@ -32,6 +50,10 @@ class Trainer {
     const Compatibility& compatibility() const { return compatibility_; }
     const TrainingConfig& config() const { return config_; }
     diamond_model::DiamondModel& model() { return model_; }
+    const diamond_model::DiamondModel& model() const { return model_; }
+    diamond_model::DiamondModel& learner() { return model_; }
+    const diamond_model::DiamondModel& learner() const { return model_; }
+    diamond_model::DiamondModel candidate_snapshot() const;
     torch::optim::AdamW& optimizer() { return optimizer_; }
     void restore_checkpoint_state(TrainingConfig config, uint64_t training_step) {
         config_ = config;

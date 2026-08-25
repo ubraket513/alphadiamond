@@ -10,6 +10,7 @@
 #include "check.hpp"
 #include "diamond_model/soo_model.hpp"
 #include "diamond_pipeline/pipeline.hpp"
+#include "diamond_training/device.hpp"
 #include "diamond_training/trainer.hpp"
 #include "soo/board.hpp"
 
@@ -67,10 +68,10 @@ int main(int argc, char** argv) {
 
     const auto compatibility = diamond_training::Compatibility::soo(
         "1.0.0", {.residual_blocks = 1, .width = 8});
-    const diamond_pipeline::ModelKey key{"Soo", "1.0.0", std::string(64, 'a')};
+    const auto device = diamond_training::resolve_device("cpu");
     auto model = diamond_model::DiamondModel(8, 1, 4, 1);
-    diamond_pipeline::ModelPool models(1);
-    models.install(key, model);
+    diamond_pipeline::ModelPool models(1, device);
+    const auto key = models.install(compatibility, model);
     models.activate(key);
     diamond_pipeline::ReplayStore replay(scratch / "replay", compatibility, 8, 7);
     diamond_training::Trainer trainer(model, compatibility,

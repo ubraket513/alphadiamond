@@ -18,6 +18,7 @@
 #include "diamond_pipeline/model_pool.hpp"
 #include "diamond_pipeline/pipeline.hpp"
 #include "diamond_pipeline/replay_store.hpp"
+#include "diamond_training/device.hpp"
 #include "diamond_training/trainer.hpp"
 #include "soo/action.hpp"
 #include "soo/board.hpp"
@@ -108,15 +109,15 @@ diamond_pipeline::IterationResult run_once(const std::filesystem::path& scratch,
                                            std::size_t iteration) {
     const auto compatibility = diamond_training::Compatibility::soo(
         "benchmark-v1", {.residual_blocks = 1, .width = 8});
-    const diamond_pipeline::ModelKey key{"Soo", "benchmark-v1", std::string(64, 'b')};
     const soo::Match match = make_match();
 
     torch::manual_seed(123456);
+    const auto device = diamond_training::resolve_device("cpu");
     auto model = diamond_model::DiamondModel(8, 1, 4, 1);
     diamond_training::Trainer trainer(model, compatibility,
                                       {.learning_rate = 1e-3, .weight_decay = 1e-4});
-    diamond_pipeline::ModelPool models(1);
-    models.install(key, model);
+    diamond_pipeline::ModelPool models(1, device);
+    const auto key = models.install(compatibility, model);
     models.activate(key);
 
     const auto replay_root = scratch / ("iteration-" + std::to_string(iteration)) / "replay";

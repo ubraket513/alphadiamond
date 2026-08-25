@@ -2,33 +2,41 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "diamond_training/checkpoint.hpp"
 
 namespace diamond_pipeline {
 
-ModelPool::ModelPool(std::size_t capacity) : capacity_(capacity) {
+ModelPool::ModelPool(std::size_t capacity, diamond_training::ResolvedDevice device)
+    : capacity_(capacity), device_(std::move(device)) {
     if (capacity == 0) throw std::invalid_argument("model pool capacity must be positive");
 }
 
-void ModelPool::install(ModelKey key, diamond_model::DiamondModel model) {
-    if (!model) throw std::invalid_argument("model pool requires a model");
-    if (key.model_name.empty() || key.model_version.empty() || key.checkpoint_sha256.size() != 64)
-        throw IncompatibleCheckpointError("model key must contain a full v2 checkpoint identity");
+ModelKey ModelPool::install(const Compatibility& compatibility,
+                            const diamond_model::DiamondModel& source) {
+    compatibility.validate();
+    if (!source) throw std::invalid_argument("model pool requires a model");
+    auto actor = diamond_training::snapshot_model(source, compatibility, device_.torch_device,
+                                                  diamond_training::ModelRole::actor);
+    ModelKey key{compatibility.model_name, compatibility.model_version,
+                 diamond_training::canonical_model_digest(actor)};
     if (!models_.contains(key) && models_.size() == capacity_)
         throw PipelineError("model pool residency capacity is exhausted");
-    model->eval();
-    models_.insert_or_assign(std::move(key), std::move(model));
+    models_.insert_or_assign(key, ResidentModel{compatibility, std::move(actor)});
+    return key;
 }
 
-void ModelPool::install_checkpoint(ModelKey key, const std::filesystem::path& checkpoint_root,
-                                   diamond_model::DiamondModel model) {
+ModelKey ModelPool::install_checkpoint(const Compatibility& compatibility,
+                                       const std::filesystem::path& checkpoint_root,
+                                       diamond_model::DiamondModel staging) {
+    if (!staging) throw std::invalid_argument("model pool requires a checkpoint staging model");
     try {
-        (void)diamond_training::load_checkpoint_v2_weights(checkpoint_root, model);
+        (void)diamond_training::load_checkpoint_v2_weights(checkpoint_root, staging);
     } catch (const diamond_training::CheckpointError& error) {
         throw IncompatibleCheckpointError(error.what());
     }
-    install(std::move(key), std::move(model));
+    return install(compatibility, staging);
 }
 
 void ModelPool::activate(const ModelKey& key) {
@@ -41,7 +49,17 @@ const ModelKey& ModelPool::active_key() const {
     return *active_;
 }
 
+const diamond_model::DiamondModel& ModelPool::active_model() const {
+    return models_.at(active_key()).actor;
+}
+
 std::size_t ModelPool::resident_count() const { return models_.size(); }
+
+void ModelPool::require_compatible(const Compatibility& expected) const {
+    expected.validate();
+    if (!(models_.at(active_key()).compatibility == expected))
+        throw IncompatibleCheckpointError("active model compatibility does not match request");
+}
 
 void ModelPool::require_ready(std::stop_token stop,
                               std::chrono::steady_clock::time_point deadline) const {
@@ -53,7 +71,7 @@ void ModelPool::require_ready(std::stop_token stop,
 
 void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     if (batch.empty()) return;
-    auto& model = models_.at(active_key());
+    auto& model = models_.at(active_key()).actor;
     const int64_t features_per_node = model->input_features();
     torch::NoGradGuard no_grad;
     std::vector<torch::Tensor> rows;

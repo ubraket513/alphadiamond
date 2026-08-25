@@ -6,12 +6,14 @@
 #include <fstream>
 #include <limits>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <torch/torch.h>
+#include <torch/serialize.h>
 
 #ifdef CHECK
 #undef CHECK
@@ -177,6 +179,97 @@ void check_validation(const std::filesystem::path& root) {
                            "Min value width");
 }
 
+void check_role(const diamond_model::DiamondModel& model, bool trainable, const char* name) {
+    REQUIRE(static_cast<bool>(model), name);
+    CHECK(model->is_training() == trainable);
+    for (const auto& parameter : model->named_parameters()) {
+        CHECK(parameter.value().requires_grad() == trainable);
+    }
+}
+
+void check_deep_storage(const diamond_model::DiamondModel& original,
+                        const diamond_model::DiamondModel& snapshot, bool parameters,
+                        const char* name) {
+    const auto original_tensors = parameters ? original->named_parameters() : original->named_buffers();
+    const auto snapshot_tensors = parameters ? snapshot->named_parameters() : snapshot->named_buffers();
+    REQUIRE(original_tensors.size() == snapshot_tensors.size(), name);
+    for (const auto& original_tensor : original_tensors) {
+        const auto* copied_tensor = snapshot_tensors.find(original_tensor.key());
+        REQUIRE(copied_tensor != nullptr, name);
+        CHECK(original_tensor.value().data_ptr() != copied_tensor->data_ptr());
+        CHECK(torch::equal(original_tensor.value(), *copied_tensor));
+    }
+}
+
+void check_snapshot_isolation(const std::filesystem::path& root) {
+    const auto compatibility = compatibility_for("soo");
+    auto source = load_model(root, "soo");
+    auto actor = diamond_training::snapshot_model(source, compatibility, torch::Device(torch::kCPU),
+                                                  diamond_training::ModelRole::actor);
+    const auto actor_holder_alias = actor;
+    CHECK(actor_holder_alias->parameters().front().data_ptr() ==
+          actor->parameters().front().data_ptr());
+    check_role(actor, false, "actor role");
+
+    const std::string actor_digest = diamond_training::canonical_model_digest(actor);
+    auto nonfinite = diamond_training::snapshot_model(
+        actor, compatibility, torch::Device(torch::kCPU), diamond_training::ModelRole::candidate);
+    {
+        torch::NoGradGuard no_grad;
+        nonfinite->parameters().front().flatten()[0].fill_(
+            std::numeric_limits<float>::quiet_NaN());
+    }
+    check_invalid_argument(
+        [&] { (void)diamond_training::canonical_model_digest(nonfinite); },
+        "non-finite model digest");
+    auto wrong_dtype = diamond_training::snapshot_model(
+        actor, compatibility, torch::Device(torch::kCPU), diamond_training::ModelRole::candidate);
+    wrong_dtype->to(torch::kFloat64);
+    check_invalid_argument(
+        [&] { (void)diamond_training::canonical_model_digest(wrong_dtype); },
+        "non-FP32 model digest");
+    const auto actor_first_parameter = actor->parameters().front().detach().clone();
+    const auto actor_adjacency = actor->adjacency.detach().clone();
+    diamond_training::Trainer trainer(actor, compatibility, parity_config());
+    check_role(trainer.model(), true, "learner role");
+    check_deep_storage(actor, trainer.model(), true, "learner parameter storage");
+    check_deep_storage(actor, trainer.model(), false, "learner buffer storage");
+
+    const auto samples = samples_for(root, "soo");
+    const auto initial_candidate = trainer.candidate_snapshot();
+    check_role(initial_candidate, false, "candidate role");
+    CHECK(diamond_training::canonical_model_digest(initial_candidate) ==
+          diamond_training::canonical_model_digest(trainer.model()));
+    check_deep_storage(trainer.model(), initial_candidate, true, "candidate parameter storage");
+    check_deep_storage(trainer.model(), initial_candidate, false, "candidate buffer storage");
+
+    const auto metrics = trainer.train(samples);
+    CHECK(std::isfinite(metrics.total_loss));
+    CHECK(torch::equal(actor->parameters().front(), actor_first_parameter));
+    CHECK(torch::equal(actor->adjacency, actor_adjacency));
+    CHECK(diamond_training::canonical_model_digest(actor) == actor_digest);
+    check_role(actor, false, "actor remains inference-only");
+
+    const auto older_candidate = trainer.candidate_snapshot();
+    const std::string older_digest = diamond_training::canonical_model_digest(older_candidate);
+    CHECK(older_digest == diamond_training::canonical_model_digest(trainer.model()));
+    std::stringstream serialized(std::ios::in | std::ios::out | std::ios::binary);
+    torch::serialize::OutputArchive output;
+    older_candidate->save(output);
+    output.save_to(serialized);
+    serialized.seekg(0);
+    torch::serialize::InputArchive input;
+    input.load_from(serialized);
+    auto reloaded = diamond_model::DiamondModel(8, 1, 4, 1);
+    reloaded->load(input);
+    CHECK(diamond_training::canonical_model_digest(reloaded) == older_digest);
+
+    (void)trainer.train(samples);
+    CHECK(diamond_training::canonical_model_digest(older_candidate) == older_digest);
+    const auto newer_candidate = trainer.candidate_snapshot();
+    CHECK(diamond_training::canonical_model_digest(newer_candidate) != older_digest);
+}
+
 void check_parity(const std::filesystem::path& root, const std::string& family) {
     auto model = load_model(root, family);
     auto samples = samples_for(root, family);
@@ -215,7 +308,7 @@ void check_parity(const std::filesystem::path& root, const std::string& family) 
     CHECK(std::isfinite(metrics.policy_loss));
     CHECK(std::isfinite(metrics.value_loss));
 
-    const auto source = model->policy_source->weight;
+    const auto source = trainer.model()->policy_source->weight;
     CHECK(source.grad().defined());
     CHECK(source.grad().abs().sum().item<float>() > 0.0F);
     check_selected_values(source.grad(), expected_gradient, family + " policy-source gradient");
@@ -235,6 +328,7 @@ int main(int argc, char** argv) {
     REQUIRE(argc == 2, "usage: training_step_parity_test <fixture-dir>");
     const auto root = std::filesystem::path(argv[1]);
     check_validation(root);
+    check_snapshot_isolation(root);
     check_parity(root, "soo");
     check_parity(root, "min");
     return soo_test::report("training_step_parity_test");
