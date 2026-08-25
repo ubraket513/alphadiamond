@@ -12,6 +12,11 @@ namespace {
 using Json = diamond_support::JsonValue;
 using Object = Json::Object;
 
+constexpr std::string_view kV1MigrationError =
+    "production config schema_version 1 is not supported; migrate max_wait_ms to max_wait_us, "
+    "worker_count to logical_lanes and search_threads, and add runtime, run_budget, "
+    "train_steps_per_iteration, opening_suite, and promotion_statistics";
+
 const Object& object(const Json& value, std::string_view name) {
     if (const auto* result = std::get_if<Object>(&value.value)) return *result;
     throw ConfigError(std::string(name) + " must be a JSON object");
@@ -64,9 +69,12 @@ uint64_t non_negative_seed(const Json& value, std::string_view name) {
 
 double number(const Json& value, std::string_view name) {
     double result;
-    if (const auto* integer_value = std::get_if<int64_t>(&value.value)) result = static_cast<double>(*integer_value);
-    else if (const auto* double_value = std::get_if<double>(&value.value)) result = *double_value;
-    else throw ConfigError(std::string(name) + " must be a number");
+    if (const auto* integer_value = std::get_if<int64_t>(&value.value))
+        result = static_cast<double>(*integer_value);
+    else if (const auto* double_value = std::get_if<double>(&value.value))
+        result = *double_value;
+    else
+        throw ConfigError(std::string(name) + " must be a number");
     if (!std::isfinite(result)) throw ConfigError(std::string(name) + " must be finite");
     return result;
 }
@@ -82,15 +90,44 @@ int64_t json_integer(uint64_t value, std::string_view name) {
     return static_cast<int64_t>(value);
 }
 
+bool non_blank(std::string_view value) {
+    for (unsigned char character : value)
+        if (!std::isspace(character)) return true;
+    return false;
+}
+
 bool bootstrap_prior_is_valid(std::string_view value) {
     return value == kBootstrapPriorNone || value == kCanonicalTargetDistanceV1 ||
            value == kCanonicalTargetVacancyDistanceV2;
 }
 
-bool non_blank(std::string_view value) {
-    for (unsigned char character : value)
-        if (!std::isspace(character)) return true;
-    return false;
+bool is_device_name(std::string_view value) {
+    if (value == "cpu" || value == "cuda") return true;
+    constexpr std::string_view prefix = "cuda:";
+    if (!value.starts_with(prefix)) return false;
+    const std::string_view index = value.substr(prefix.size());
+    if (index.empty()) return false;
+    for (unsigned char character : index)
+        if (!std::isdigit(character)) return false;
+    return true;
+}
+
+std::optional<double> optional_number(const Json& value, std::string_view name) {
+    if (std::holds_alternative<std::nullptr_t>(value.value)) return std::nullopt;
+    return number(value, name);
+}
+
+std::optional<int64_t> optional_integer(const Json& value, std::string_view name) {
+    if (std::holds_alternative<std::nullptr_t>(value.value)) return std::nullopt;
+    return integer(value, name);
+}
+
+Json optional_json(const std::optional<double>& value) {
+    return value ? Json{*value} : Json{nullptr};
+}
+
+Json optional_json(const std::optional<int64_t>& value) {
+    return value ? Json{*value} : Json{nullptr};
 }
 
 }  // namespace
@@ -109,14 +146,36 @@ NetworkConfig NetworkConfig::from_json(const Json& value) {
     const Object& input = object(value, "network");
     require_exact_keys(input, {"residual_blocks", "width"}, "network");
     NetworkConfig result{.width = integer(field(input, "width", "network"), "network.width"),
-                         .residual_blocks = integer(field(input, "residual_blocks", "network"), "network.residual_blocks")};
+                         .residual_blocks =
+                             integer(field(input, "residual_blocks", "network"), "network.residual_blocks")};
+    result.validate();
+    return result;
+}
+
+void RuntimeConfig::validate() const {
+    if (!is_device_name(device))
+        throw ConfigError("runtime.device must be cpu, cuda, or cuda:N");
+    if (precision != "fp32") throw ConfigError("runtime.precision must be fp32");
+}
+
+Json RuntimeConfig::to_json() const {
+    validate();
+    return Json{Object{{"device", Json{device}}, {"precision", Json{precision}}}};
+}
+
+RuntimeConfig RuntimeConfig::from_json(const Json& value) {
+    const Object& input = object(value, "runtime");
+    require_exact_keys(input, {"device", "precision"}, "runtime");
+    RuntimeConfig result{.device = string(field(input, "device", "runtime"), "runtime.device"),
+                         .precision = string(field(input, "precision", "runtime"), "runtime.precision")};
     result.validate();
     return result;
 }
 
 void MCTSConfig::validate() const {
     if (simulations <= 0) throw ConfigError("mcts.simulations must be positive");
-    if (!std::isfinite(c_puct) || c_puct <= 0) throw ConfigError("mcts.c_puct must be a positive finite number");
+    if (!std::isfinite(c_puct) || c_puct <= 0)
+        throw ConfigError("mcts.c_puct must be a positive finite number");
     if (!std::isfinite(dirichlet_alpha) || dirichlet_alpha <= 0)
         throw ConfigError("mcts.dirichlet_alpha must be a positive finite number");
     if (!std::isfinite(dirichlet_epsilon) || dirichlet_epsilon < 0 || dirichlet_epsilon > 1)
@@ -134,11 +193,14 @@ Json MCTSConfig::to_json() const {
 
 MCTSConfig MCTSConfig::from_json(const Json& value) {
     const Object& input = object(value, "mcts");
-    require_exact_keys(input, {"c_puct", "dirichlet_alpha", "dirichlet_epsilon", "seed", "simulations"}, "mcts");
+    require_exact_keys(input, {"c_puct", "dirichlet_alpha", "dirichlet_epsilon", "seed", "simulations"},
+                       "mcts");
     MCTSConfig result{.simulations = integer(field(input, "simulations", "mcts"), "mcts.simulations"),
                       .c_puct = number(field(input, "c_puct", "mcts"), "mcts.c_puct"),
-                      .dirichlet_alpha = number(field(input, "dirichlet_alpha", "mcts"), "mcts.dirichlet_alpha"),
-                      .dirichlet_epsilon = number(field(input, "dirichlet_epsilon", "mcts"), "mcts.dirichlet_epsilon"),
+                      .dirichlet_alpha =
+                          number(field(input, "dirichlet_alpha", "mcts"), "mcts.dirichlet_alpha"),
+                      .dirichlet_epsilon =
+                          number(field(input, "dirichlet_epsilon", "mcts"), "mcts.dirichlet_epsilon"),
                       .seed = non_negative_seed(field(input, "seed", "mcts"), "mcts.seed")};
     result.validate();
     return result;
@@ -157,10 +219,8 @@ void SelfPlayConfig::validate() const {
 
 Json SelfPlayConfig::to_json() const {
     validate();
-    Json budget{nullptr};
-    if (max_game_seconds) budget = Json{*max_game_seconds};
     return Json{Object{{"bootstrap_prior", Json{bootstrap_prior}},
-                       {"max_game_seconds", std::move(budget)},
+                       {"max_game_seconds", optional_json(max_game_seconds)},
                        {"max_moves", Json{max_moves}},
                        {"seed", Json{json_integer(seed, "self_play.seed")}},
                        {"temperature", Json{temperature}},
@@ -169,17 +229,83 @@ Json SelfPlayConfig::to_json() const {
 
 SelfPlayConfig SelfPlayConfig::from_json(const Json& value) {
     const Object& input = object(value, "self_play");
-    require_exact_keys(input, {"bootstrap_prior", "max_game_seconds", "max_moves", "seed", "temperature", "temperature_moves"}, "self_play");
-    std::optional<double> budget;
-    const Json& budget_value = field(input, "max_game_seconds", "self_play");
-    if (!std::holds_alternative<std::nullptr_t>(budget_value.value))
-        budget = number(budget_value, "self_play.max_game_seconds");
-    SelfPlayConfig result{.max_moves = integer(field(input, "max_moves", "self_play"), "self_play.max_moves"),
-                          .temperature_moves = integer(field(input, "temperature_moves", "self_play"), "self_play.temperature_moves"),
-                          .temperature = number(field(input, "temperature", "self_play"), "self_play.temperature"),
-                          .seed = non_negative_seed(field(input, "seed", "self_play"), "self_play.seed"),
-                          .bootstrap_prior = string(field(input, "bootstrap_prior", "self_play"), "self_play.bootstrap_prior"),
-                          .max_game_seconds = budget};
+    require_exact_keys(input,
+                       {"bootstrap_prior", "max_game_seconds", "max_moves", "seed", "temperature",
+                        "temperature_moves"},
+                       "self_play");
+    SelfPlayConfig result{
+        .max_moves = integer(field(input, "max_moves", "self_play"), "self_play.max_moves"),
+        .temperature_moves =
+            integer(field(input, "temperature_moves", "self_play"), "self_play.temperature_moves"),
+        .temperature = number(field(input, "temperature", "self_play"), "self_play.temperature"),
+        .seed = non_negative_seed(field(input, "seed", "self_play"), "self_play.seed"),
+        .bootstrap_prior =
+            string(field(input, "bootstrap_prior", "self_play"), "self_play.bootstrap_prior"),
+        .max_game_seconds =
+            optional_number(field(input, "max_game_seconds", "self_play"), "self_play.max_game_seconds")};
+    result.validate();
+    return result;
+}
+
+void WorkerConfig::validate() const {
+    if (logical_lanes <= 0 || search_threads <= 0 || games_per_iteration <= 0)
+        throw ConfigError(
+            "workers.logical_lanes, workers.search_threads, and workers.games_per_iteration must be positive");
+    if (!non_blank(retry_id)) throw ConfigError("workers.retry_id must be a non-empty string");
+    if (logical_lanes > games_per_iteration)
+        throw ConfigError("workers.logical_lanes must not exceed workers.games_per_iteration");
+}
+
+Json WorkerConfig::to_json() const {
+    validate();
+    return Json{Object{{"games_per_iteration", Json{games_per_iteration}},
+                       {"logical_lanes", Json{logical_lanes}},
+                       {"retry_id", Json{retry_id}},
+                       {"search_threads", Json{search_threads}}}};
+}
+
+WorkerConfig WorkerConfig::from_json(const Json& value) {
+    const Object& input = object(value, "workers");
+    require_exact_keys(input, {"games_per_iteration", "logical_lanes", "retry_id", "search_threads"},
+                       "workers");
+    WorkerConfig result{
+        .logical_lanes = integer(field(input, "logical_lanes", "workers"), "workers.logical_lanes"),
+        .search_threads = integer(field(input, "search_threads", "workers"), "workers.search_threads"),
+        .games_per_iteration =
+            integer(field(input, "games_per_iteration", "workers"), "workers.games_per_iteration"),
+        .retry_id = string(field(input, "retry_id", "workers"), "workers.retry_id")};
+    result.validate();
+    return result;
+}
+
+void InferenceConfig::validate() const {
+    if (max_batch_size <= 0 || max_wait_us <= 0 || request_queue_capacity <= 0)
+        throw ConfigError("inference batch, wait, and queue limits must be positive");
+    if (!std::isfinite(response_timeout_s) || response_timeout_s <= 0)
+        throw ConfigError("inference.response_timeout_s must be a positive finite number");
+}
+
+Json InferenceConfig::to_json() const {
+    validate();
+    return Json{Object{{"max_batch_size", Json{max_batch_size}},
+                       {"max_wait_us", Json{max_wait_us}},
+                       {"request_queue_capacity", Json{request_queue_capacity}},
+                       {"response_timeout_s", Json{response_timeout_s}}}};
+}
+
+InferenceConfig InferenceConfig::from_json(const Json& value) {
+    const Object& input = object(value, "inference");
+    require_exact_keys(input,
+                       {"max_batch_size", "max_wait_us", "request_queue_capacity", "response_timeout_s"},
+                       "inference");
+    InferenceConfig result{
+        .max_batch_size =
+            integer(field(input, "max_batch_size", "inference"), "inference.max_batch_size"),
+        .max_wait_us = integer(field(input, "max_wait_us", "inference"), "inference.max_wait_us"),
+        .request_queue_capacity = integer(field(input, "request_queue_capacity", "inference"),
+                                          "inference.request_queue_capacity"),
+        .response_timeout_s =
+            number(field(input, "response_timeout_s", "inference"), "inference.response_timeout_s")};
     result.validate();
     return result;
 }
@@ -203,31 +329,74 @@ ReplayConfig ReplayConfig::from_json(const Json& value) {
 }
 
 void TrainingConfig::validate() const {
-    if (batch_size <= 0) throw ConfigError("training.batch_size must be positive");
+    if (batch_size <= 0 || train_steps_per_iteration <= 0)
+        throw ConfigError("training.batch_size and training.train_steps_per_iteration must be positive");
     if (!std::isfinite(learning_rate) || learning_rate <= 0)
         throw ConfigError("training.learning_rate must be a positive finite number");
     if (!std::isfinite(weight_decay) || weight_decay < 0)
         throw ConfigError("training.weight_decay must be a non-negative finite number");
-    if (device.empty()) throw ConfigError("training.device must be a non-empty string");
 }
 
 Json TrainingConfig::to_json() const {
     validate();
     return Json{Object{{"batch_size", Json{batch_size}},
-                       {"device", Json{device}},
                        {"learning_rate", Json{learning_rate}},
                        {"seed", Json{json_integer(seed, "training.seed")}},
+                       {"train_steps_per_iteration", Json{train_steps_per_iteration}},
                        {"weight_decay", Json{weight_decay}}}};
 }
 
 TrainingConfig TrainingConfig::from_json(const Json& value) {
     const Object& input = object(value, "training");
-    require_exact_keys(input, {"batch_size", "device", "learning_rate", "seed", "weight_decay"}, "training");
-    TrainingConfig result{.batch_size = integer(field(input, "batch_size", "training"), "training.batch_size"),
-                          .learning_rate = number(field(input, "learning_rate", "training"), "training.learning_rate"),
-                          .weight_decay = number(field(input, "weight_decay", "training"), "training.weight_decay"),
-                          .device = string(field(input, "device", "training"), "training.device"),
-                          .seed = non_negative_seed(field(input, "seed", "training"), "training.seed")};
+    require_exact_keys(input,
+                       {"batch_size", "learning_rate", "seed", "train_steps_per_iteration", "weight_decay"},
+                       "training");
+    TrainingConfig result{
+        .batch_size = integer(field(input, "batch_size", "training"), "training.batch_size"),
+        .train_steps_per_iteration = integer(field(input, "train_steps_per_iteration", "training"),
+                                             "training.train_steps_per_iteration"),
+        .learning_rate = number(field(input, "learning_rate", "training"), "training.learning_rate"),
+        .weight_decay = number(field(input, "weight_decay", "training"), "training.weight_decay"),
+        .seed = non_negative_seed(field(input, "seed", "training"), "training.seed")};
+    result.validate();
+    return result;
+}
+
+void RunBudgetConfig::validate() const {
+    if (max_iterations && *max_iterations <= 0)
+        throw ConfigError("run_budget.max_iterations must be a positive integer or null");
+    if (max_wall_clock_seconds &&
+        (!std::isfinite(*max_wall_clock_seconds) || *max_wall_clock_seconds <= 0))
+        throw ConfigError("run_budget.max_wall_clock_seconds must be a positive finite number or null");
+    if (!max_iterations && !max_wall_clock_seconds)
+        throw ConfigError("run_budget requires max_iterations or max_wall_clock_seconds");
+    if (checkpoint_every_iterations <= 0)
+        throw ConfigError("run_budget.checkpoint_every_iterations must be positive");
+    if (max_iterations && checkpoint_every_iterations > *max_iterations)
+        throw ConfigError(
+            "run_budget.checkpoint_every_iterations must not exceed run_budget.max_iterations");
+}
+
+Json RunBudgetConfig::to_json() const {
+    validate();
+    return Json{Object{{"checkpoint_every_iterations", Json{checkpoint_every_iterations}},
+                       {"max_iterations", optional_json(max_iterations)},
+                       {"max_wall_clock_seconds", optional_json(max_wall_clock_seconds)}}};
+}
+
+RunBudgetConfig RunBudgetConfig::from_json(const Json& value) {
+    const Object& input = object(value, "run_budget");
+    require_exact_keys(input,
+                       {"checkpoint_every_iterations", "max_iterations", "max_wall_clock_seconds"},
+                       "run_budget");
+    RunBudgetConfig result{
+        .max_iterations =
+            optional_integer(field(input, "max_iterations", "run_budget"), "run_budget.max_iterations"),
+        .max_wall_clock_seconds = optional_number(
+            field(input, "max_wall_clock_seconds", "run_budget"), "run_budget.max_wall_clock_seconds"),
+        .checkpoint_every_iterations = integer(
+            field(input, "checkpoint_every_iterations", "run_budget"),
+            "run_budget.checkpoint_every_iterations")};
     result.validate();
     return result;
 }
@@ -253,102 +422,102 @@ ArenaConfig ArenaConfig::from_json(const Json& value) {
     ArenaConfig result{.games = integer(field(input, "games", "arena"), "arena.games"),
                        .seed = non_negative_seed(field(input, "seed", "arena"), "arena.seed"),
                        .max_moves = integer(field(input, "max_moves", "arena"), "arena.max_moves"),
-                       .promotion_threshold = number(field(input, "promotion_threshold", "arena"), "arena.promotion_threshold")};
+                       .promotion_threshold =
+                           number(field(input, "promotion_threshold", "arena"), "arena.promotion_threshold")};
     result.validate();
     return result;
 }
 
-void WorkerConfig::validate() const {
-    if (worker_count <= 0 || games_per_iteration <= 0)
-        throw ConfigError("workers.worker_count and workers.games_per_iteration must be positive");
-    if (!non_blank(retry_id)) throw ConfigError("workers.retry_id must be a non-empty string");
+void OpeningSuiteConfig::validate() const {
+    if (!non_blank(id)) throw ConfigError("opening_suite.id must be a non-empty string");
+    if (version <= 0 || count <= 0)
+        throw ConfigError("opening_suite.version and opening_suite.count must be positive");
+    if (max_depth < 0)
+        throw ConfigError("opening_suite.max_depth must be non-negative");
+    if (count > 1 && max_depth == 0)
+        throw ConfigError("opening_suite.max_depth must be positive for multiple openings");
 }
 
-Json WorkerConfig::to_json() const {
+Json OpeningSuiteConfig::to_json() const {
     validate();
-    return Json{Object{{"games_per_iteration", Json{games_per_iteration}},
-                       {"retry_id", Json{retry_id}},
-                       {"worker_count", Json{worker_count}}}};
+    return Json{Object{{"count", Json{count}},
+                       {"id", Json{id}},
+                       {"max_depth", Json{max_depth}},
+                       {"seed", Json{json_integer(seed, "opening_suite.seed")}},
+                       {"version", Json{version}}}};
 }
 
-WorkerConfig WorkerConfig::from_json(const Json& value) {
-    const Object& input = object(value, "workers");
-    require_exact_keys(input, {"games_per_iteration", "retry_id", "worker_count"}, "workers");
-    WorkerConfig result{.worker_count = integer(field(input, "worker_count", "workers"), "workers.worker_count"),
-                        .games_per_iteration = integer(field(input, "games_per_iteration", "workers"), "workers.games_per_iteration"),
-                        .retry_id = string(field(input, "retry_id", "workers"), "workers.retry_id")};
+OpeningSuiteConfig OpeningSuiteConfig::from_json(const Json& value) {
+    const Object& input = object(value, "opening_suite");
+    require_exact_keys(input, {"count", "id", "max_depth", "seed", "version"}, "opening_suite");
+    OpeningSuiteConfig result{
+        .id = string(field(input, "id", "opening_suite"), "opening_suite.id"),
+        .version = integer(field(input, "version", "opening_suite"), "opening_suite.version"),
+        .seed = non_negative_seed(field(input, "seed", "opening_suite"), "opening_suite.seed"),
+        .count = integer(field(input, "count", "opening_suite"), "opening_suite.count"),
+        .max_depth = integer(field(input, "max_depth", "opening_suite"), "opening_suite.max_depth")};
     result.validate();
     return result;
 }
 
-void InferenceConfig::validate() const {
-    if (max_batch_size <= 0 || max_wait_ms <= 0 || request_queue_capacity <= 0)
-        throw ConfigError("inference batch, wait, and queue limits must be positive");
-    if (!std::isfinite(response_timeout_s) || response_timeout_s <= 0)
-        throw ConfigError("inference.response_timeout_s must be a positive finite number");
+void PromotionStatisticsConfig::validate() const {
+    if (method != kOpeningBlockBootstrapV1)
+        throw ConfigError("promotion_statistics.method must be opening-block-bootstrap-v1");
+    if (resampling_unit != kOpeningBlockResamplingUnit)
+        throw ConfigError("promotion_statistics.resampling_unit must be opening_block");
+    if (!std::isfinite(confidence_level) || confidence_level <= 0 || confidence_level >= 1)
+        throw ConfigError("promotion_statistics.confidence_level must be in (0, 1)");
+    if (bootstrap_replicates <= 0)
+        throw ConfigError("promotion_statistics.bootstrap_replicates must be positive");
 }
 
-Json InferenceConfig::to_json() const {
+Json PromotionStatisticsConfig::to_json() const {
     validate();
-    return Json{Object{{"max_batch_size", Json{max_batch_size}},
-                       {"max_wait_ms", Json{max_wait_ms}},
-                       {"request_queue_capacity", Json{request_queue_capacity}},
-                       {"response_timeout_s", Json{response_timeout_s}}}};
+    return Json{Object{{"bootstrap_replicates", Json{bootstrap_replicates}},
+                       {"confidence_level", Json{confidence_level}},
+                       {"method", Json{method}},
+                       {"resampling_unit", Json{resampling_unit}},
+                       {"seed", Json{json_integer(seed, "promotion_statistics.seed")}}}};
 }
 
-InferenceConfig InferenceConfig::from_json(const Json& value) {
-    const Object& input = object(value, "inference");
-    require_exact_keys(input, {"max_batch_size", "max_wait_ms", "request_queue_capacity", "response_timeout_s"}, "inference");
-    InferenceConfig result{.max_batch_size = integer(field(input, "max_batch_size", "inference"), "inference.max_batch_size"),
-                           .max_wait_ms = integer(field(input, "max_wait_ms", "inference"), "inference.max_wait_ms"),
-                           .request_queue_capacity = integer(field(input, "request_queue_capacity", "inference"), "inference.request_queue_capacity"),
-                           .response_timeout_s = number(field(input, "response_timeout_s", "inference"), "inference.response_timeout_s")};
-    result.validate();
-    return result;
-}
-
-void BenchmarkConfig::validate() const {
-    if (opening_count <= 0) throw ConfigError("benchmark.opening_count must be positive");
-    if (opening_max_depth < 0) throw ConfigError("benchmark.opening_max_depth must be non-negative");
-    if (opening_count > 1 && opening_max_depth == 0)
-        throw ConfigError("benchmark.opening_max_depth must be positive for multiple openings");
-    if (!non_blank(opening_suite_version))
-        throw ConfigError("benchmark.opening_suite_version must be a non-empty string");
-}
-
-Json BenchmarkConfig::to_json() const {
-    validate();
-    return Json{Object{{"opening_count", Json{opening_count}},
-                       {"opening_max_depth", Json{opening_max_depth}},
-                       {"opening_seed", Json{json_integer(opening_seed, "benchmark.opening_seed")}},
-                       {"opening_suite_version", Json{opening_suite_version}}}};
-}
-
-BenchmarkConfig BenchmarkConfig::from_json(const Json& value) {
-    const Object& input = object(value, "benchmark");
-    require_exact_keys(input, {"opening_count", "opening_max_depth", "opening_seed", "opening_suite_version"}, "benchmark");
-    BenchmarkConfig result{.opening_count = integer(field(input, "opening_count", "benchmark"), "benchmark.opening_count"),
-                           .opening_max_depth = integer(field(input, "opening_max_depth", "benchmark"), "benchmark.opening_max_depth"),
-                           .opening_seed = non_negative_seed(field(input, "opening_seed", "benchmark"), "benchmark.opening_seed"),
-                           .opening_suite_version = string(field(input, "opening_suite_version", "benchmark"), "benchmark.opening_suite_version")};
+PromotionStatisticsConfig PromotionStatisticsConfig::from_json(const Json& value) {
+    const Object& input = object(value, "promotion_statistics");
+    require_exact_keys(input,
+                       {"bootstrap_replicates", "confidence_level", "method", "resampling_unit", "seed"},
+                       "promotion_statistics");
+    PromotionStatisticsConfig result{
+        .method = string(field(input, "method", "promotion_statistics"), "promotion_statistics.method"),
+        .resampling_unit = string(field(input, "resampling_unit", "promotion_statistics"),
+                                  "promotion_statistics.resampling_unit"),
+        .confidence_level = number(field(input, "confidence_level", "promotion_statistics"),
+                                   "promotion_statistics.confidence_level"),
+        .bootstrap_replicates = integer(field(input, "bootstrap_replicates", "promotion_statistics"),
+                                        "promotion_statistics.bootstrap_replicates"),
+        .seed = non_negative_seed(field(input, "seed", "promotion_statistics"),
+                                  "promotion_statistics.seed")};
     result.validate();
     return result;
 }
 
 void ProductionConfig::validate() const {
-    if (schema_version != 1) throw ConfigError("unsupported production config version");
+    if (schema_version != 2) throw ConfigError("unsupported production config schema_version");
     if (model_name != "Soo" && model_name != "Min")
         throw ConfigError("model_name must be Soo or Min");
     if (!non_blank(model_version)) throw ConfigError("model_version must be a non-empty string");
     network.validate();
+    runtime.validate();
     mcts.validate();
     self_play.validate();
-    replay.validate();
-    training.validate();
-    arena.validate();
     workers.validate();
     inference.validate();
-    benchmark.validate();
+    replay.validate();
+    training.validate();
+    run_budget.validate();
+    arena.validate();
+    opening_suite.validate();
+    promotion_statistics.validate();
+    if (model_name == "Soo" && (network.width != 128 || network.residual_blocks != 6))
+        throw ConfigError("Soo production config requires network width 128 and residual_blocks 6");
     const int64_t balance_cycle = model_name == "Soo" ? 4 : 18;
     if (arena.games % balance_cycle != 0)
         throw ConfigError("arena.games must be a complete model balance cycle");
@@ -359,14 +528,17 @@ void ProductionConfig::validate() const {
 Json ProductionConfig::to_json() const {
     validate();
     return Json{Object{{"arena", arena.to_json()},
-                       {"benchmark", benchmark.to_json()},
                        {"inference", inference.to_json()},
                        {"mcts", mcts.to_json()},
                        {"model_name", Json{model_name}},
                        {"model_version", Json{model_version}},
                        {"network", network.to_json()},
+                       {"opening_suite", opening_suite.to_json()},
+                       {"promotion_statistics", promotion_statistics.to_json()},
                        {"replay", replay.to_json()},
+                       {"run_budget", run_budget.to_json()},
                        {"run_seed", Json{json_integer(run_seed, "run_seed")}},
+                       {"runtime", runtime.to_json()},
                        {"schema_version", Json{schema_version}},
                        {"self_play", self_play.to_json()},
                        {"training", training.to_json()},
@@ -375,22 +547,34 @@ Json ProductionConfig::to_json() const {
 
 ProductionConfig ProductionConfig::from_json(const Json& value) {
     const Object& input = object(value, "production config");
-    require_exact_keys(input, {"arena", "benchmark", "inference", "mcts", "model_name", "model_version",
-                               "network", "replay", "run_seed", "schema_version", "self_play", "training", "workers"},
+    const int64_t schema_version =
+        integer(field(input, "schema_version", "production config"), "schema_version");
+    if (schema_version == 1) throw ConfigError(std::string(kV1MigrationError));
+    require_exact_keys(input,
+                       {"arena", "inference", "mcts", "model_name", "model_version", "network",
+                        "opening_suite", "promotion_statistics", "replay", "run_budget", "run_seed",
+                        "runtime", "schema_version", "self_play", "training", "workers"},
                        "production config");
-    ProductionConfig result{.schema_version = integer(field(input, "schema_version", "production config"), "schema_version"),
-                            .model_name = string(field(input, "model_name", "production config"), "model_name"),
-                            .model_version = string(field(input, "model_version", "production config"), "model_version"),
-                            .network = NetworkConfig::from_json(field(input, "network", "production config")),
-                            .mcts = MCTSConfig::from_json(field(input, "mcts", "production config")),
-                            .self_play = SelfPlayConfig::from_json(field(input, "self_play", "production config")),
-                            .replay = ReplayConfig::from_json(field(input, "replay", "production config")),
-                            .training = TrainingConfig::from_json(field(input, "training", "production config")),
-                            .arena = ArenaConfig::from_json(field(input, "arena", "production config")),
-                            .workers = WorkerConfig::from_json(field(input, "workers", "production config")),
-                            .inference = InferenceConfig::from_json(field(input, "inference", "production config")),
-                            .benchmark = BenchmarkConfig::from_json(field(input, "benchmark", "production config")),
-                            .run_seed = non_negative_seed(field(input, "run_seed", "production config"), "run_seed")};
+    ProductionConfig result{
+        .schema_version = schema_version,
+        .model_name = string(field(input, "model_name", "production config"), "model_name"),
+        .model_version = string(field(input, "model_version", "production config"), "model_version"),
+        .network = NetworkConfig::from_json(field(input, "network", "production config")),
+        .runtime = RuntimeConfig::from_json(field(input, "runtime", "production config")),
+        .mcts = MCTSConfig::from_json(field(input, "mcts", "production config")),
+        .self_play = SelfPlayConfig::from_json(field(input, "self_play", "production config")),
+        .workers = WorkerConfig::from_json(field(input, "workers", "production config")),
+        .inference = InferenceConfig::from_json(field(input, "inference", "production config")),
+        .replay = ReplayConfig::from_json(field(input, "replay", "production config")),
+        .training = TrainingConfig::from_json(field(input, "training", "production config")),
+        .run_budget = RunBudgetConfig::from_json(field(input, "run_budget", "production config")),
+        .arena = ArenaConfig::from_json(field(input, "arena", "production config")),
+        .opening_suite =
+            OpeningSuiteConfig::from_json(field(input, "opening_suite", "production config")),
+        .promotion_statistics = PromotionStatisticsConfig::from_json(
+            field(input, "promotion_statistics", "production config")),
+        .run_seed =
+            non_negative_seed(field(input, "run_seed", "production config"), "run_seed")};
     result.validate();
     return result;
 }

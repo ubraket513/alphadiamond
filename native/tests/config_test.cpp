@@ -1,22 +1,34 @@
 #include "diamond_orchestration/config.hpp"
 
-#include <functional>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 using diamond_orchestration::ConfigError;
+using diamond_orchestration::InferenceConfig;
 using diamond_orchestration::MCTSConfig;
 using diamond_orchestration::NetworkConfig;
+using diamond_orchestration::OpeningSuiteConfig;
 using diamond_orchestration::ProductionConfig;
+using diamond_orchestration::PromotionStatisticsConfig;
 using diamond_orchestration::ReplayConfig;
+using diamond_orchestration::RunBudgetConfig;
+using diamond_orchestration::RuntimeConfig;
 using diamond_orchestration::SelfPlayConfig;
 using diamond_orchestration::TrainingConfig;
+using diamond_orchestration::WorkerConfig;
 using diamond_support::JsonValue;
 
 namespace {
+
+constexpr std::string_view kV1MigrationError =
+    "production config schema_version 1 is not supported; migrate max_wait_ms to max_wait_us, "
+    "worker_count to logical_lanes and search_threads, and add runtime, run_budget, "
+    "train_steps_per_iteration, opening_suite, and promotion_statistics";
 
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -31,93 +43,190 @@ void rejects(const std::function<void()>& action, const char* message) {
     throw std::runtime_error(message);
 }
 
-JsonValue json_number(double value) { return JsonValue{value}; }
+void rejects_with_message(const std::function<void()>& action, std::string_view expected,
+                          const char* message) {
+    try {
+        action();
+    } catch (const ConfigError& error) {
+        require(error.what() == expected, message);
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
+JsonValue runtime_json(std::string device, std::string precision = "fp32") {
+    return JsonValue{JsonValue::Object{{"device", JsonValue{std::move(device)}},
+                                       {"precision", JsonValue{std::move(precision)}}}};
+}
 
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        require(NetworkConfig{} == NetworkConfig{.width = 128, .residual_blocks = 6},
-                "network defaults changed");
-        require(MCTSConfig{} == MCTSConfig{.simulations = 200, .c_puct = 1.5,
-                                             .dirichlet_alpha = 0.3, .dirichlet_epsilon = 0.25, .seed = 0},
-                "mcts defaults changed");
-        require(SelfPlayConfig{} == SelfPlayConfig{.max_moves = 2000, .temperature_moves = 20,
-                                                    .temperature = 1.0, .seed = 0, .bootstrap_prior = "none"},
-                "self-play defaults changed");
-        require(ReplayConfig{} == ReplayConfig{.capacity = 100000, .seed = 0}, "replay defaults changed");
-        require(TrainingConfig{} == TrainingConfig{.batch_size = 128, .learning_rate = 1e-3,
-                                                    .weight_decay = 1e-4, .device = "cpu", .seed = 0},
+        require(RuntimeConfig{} == RuntimeConfig{.device = "cpu", .precision = "fp32"},
+                "runtime defaults changed");
+        require(RunBudgetConfig{} ==
+                    RunBudgetConfig{.max_iterations = 1, .max_wall_clock_seconds = std::nullopt,
+                                    .checkpoint_every_iterations = 1},
+                "run-budget defaults changed");
+        require(OpeningSuiteConfig{} ==
+                    OpeningSuiteConfig{.id = "production-openings-v1", .version = 1, .seed = 0,
+                                       .count = 1, .max_depth = 0},
+                "opening-suite defaults changed");
+        require(PromotionStatisticsConfig{} ==
+                    PromotionStatisticsConfig{.method = "opening-block-bootstrap-v1",
+                                              .resampling_unit = "opening_block",
+                                              .confidence_level = 0.95,
+                                              .bootstrap_replicates = 10000, .seed = 0},
+                "promotion-statistics defaults changed");
+        require(TrainingConfig{} == TrainingConfig{.batch_size = 128, .train_steps_per_iteration = 1,
+                                                    .learning_rate = 1e-3, .weight_decay = 1e-4,
+                                                    .seed = 0},
                 "training defaults changed");
+        require(WorkerConfig{} == WorkerConfig{.logical_lanes = 1, .search_threads = 1,
+                                                .games_per_iteration = 1, .retry_id = "attempt-0"},
+                "worker defaults changed");
+        require(InferenceConfig{} == InferenceConfig{.max_batch_size = 1, .max_wait_us = 1,
+                                                      .request_queue_capacity = 1,
+                                                      .response_timeout_s = 5.0},
+                "inference defaults changed");
 
-        const JsonValue network{JsonValue::Object{{"residual_blocks", JsonValue{int64_t{1}}}, {"width", JsonValue{int64_t{8}}}}};
+        const JsonValue network{JsonValue::Object{{"residual_blocks", JsonValue{int64_t{1}}},
+                                                   {"width", JsonValue{int64_t{8}}}}};
         require(diamond_support::canonical_json(NetworkConfig::from_json(network).to_json()) ==
                     diamond_support::canonical_json(network),
                 "network JSON must round trip");
 
-        const JsonValue mcts{JsonValue::Object{{"c_puct", json_number(1.5)},
-                                                {"dirichlet_alpha", json_number(0.3)},
-                                                {"dirichlet_epsilon", json_number(0.25)},
+        const JsonValue mcts{JsonValue::Object{{"c_puct", JsonValue{1.5}},
+                                                {"dirichlet_alpha", JsonValue{0.3}},
+                                                {"dirichlet_epsilon", JsonValue{0.25}},
                                                 {"seed", JsonValue{int64_t{7}}},
                                                 {"simulations", JsonValue{int64_t{10}}}}};
         require(diamond_support::canonical_json(MCTSConfig::from_json(mcts).to_json()) ==
                     diamond_support::canonical_json(mcts),
                 "mcts JSON must round trip");
 
-        const JsonValue self_play{JsonValue::Object{{"bootstrap_prior", JsonValue{std::string("none")}},
-                                                     {"max_game_seconds", JsonValue{nullptr}},
-                                                     {"max_moves", JsonValue{int64_t{20}}},
-                                                     {"seed", JsonValue{int64_t{7}}},
-                                                     {"temperature", json_number(1.0)},
-                                                     {"temperature_moves", JsonValue{int64_t{2}}}}};
+        const JsonValue self_play{
+            JsonValue::Object{{"bootstrap_prior", JsonValue{std::string("none")}},
+                              {"max_game_seconds", JsonValue{nullptr}},
+                              {"max_moves", JsonValue{int64_t{20}}},
+                              {"seed", JsonValue{int64_t{7}}},
+                              {"temperature", JsonValue{1.0}},
+                              {"temperature_moves", JsonValue{int64_t{2}}}}};
         require(diamond_support::canonical_json(SelfPlayConfig::from_json(self_play).to_json()) ==
                     diamond_support::canonical_json(self_play),
                 "self-play JSON must round trip");
 
-        const JsonValue replay{JsonValue::Object{{"capacity", JsonValue{int64_t{32}}}, {"seed", JsonValue{int64_t{7}}}}};
+        const JsonValue replay{JsonValue::Object{{"capacity", JsonValue{int64_t{32}}},
+                                                  {"seed", JsonValue{int64_t{7}}}}};
         require(diamond_support::canonical_json(ReplayConfig::from_json(replay).to_json()) ==
                     diamond_support::canonical_json(replay),
                 "replay JSON must round trip");
 
-        const JsonValue training{JsonValue::Object{{"batch_size", JsonValue{int64_t{4}}},
-                                                    {"device", JsonValue{std::string("cpu")}},
-                                                    {"learning_rate", json_number(0.001)},
-                                                    {"seed", JsonValue{int64_t{7}}},
-                                                    {"weight_decay", json_number(0.0)}}};
+        const JsonValue training{
+            JsonValue::Object{{"batch_size", JsonValue{int64_t{4}}},
+                              {"learning_rate", JsonValue{0.001}},
+                              {"seed", JsonValue{int64_t{7}}},
+                              {"train_steps_per_iteration", JsonValue{int64_t{2}}},
+                              {"weight_decay", JsonValue{0.0}}}};
         require(diamond_support::canonical_json(TrainingConfig::from_json(training).to_json()) ==
                     diamond_support::canonical_json(training),
                 "training JSON must round trip");
 
+        for (const char* device : {"cpu", "cuda", "cuda:0", "cuda:17"}) {
+            const JsonValue value = runtime_json(device);
+            require(diamond_support::canonical_json(RuntimeConfig::from_json(value).to_json()) ==
+                        diamond_support::canonical_json(value),
+                    "runtime JSON must round trip");
+        }
+        for (const char* device : {"CPU", "CUDA", "cuda:", "cuda:-1", "cuda:1x", "gpu"}) {
+            rejects([&] { (void)RuntimeConfig::from_json(runtime_json(device)); },
+                    "invalid runtime device must be rejected");
+        }
+        rejects([] { (void)RuntimeConfig::from_json(runtime_json("cpu", "fp16")); },
+                "unsupported precision must be rejected");
+        rejects([] {
+            (void)RuntimeConfig::from_json(
+                JsonValue{JsonValue::Object{{"device", JsonValue{"cpu"}}, {"precision", JsonValue{"fp32"}},
+                                             {"unknown", JsonValue{true}}}});
+        }, "unknown runtime key must be rejected");
+        rejects([] { (void)RuntimeConfig::from_json(JsonValue{JsonValue::Object{{"device", JsonValue{"cpu"}}}}); },
+                "missing runtime key must be rejected");
+
         ProductionConfig production{
-            .network = NetworkConfig{.width = 8, .residual_blocks = 1},
-            .mcts = MCTSConfig{.simulations = 1, .c_puct = 1.5, .dirichlet_alpha = 0.3,
+            .schema_version = 2,
+            .model_name = "Soo",
+            .model_version = "2.0.0",
+            .network = NetworkConfig{.width = 128, .residual_blocks = 6},
+            .runtime = RuntimeConfig{.device = "cuda:0", .precision = "fp32"},
+            .mcts = MCTSConfig{.simulations = 400, .c_puct = 1.5, .dirichlet_alpha = 0.3,
                                .dirichlet_epsilon = 0.25, .seed = 7},
             .self_play = SelfPlayConfig{.max_moves = 2000, .temperature_moves = 20,
                                         .temperature = 1.0, .seed = 7, .bootstrap_prior = "none"},
+            .workers = WorkerConfig{.logical_lanes = 2, .search_threads = 3,
+                                    .games_per_iteration = 2, .retry_id = "attempt-0"},
+            .inference = InferenceConfig{.max_batch_size = 8, .max_wait_us = 50,
+                                         .request_queue_capacity = 32, .response_timeout_s = 10.0},
             .replay = ReplayConfig{.capacity = 128, .seed = 7},
-            .training = TrainingConfig{.batch_size = 1, .learning_rate = 0.001,
-                                       .weight_decay = 0.0, .device = "cpu", .seed = 7},
+            .training = TrainingConfig{.batch_size = 4, .train_steps_per_iteration = 1,
+                                       .learning_rate = 0.001, .weight_decay = 0.0, .seed = 7},
+            .run_budget = RunBudgetConfig{.max_iterations = 1, .max_wall_clock_seconds = std::nullopt,
+                                          .checkpoint_every_iterations = 1},
             .arena = {.games = 4, .seed = 7, .max_moves = 2000, .promotion_threshold = 0.55},
-            .workers = {.worker_count = 2, .games_per_iteration = 2, .retry_id = "attempt-0"},
-            .inference = {.max_batch_size = 8, .max_wait_ms = 2,
-                          .request_queue_capacity = 32, .response_timeout_s = 10.0},
-            .benchmark = {.opening_count = 1, .opening_max_depth = 0, .opening_seed = 7,
-                          .opening_suite_version = "production-openings-v1"},
+            .opening_suite = OpeningSuiteConfig{.id = "production-openings-v1", .version = 1,
+                                                .seed = 7, .count = 1, .max_depth = 0},
+            .promotion_statistics = PromotionStatisticsConfig{.method = "opening-block-bootstrap-v1",
+                                                                .resampling_unit = "opening_block",
+                                                                .confidence_level = 0.95,
+                                                                .bootstrap_replicates = 10000, .seed = 7},
             .run_seed = 7,
         };
         const JsonValue production_json = production.to_json();
         require(diamond_support::canonical_json(ProductionConfig::from_json(production_json).to_json()) ==
                     diamond_support::canonical_json(production_json),
-                "production JSON must round trip");
+                "production v2 JSON must round trip");
 
-        rejects([] { NetworkConfig::from_json(JsonValue{JsonValue::Object{{"width", JsonValue{int64_t{8}}}}}); },
-                "missing key must be rejected");
-        rejects([] { ReplayConfig::from_json(JsonValue{JsonValue::Object{{"capacity", JsonValue{int64_t{8}}}, {"seed", JsonValue{int64_t{0}}}, {"unknown", JsonValue{true}}}}); },
-                "unknown key must be rejected");
-        rejects([] { SelfPlayConfig::from_json(JsonValue{JsonValue::Object{{"bootstrap_prior", JsonValue{std::string("none")}}, {"max_game_seconds", JsonValue{0.0}}, {"max_moves", JsonValue{int64_t{1}}}, {"seed", JsonValue{int64_t{0}}}, {"temperature", JsonValue{1.0}}, {"temperature_moves", JsonValue{int64_t{0}}}}}); },
-                "zero game budget must be rejected");
-        rejects([] { MCTSConfig::from_json(JsonValue{JsonValue::Object{{"c_puct", JsonValue{1.0}}, {"dirichlet_alpha", JsonValue{0.3}}, {"dirichlet_epsilon", JsonValue{1.1}}, {"seed", JsonValue{int64_t{0}}}, {"simulations", JsonValue{int64_t{1}}}}}); },
-                "out-of-range dirichlet epsilon must be rejected");
+        rejects_with_message(
+            [] { (void)ProductionConfig::from_json(JsonValue{JsonValue::Object{{"schema_version", JsonValue{int64_t{1}}}}}); },
+            kV1MigrationError, "v1 migration error must be exact");
+        rejects([&] {
+            auto invalid = std::get<JsonValue::Object>(production_json.value);
+            std::get<JsonValue::Object>(invalid.at("run_budget").value)["max_iterations"] = JsonValue{int64_t{0}};
+            (void)ProductionConfig::from_json(JsonValue{std::move(invalid)});
+        }, "invalid run budget must be rejected");
+        rejects([&] {
+            auto invalid = std::get<JsonValue::Object>(production_json.value);
+            std::get<JsonValue::Object>(invalid.at("promotion_statistics").value)["resampling_unit"] =
+                JsonValue{"game"};
+            (void)ProductionConfig::from_json(JsonValue{std::move(invalid)});
+        }, "invalid promotion statistics must be rejected");
+        rejects([] {
+            (void)NetworkConfig::from_json(
+                JsonValue{JsonValue::Object{{"width", JsonValue{int64_t{8}}}}});
+        }, "missing nested key must be rejected");
+        rejects([] {
+            (void)ReplayConfig::from_json(
+                JsonValue{JsonValue::Object{{"capacity", JsonValue{int64_t{8}}},
+                                             {"seed", JsonValue{int64_t{0}}},
+                                             {"unknown", JsonValue{true}}}});
+        }, "unknown nested key must be rejected");
+        rejects([] {
+            (void)SelfPlayConfig::from_json(
+                JsonValue{JsonValue::Object{{"bootstrap_prior", JsonValue{std::string("none")}},
+                                             {"max_game_seconds", JsonValue{0.0}},
+                                             {"max_moves", JsonValue{int64_t{1}}},
+                                             {"seed", JsonValue{int64_t{0}}},
+                                             {"temperature", JsonValue{1.0}},
+                                             {"temperature_moves", JsonValue{int64_t{0}}}}});
+        }, "zero game budget must be rejected");
+        rejects([] {
+            (void)MCTSConfig::from_json(
+                JsonValue{JsonValue::Object{{"c_puct", JsonValue{1.0}},
+                                             {"dirichlet_alpha", JsonValue{0.3}},
+                                             {"dirichlet_epsilon", JsonValue{1.1}},
+                                             {"seed", JsonValue{int64_t{0}}},
+                                             {"simulations", JsonValue{int64_t{1}}}}});
+        }, "out-of-range dirichlet epsilon must be rejected");
         rejects([&] {
             auto invalid = std::get<JsonValue::Object>(production_json.value);
             invalid.emplace("unknown", JsonValue{true});
