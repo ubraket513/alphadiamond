@@ -39,6 +39,20 @@ case "$(uname -s)" in
         esac
 
         vsdevcmd=''
+        vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+        if [ -x "$vswhere" ]; then
+            installation_path=$("$vswhere" \
+                -latest \
+                -products '*' \
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+                -property installationPath | tr -d '\r' | sed -n '1p')
+            if [ -n "$installation_path" ]; then
+                candidate=$(cygpath -u "$installation_path")/Common7/Tools/VsDevCmd.bat
+                if [ -f "$candidate" ]; then vsdevcmd=$candidate; fi
+            fi
+        fi
+
+        if [ -z "$vsdevcmd" ]; then
         for candidate in \
             '/c/Program Files/Microsoft Visual Studio/18/Community/Common7/Tools/VsDevCmd.bat' \
             '/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/Tools/VsDevCmd.bat' \
@@ -49,6 +63,7 @@ case "$(uname -s)" in
                 break
             fi
         done
+        fi
         if [ -z "$vsdevcmd" ]; then
             echo "Visual Studio x64 developer environment is unavailable" >&2
             exit 1

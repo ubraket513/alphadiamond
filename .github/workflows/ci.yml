@@ -22,7 +22,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Select GCC 14 for C++26
+        if: runner.os == 'Linux'
+        run: |
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
       - run: tools/native_training.sh cmake --preset native-ci
       - run: tools/native_training.sh cmake --build --preset native-ci --parallel
       - run: tools/native_training.sh ctest --preset native-ci --output-on-failure
@@ -30,11 +35,14 @@ jobs:
   native-sanitizers:
     name: native-sanitizers
     runs-on: ubuntu-latest
+    env:
+      CC: gcc-14
+      CXX: g++-14
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: tools/native_training.sh cmake --preset native-asan
       - run: tools/native_training.sh cmake --build --preset native-asan --parallel
       - run: tools/native_training.sh ctest --preset native-asan --output-on-failure
@@ -44,11 +52,14 @@ jobs:
   native-qt:
     name: native-qt
     runs-on: ubuntu-latest
+    env:
+      CC: gcc-14
+      CXX: g++-14
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: jurplel/install-qt-action@v4
         with:
           version: '6.8.1'
@@ -68,7 +79,7 @@ jobs:
     name: native-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: git diff --check
 
   compatibility-core:
