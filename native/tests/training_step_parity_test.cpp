@@ -1,3 +1,4 @@
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -45,6 +46,17 @@ void check_close(float actual, float expected, const std::string& name) {
     if (!close(actual, expected)) {
         soo_test::fail(__FILE__, __LINE__, name + " differs: actual=" +
                        std::to_string(actual) + " expected=" + std::to_string(expected));
+    }
+}
+
+void check_selected_values(const torch::Tensor& actual, const std::vector<float>& expected,
+                           const std::string& name) {
+    const auto flattened = actual.detach().contiguous().view(-1);
+    REQUIRE(static_cast<size_t>(flattened.numel()) == expected.size(), name.c_str());
+    const std::array<size_t, 3> selected = {0, expected.size() / 2, expected.size() - 1};
+    for (const size_t index : selected) {
+        check_close(flattened[static_cast<int64_t>(index)].item<float>(), expected[index],
+                    name + "[" + std::to_string(index) + "]");
     }
 }
 
@@ -133,6 +145,11 @@ void check_validation(const std::filesystem::path& root) {
                            "negative policy probability");
 
     sample = samples_for(root, "soo").front();
+    sample.sparse_policy.front().second = std::numeric_limits<float>::quiet_NaN();
+    check_invalid_argument([&] { (void)trainer.train(std::span(&sample, 1)); },
+                           "non-finite policy target");
+
+    sample = samples_for(root, "soo").front();
     sample.sparse_policy.front().second = 0.20F;
     check_invalid_argument([&] { (void)trainer.train(std::span(&sample, 1)); },
                            "policy sum outside tolerance");
@@ -141,6 +158,11 @@ void check_validation(const std::filesystem::path& root) {
     sample.sparse_policy.front().first = 5329;
     check_invalid_argument([&] { (void)trainer.train(std::span(&sample, 1)); },
                            "action outside policy space");
+
+    sample = samples_for(root, "soo").front();
+    sample.sparse_policy.emplace_back(sample.sparse_policy.front().first, 0.0F);
+    check_invalid_argument([&] { (void)trainer.train(std::span(&sample, 1)); },
+                           "duplicate policy action");
 
     sample = samples_for(root, "soo").front();
     sample.value_target.push_back(0.0F);
@@ -163,6 +185,8 @@ void check_parity(const std::filesystem::path& root, const std::string& family) 
     const auto expected_losses = read_f32(root / family / "losses.f32");
     const auto expected_after = read_f32(
         root / family / "after_step_parameters/policy_head__source__weight.f32");
+    const auto expected_gradient = read_f32(
+        root / family / "gradients/policy_head__source__weight.f32");
     const auto expected_resumed_losses = read_f32(root / family / "resumed_losses.f32");
     const auto expected_resumed = read_f32(
         root / family / "resumed_parameters/policy_head__source__weight.f32");
@@ -194,20 +218,15 @@ void check_parity(const std::filesystem::path& root, const std::string& family) 
     const auto source = model->policy_source->weight;
     CHECK(source.grad().defined());
     CHECK(source.grad().abs().sum().item<float>() > 0.0F);
-    const auto actual_after = source.detach().contiguous().view(-1);
-    REQUIRE(static_cast<size_t>(actual_after.numel()) == expected_after.size(), "updated parameter size");
-    check_close(actual_after[0].item<float>(), expected_after.front(), family + " AdamW update");
+    check_selected_values(source.grad(), expected_gradient, family + " policy-source gradient");
+    check_selected_values(source, expected_after, family + " AdamW update");
 
     const auto resumed = trainer.train(samples);
     REQUIRE(expected_resumed_losses.size() == 3, "resumed loss fixture");
     check_close(static_cast<float>(resumed.total_loss), expected_resumed_losses[0],
                 family + " resumed total loss");
     CHECK_EQ(resumed.training_step, uint64_t{2});
-    const auto actual_resumed = source.detach().contiguous().view(-1);
-    REQUIRE(static_cast<size_t>(actual_resumed.numel()) == expected_resumed.size(),
-            "resumed parameter size");
-    check_close(actual_resumed[0].item<float>(), expected_resumed.front(),
-                family + " AdamW stateful update");
+    check_selected_values(source, expected_resumed, family + " AdamW stateful update");
 }
 
 }  // namespace
