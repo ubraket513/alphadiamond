@@ -34,6 +34,9 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
                     native_int(config.self_play.temperature_moves, "self_play.temperature_moves"),
                 .dirichlet_alpha = config.mcts.dirichlet_alpha,
                 .dirichlet_epsilon = config.mcts.dirichlet_epsilon,
+                .simulations_late =
+                    native_int(config.mcts.simulations_late, "mcts.simulations_late"),
+                .repeat_window = native_int(config.mcts.repeat_window, "mcts.repeat_window"),
             },
         .games_per_iteration = static_cast<std::size_t>(config.workers.games_per_iteration),
         .training_batch_size = static_cast<std::size_t>(config.training.batch_size),

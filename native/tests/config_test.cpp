@@ -108,11 +108,42 @@ int main(int argc, char** argv) {
         const JsonValue mcts{JsonValue::Object{{"c_puct", JsonValue{1.5}},
                                                {"dirichlet_alpha", JsonValue{0.3}},
                                                {"dirichlet_epsilon", JsonValue{0.25}},
+                                               {"repeat_window", JsonValue{int64_t{8}}},
                                                {"seed", JsonValue{int64_t{7}}},
-                                               {"simulations", JsonValue{int64_t{10}}}}};
+                                               {"simulations", JsonValue{int64_t{10}}},
+                                               {"simulations_late", JsonValue{int64_t{20}}}}};
         require(diamond_support::canonical_json(MCTSConfig::from_json(mcts).to_json()) ==
                     diamond_support::canonical_json(mcts),
                 "mcts JSON must round trip");
+
+        // The repetition trigger was added after runs were already on disk, and
+        // `resume` parses a run's immutable resolved-config.json back through
+        // from_json. A config written before the field existed must therefore
+        // still load, with the trigger disabled.
+        const JsonValue legacy_mcts{JsonValue::Object{{"c_puct", JsonValue{1.5}},
+                                                      {"dirichlet_alpha", JsonValue{0.3}},
+                                                      {"dirichlet_epsilon", JsonValue{0.25}},
+                                                      {"seed", JsonValue{int64_t{7}}},
+                                                      {"simulations", JsonValue{int64_t{10}}}}};
+        const auto legacy = MCTSConfig::from_json(legacy_mcts);
+        require(legacy.simulations_late == 0 && legacy.repeat_window == 0,
+                "an mcts config predating the repetition trigger must load it disabled");
+
+        // Unknown keys stay rejected: tolerating absence must not become
+        // tolerating anything.
+        JsonValue::Object unknown_mcts = std::get<JsonValue::Object>(legacy_mcts.value);
+        unknown_mcts.emplace("simulations_lete", JsonValue{int64_t{20}});
+        rejects([&] { (void)MCTSConfig::from_json(JsonValue{unknown_mcts}); },
+                "an unknown mcts key must still be rejected");
+
+        // Half a control is inert but looks enabled, so it is refused.
+        for (const auto& half : {std::pair<std::string, int64_t>{"simulations_late", 20},
+                                 std::pair<std::string, int64_t>{"repeat_window", 8}}) {
+            JsonValue::Object partial = std::get<JsonValue::Object>(legacy_mcts.value);
+            partial.emplace(half.first, JsonValue{half.second});
+            rejects([&] { (void)MCTSConfig::from_json(JsonValue{partial}); },
+                    "half of the repetition trigger must be rejected");
+        }
 
         const JsonValue self_play{
             JsonValue::Object{{"bootstrap_prior", JsonValue{std::string("none")}},

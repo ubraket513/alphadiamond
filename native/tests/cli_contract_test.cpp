@@ -158,6 +158,22 @@ int main(int argc, char** argv) {
     CHECK_EQ(wiring.training_batch_size, std::size_t{3});
     CHECK_EQ(wiring.training_steps, std::size_t{2});
 
+    // The repetition trigger reached self-play only if it is forwarded here.
+    // It was implemented in the engine and measured as the best search-budget
+    // policy, then shipped unreachable: no config parsed it and this wiring did
+    // not carry it, so every run silently used a flat budget. A field the
+    // engine supports but the wiring drops fails invisibly -- the search stays
+    // correct and only the abort rate moves -- so it is asserted rather than
+    // assumed. See docs/model-training/repetition_trigger_config_gap.md.
+    CHECK_EQ(wiring.selfplay.simulations_late, 0);
+    CHECK_EQ(wiring.selfplay.repeat_window, 0);
+    auto trigger_config = wiring_config;
+    trigger_config.mcts.simulations_late = 256;
+    trigger_config.mcts.repeat_window = 8;
+    const auto triggered = diamond_orchestration::wire_training_iteration(trigger_config);
+    CHECK_EQ(triggered.selfplay.simulations_late, 256);
+    CHECK_EQ(triggered.selfplay.repeat_window, 8);
+
     auto cuda_config = wiring_config;
     cuda_config.runtime.device = "cuda";
     const auto cuda_config_path = scratch / "cuda-config.json";

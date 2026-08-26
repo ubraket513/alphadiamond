@@ -49,6 +49,17 @@ struct MCTSConfig final {
     double dirichlet_epsilon = 0.25;
     uint64_t seed = 0;
 
+    // Adaptive search budget for the repetition attractor. The aborted tail is a
+    // short-cycle shuffle rather than slow progress -- median 31.6 % unique
+    // positions, one position revisited 61 times, 68.4 % of moves returning
+    // within 8 ply -- so the budget is spent where a game has demonstrably
+    // looped. `simulations_late` applies instead of `simulations` when the
+    // current position already occurred within `repeat_window` plies of the
+    // game; both zero disables the trigger and every move uses `simulations`.
+    // See docs/model-training/soo_scratch_training.md sections 6.2 and 6.6.
+    int64_t simulations_late = 0;
+    int64_t repeat_window = 0;
+
     void validate() const;
     diamond_support::JsonValue to_json() const;
     static MCTSConfig from_json(const diamond_support::JsonValue& value);

@@ -2,10 +2,18 @@
   "schema_version": 2,
   "model_name": "Min",
   "model_version": "2.0.0",
-  "network": {"width": 128, "residual_blocks": 6},
-  "runtime": {"device": "cuda", "precision": "fp32"},
+  "network": {
+    "width": 128,
+    "residual_blocks": 6
+  },
+  "runtime": {
+    "device": "cuda",
+    "precision": "fp32"
+  },
   "mcts": {
     "simulations": 400,
+    "simulations_late": 0,
+    "repeat_window": 0,
     "c_puct": 1.5,
     "dirichlet_alpha": 0.3,
     "dirichlet_epsilon": 0.25,
@@ -31,7 +39,10 @@
     "request_queue_capacity": 1024,
     "response_timeout_s": 600.0
   },
-  "replay": {"capacity": 200000, "seed": 7},
+  "replay": {
+    "capacity": 200000,
+    "seed": 7
+  },
   "training": {
     "batch_size": 256,
     "train_steps_per_iteration": 1,

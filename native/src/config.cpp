@@ -49,6 +49,39 @@ void require_exact_keys(const Object& value, std::initializer_list<std::string_v
     throw ConfigError("invalid " + std::string(name) + " (" + details + ")");
 }
 
+// As require_exact_keys, but a named set of keys may also be absent. Strictness
+// is preserved -- unknown keys are still rejected -- while a field added after a
+// run started stays readable in that run's immutable resolved-config.json, which
+// `resume` parses back through from_json.
+void require_keys(const Object& value, std::initializer_list<std::string_view> expected,
+                  std::initializer_list<std::string_view> optional, std::string_view name) {
+    std::set<std::string> required;
+    for (std::string_view key : expected) required.emplace(key);
+    std::set<std::string> permitted = required;
+    for (std::string_view key : optional) permitted.emplace(key);
+
+    std::string details;
+    std::set<std::string> actual;
+    for (const auto& [key, ignored] : value) {
+        (void)ignored;
+        actual.insert(key);
+    }
+    for (const auto& key : required) {
+        if (!actual.contains(key)) {
+            if (!details.empty()) details += "; ";
+            details += "missing: " + key;
+        }
+    }
+    for (const auto& key : actual) {
+        if (!permitted.contains(key)) {
+            if (!details.empty()) details += "; ";
+            details += "unexpected: " + key;
+        }
+    }
+    if (details.empty()) return;
+    throw ConfigError("invalid " + std::string(name) + " (" + details + ")");
+}
+
 const Json& field(const Object& value, std::string_view name, std::string_view object_name) {
     const auto found = value.find(std::string(name));
     if (found == value.end())
@@ -189,6 +222,15 @@ void MCTSConfig::validate() const {
         throw ConfigError("mcts.dirichlet_alpha must be a positive finite number");
     if (!std::isfinite(dirichlet_epsilon) || dirichlet_epsilon < 0 || dirichlet_epsilon > 1)
         throw ConfigError("mcts.dirichlet_epsilon must be a finite number in [0, 1]");
+    if (simulations_late < 0) throw ConfigError("mcts.simulations_late must be non-negative");
+    if (repeat_window < 0) throw ConfigError("mcts.repeat_window must be non-negative");
+    // The two are one control and are meaningless apart: a window with no
+    // boosted budget never changes the search, and a boosted budget with no
+    // window can never fire. Rejecting the half-set pair keeps a silently
+    // inert configuration from looking enabled.
+    if ((simulations_late > 0) != (repeat_window > 0))
+        throw ConfigError("mcts.simulations_late and mcts.repeat_window must both be set "
+                          "to enable the repetition trigger, or both be zero");
 }
 
 Json MCTSConfig::to_json() const {
@@ -196,14 +238,16 @@ Json MCTSConfig::to_json() const {
     return Json{Object{{"c_puct", Json{c_puct}},
                        {"dirichlet_alpha", Json{dirichlet_alpha}},
                        {"dirichlet_epsilon", Json{dirichlet_epsilon}},
+                       {"repeat_window", Json{repeat_window}},
+                       {"simulations_late", Json{simulations_late}},
                        {"seed", Json{json_integer(seed, "mcts.seed")}},
                        {"simulations", Json{simulations}}}};
 }
 
 MCTSConfig MCTSConfig::from_json(const Json& value) {
     const Object& input = object(value, "mcts");
-    require_exact_keys(
-        input, {"c_puct", "dirichlet_alpha", "dirichlet_epsilon", "seed", "simulations"}, "mcts");
+    require_keys(input, {"c_puct", "dirichlet_alpha", "dirichlet_epsilon", "seed", "simulations"},
+                 {"repeat_window", "simulations_late"}, "mcts");
     MCTSConfig result{
         .simulations = integer(field(input, "simulations", "mcts"), "mcts.simulations"),
         .c_puct = number(field(input, "c_puct", "mcts"), "mcts.c_puct"),
@@ -211,6 +255,11 @@ MCTSConfig MCTSConfig::from_json(const Json& value) {
         .dirichlet_epsilon =
             number(field(input, "dirichlet_epsilon", "mcts"), "mcts.dirichlet_epsilon"),
         .seed = non_negative_seed(field(input, "seed", "mcts"), "mcts.seed")};
+    if (input.contains("simulations_late"))
+        result.simulations_late =
+            integer(field(input, "simulations_late", "mcts"), "mcts.simulations_late");
+    if (input.contains("repeat_window"))
+        result.repeat_window = integer(field(input, "repeat_window", "mcts"), "mcts.repeat_window");
     result.validate();
     return result;
 }
