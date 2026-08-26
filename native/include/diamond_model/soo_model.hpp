@@ -10,7 +10,10 @@ namespace diamond_model {
 class DirectionalResidualBlockImpl : public torch::nn::Module {
   public:
     explicit DirectionalResidualBlockImpl(int64_t width);
-    torch::Tensor forward(const torch::Tensor& nodes, const torch::Tensor& adjacency);
+    // Takes the neighbour gather index and the "no neighbour here" mask rather
+    // than the dense adjacency. See DiamondModelImpl::set_adjacency.
+    torch::Tensor forward(const torch::Tensor& nodes, const torch::Tensor& neighbour_index,
+                          const torch::Tensor& neighbour_missing);
 
     torch::nn::Linear self_projection{nullptr};
     std::vector<torch::nn::Linear> direction_projections;
@@ -46,6 +49,16 @@ class DiamondModelImpl : public torch::nn::Module {
     torch::Tensor adjacency;
 
   private:
+    // Derived from `adjacency`, which is 0/1 with at most one neighbour per
+    // (direction, hole) -- so the dense [6,73,73] contraction it was written as
+    // is a gather wearing a matrix. Kept as a flat [6*73] index into the hole
+    // dimension plus a [1,6,73,1] mask marking the board edges where a
+    // direction runs off. `adjacency` itself stays: it is a shipped weight file
+    // and the artifact format's business, not this optimisation's.
+    torch::Tensor neighbour_index_;
+    torch::Tensor neighbour_missing_;
+    int64_t neighbour_tables_version_ = -1;
+    void refresh_neighbour_tables();
     int64_t width_;
     int64_t residual_blocks_;
     int64_t input_features_;

@@ -57,8 +57,19 @@ DirectionalResidualBlockImpl::DirectionalResidualBlockImpl(int64_t width)
 }
 
 torch::Tensor DirectionalResidualBlockImpl::forward(const torch::Tensor& nodes,
-                                                    const torch::Tensor& adjacency) {
-    const auto neighbours = torch::einsum("dij,bjw->bdiw", {adjacency, nodes});
+                                                    const torch::Tensor& neighbour_index,
+                                                    const torch::Tensor& neighbour_missing) {
+    // The dense form was einsum("dij,bjw->bdiw", adjacency, nodes): for every
+    // direction and hole, a 73-term dot product against a row that is all zeros
+    // except at most one 1. Selecting that one entry is the same arithmetic --
+    // adding exact zeros and multiplying by exactly one are both exact in IEEE
+    // floating point -- at 1.4 % of the work.
+    const auto width = nodes.size(2);
+    auto selected = nodes.index_select(1, neighbour_index);
+    // Only the board edges have no neighbour in a given direction, so zero
+    // those rows directly instead of sweeping the whole [B,6,73,W] tensor.
+    if (neighbour_missing.numel() > 0) selected.index_fill_(1, neighbour_missing, 0);
+    const auto neighbours = selected.view({nodes.size(0), 6, nodes.size(1), width});
     std::vector<torch::Tensor> weights;
     for (const auto& module : direction_projections) {
         weights.push_back(module->weight);
@@ -94,6 +105,7 @@ DiamondModelImpl::DiamondModelImpl(int64_t width, int64_t residual_blocks,
     register_module("value_linear2", value_linear2);
     adjacency = torch::zeros({6, 73, 73});
     register_buffer("adjacency", adjacency);
+    refresh_neighbour_tables();
 }
 
 void DiamondModelImpl::set_adjacency(const torch::Tensor& value) {
@@ -101,6 +113,18 @@ void DiamondModelImpl::set_adjacency(const torch::Tensor& value) {
         throw std::invalid_argument("adjacency must have shape [6,73,73]");
     }
     adjacency.copy_(value);
+    refresh_neighbour_tables();
+}
+
+void DiamondModelImpl::refresh_neighbour_tables() {
+    // The gather form of `adjacency`, derived once per mutation rather than per
+    // forward pass. A row is all zeros where the direction runs off the board.
+    const auto flat = adjacency.detach().reshape({6 * 73, 73});
+    const auto has_neighbour = flat.sum(1).gt(0.5);
+    neighbour_index_ = flat.argmax(1).to(torch::kLong).mul(has_neighbour.to(torch::kLong));
+    // Flat positions into the [6*73] gather dimension that have no neighbour.
+    neighbour_missing_ = has_neighbour.logical_not().nonzero().flatten().to(torch::kLong);
+    neighbour_tables_version_ = adjacency._version();
 }
 
 std::tuple<torch::Tensor, torch::Tensor> DiamondModelImpl::forward(const torch::Tensor& features) {
@@ -108,9 +132,16 @@ std::tuple<torch::Tensor, torch::Tensor> DiamondModelImpl::forward(const torch::
         features.size(2) != input_features_) {
         throw std::invalid_argument("features must have shape [B,73,input_features]");
     }
+    // `adjacency` is a registered buffer, so a checkpoint restore writes it
+    // directly (checkpoint.cpp loads named_buffers()) without going through
+    // set_adjacency. Rederiving on a version bump keeps the gather tables from
+    // silently describing the previous topology; the check is an integer
+    // compare, not a synchronisation.
+    if (!neighbour_index_.defined() || adjacency._version() != neighbour_tables_version_)
+        refresh_neighbour_tables();
     auto nodes = input_projection->forward(features);
     for (auto& module : blocks) {
-        nodes = module->forward(nodes, adjacency);
+        nodes = module->forward(nodes, neighbour_index_, neighbour_missing_);
     }
     nodes = output_norm->forward(nodes);
     const auto source = policy_source->forward(nodes);
