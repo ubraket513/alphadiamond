@@ -49,53 +49,120 @@ budget.
 Together: the network plays *better* than the reference when it finishes, and a
 fixed ~20 % of games cannot finish at all.
 
-## Leading hypothesis, not yet confirmed
+## Confirmed: the winner entombs a loser's piece in its own target camp
 
-`has_finished` in [`native/src/rules.cpp`](../../native/src/rules.cpp) requires
-**every** cell of a player's target camp to hold that player's own piece:
+All 176 aborted games of a 768-game run were inspected at the move cap
+(`iterations/N/aborted-games.json`, written by the self-play stage).
+
+```
+aborted games                                176   (all at the 500-move cap)
+target camp contains a foreign piece         176   (100.0 %)
+  exactly 1 blocker                          166   ( 94.3 %)
+  >= 2 blockers                               10   (  5.7 %)
+no foreign blocker                             0   (  0.0 %)
+
+blocker had zero legal moves                 176   (100.0 %)
+blocker pieces total 186: immobile 186, mobile 0
+short-cycle repetition in last 64 ply        176   (100.0 %)
+max revisits of one position   p50 46   p90 96   max 112
+unique positions / moves       p50 0.358   p10 0.252
+```
+
+The last two lines reproduce §6.2's audit almost exactly (median 0.316 unique,
+one position revisited 61 times), so the repetition that audit found is this
+same phenomenon seen from the other end.
+
+The composition of the blocked camps says what is happening:
+
+| own | foreign | empty | camps |
+|---|---|---|---|
+| 8 | 1 | 1 | 149 |
+| 9 | 1 | 0 | **17** |
+| 7 | 2 | 1 | 10 |
+
+**The blocked camp belongs to the player who is about to win.** It already holds
+eight or nine of that player's ten pieces. One enemy piece sits in a remaining
+cell, and in 17 games the camp is completely full -- nine own pieces plus one
+enemy, no empty cell at all.
+
+**The blocker cannot leave.** Not once in 186 cases did it have a legal move. It
+is not being retained by a losing player choosing to hold ground; it is
+*entombed*, surrounded by the pieces of the player whose camp it is sitting in.
+Blockers cluster in eight cells of the board, with 58, 48 and 57 accounting for
+162 of 186 -- the deep corners of the target camps, filled last and sealed by
+the owner's own advance.
+
+So the mechanism is the exact opposite of a losing side stonewalling. The
+winning side advances its pieces home, seals an enemy piece that wandered in
+early into a corner it can no longer step or jump out of, and `has_finished`
+then requires all ten cells to hold the owner's own piece:
 
 ```cpp
 for (int i = 0; i < kCampSize; ++i)
     if (state.occupancy[target[i]] != spec.id) return false;
 ```
 
-This is the classic Chinese-checkers blocking problem. A single opponent piece
-resting in a target camp makes that camp unfillable, and the game
-unterminable -- regardless of how well either side plays. There is no
-anti-blocking provision anywhere in the rules: no vacate obligation, no
-"filled including opponent pieces" clause, no draw adjudication.
+The winner cannot satisfy it, the loser cannot move the piece that would let
+them, and no other seat can finish either. The game has no reachable terminal
+state, and the remaining pieces shuffle until the cap -- which is what produces
+the short-cycle repetition in every one of these games.
 
-A stronger network is *more* likely to find this, because refusing to lose is
-worth as much as winning when the alternative is a loss. That would produce
-precisely the observed signature: sharper play in the games that resolve, and a
-growing fraction that cannot resolve at all.
+This also explains why search budget does not help. 128 -> 256 simulations
+recovered 4.4 points and plateaued because deeper search cannot reach a terminal
+state that does not exist. Whatever those 4.4 points are, they are games that
+avoided the trap, not games that escaped it.
 
-**This is a hypothesis.** It has not been confirmed, and confirming it means
-inspecting the final positions of aborted games for opponent pieces in target
-camps. The episode artifact is binary and there is no tool that dumps a final
-position; that tool is the next step.
+An earlier draft of this document, and the framing that prompted the
+investigation, both supposed a *strategic* block held by the losing side. The
+data rules that out: a retained block requires a mobile blocker, and there were
+none.
 
-Note what it would *not* be: the rules are frozen and parity-gated against the
-Python oracle (`tests/golden/`), so if this is the mechanism it is inherent game
-semantics that the historical measurement shared, not something the native
-migration introduced. In that case the difference between 98 % and 77 % has to
-come from the actor's behaviour meeting an unchanged rule, which is consistent
-with step 44250 being a later and stronger checkpoint than any measured in §7.
+## What this is, and what to do about it
+
+This is not a native-migration regression. The rules are frozen and parity-gated
+against the Python oracle, so the historical measurement ran the same
+`has_finished`. What changed is the actor: step 44250 finishes its games -- p50
+61 moves against the reference's 65 -- and driving that many pieces home that
+fast is precisely what seals an enemy piece into the camp. **A stronger network
+meets this rule more often.** That is consistent with 97.7-98.3 % at step
+~34,650-38,250 and 77 % at step 44,250 with no code change between them.
+
+Three readings, and they need separating before anything is changed:
+
+1. **Intended Diamond strategy.** If leaving a piece in an opponent's camp is a
+   legitimate spoiling tactic in this game, then the rules are right and the
+   training configuration has to tolerate it.
+2. **A long-standing design flaw.** Standard Chinese-checkers rule sets
+   generally do address this -- a camp counts as complete when full if at least
+   one piece is the owner's, or a piece may not remain in a foreign camp. This
+   rule set has no such provision, and the failure is invisible until a player
+   is strong enough to cause it.
+3. **A missing termination/draw definition.** Even if the position is legal, a
+   game with no reachable terminal state needs an adjudicated outcome rather
+   than a move cap, because a capped game contributes zero training samples and
+   is deleted from the replay.
+
+Reading 3 is the one that bites training regardless of how 1 and 2 are decided:
+23 % of games currently produce no data at all, and they are systematically the
+games where one side had nearly won.
+
+**Do not change the rules from this evidence alone.** Changing `has_finished`
+changes game semantics, invalidates `tests/golden/`, and breaks parity with the
+oracle those fixtures came from. The decision belongs to whoever owns the game
+definition.
 
 ## What must happen before tuning resumes
 
-1. **Dump the final position of aborted games** and count opponent pieces in
-   target camps. Confirms or kills the hypothesis in one measurement.
-2. **Measure an earlier checkpoint** on the identical harness. If step ~38,250
-   reproduces 98 % where 44250 gives 77 %, the behaviour is the actor's and the
-   rules gap is being newly exploited rather than newly present.
-3. Only then decide whether the answer is a rules change (an anti-blocking
-   provision, or draw adjudication), a training change, or an accepted property
-   with `max_moves` sized accordingly.
+1. **Decide which of the three readings above applies.** That is a game-design
+   decision, not an engineering one.
+2. **Measure an earlier checkpoint** on this identical harness. If step ~38,250
+   reproduces 97-98 % where 44,250 gives 77 %, it confirms the rule was always
+   there and strength is what exposes it.
+3. Only then size `max_moves`, or add adjudication, or change the rule.
 
-Do not tune scheduler parameters against this workload in the meantime.
-Roughly a fifth of its games are pathological, and any samples/hour figure
-measured on it is measuring the pathology as much as the pipeline.
+Do not tune scheduler parameters against this workload in the meantime. Roughly
+a fifth of its games are pathological, and any samples/hour figure measured on
+it is measuring the pathology as much as the pipeline.
 
 ## Incidental: the operating point is far better than acceptance
 

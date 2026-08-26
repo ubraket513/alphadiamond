@@ -254,6 +254,15 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
                 record.samples.push_back(sample_from_move(move, episode, request.compatibility));
             result.new_samples += record.samples.size();
         }
+        if (!episode.completed) {
+            AbortedGameDiagnostics aborted;
+            aborted.game_id = record.game_id;
+            aborted.seed = record.seed;
+            aborted.move_count = record.move_count;
+            aborted.abort_reason = record.aborted_reason;
+            aborted.state = episode.diagnostics;
+            result.aborted_diagnostics.push_back(std::move(aborted));
+        }
         result.episodes.push_back(std::move(record));
     }
 
@@ -272,6 +281,19 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
             result.metrics.completed_moves_p90 = quantile(0.90);
             result.metrics.completed_moves_p99 = quantile(0.99);
             result.metrics.completed_moves_max = completed_moves.back();
+        }
+    }
+
+    for (std::size_t index = 0; index < episodes.size(); ++index) {
+        uint64_t blocked_cells = 0;
+        for (const auto& camp : episodes[index].diagnostics.camps)
+            blocked_cells += camp.foreign_in_target;
+        if (blocked_cells == 0) continue;
+        if (episodes[index].completed) {
+            ++result.metrics.completed_with_blocked_camp;
+        } else {
+            ++result.metrics.aborted_with_blocked_camp;
+            result.metrics.aborted_blocked_cells_total += blocked_cells;
         }
     }
 

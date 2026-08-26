@@ -8,6 +8,7 @@
 // lane to the batcher and immediately look for another runnable one.
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -115,6 +116,36 @@ struct EpisodeMove {
     int32_t selected_action = 0;          // canonical
 };
 
+// Per-seat state of a target camp at the moment a game stopped.
+struct CampDiagnostics {
+    uint8_t player_id = 0;
+    uint8_t target_camp = 0;
+    uint8_t own_in_target = 0;      // cells of the camp holding the owner's piece
+    uint8_t foreign_in_target = 0;  // cells holding somebody else's piece
+    uint8_t empty_in_target = 0;    // cells holding nothing
+    // Board cells of the camp occupied by a foreign piece, and how many legal
+    // moves each of those pieces had. A blocker with zero legal moves is stuck;
+    // a blocker with legal moves that stayed put is being retained.
+    std::vector<uint8_t> blocker_cells;
+    std::vector<uint8_t> blocker_owners;
+    std::vector<uint16_t> blocker_legal_moves;
+    // Plies since any cell of this camp last changed hands. A large value with
+    // a mobile blocker is the signature of a held block.
+    uint32_t plies_since_camp_changed = 0;
+};
+
+struct EpisodeDiagnostics {
+    uint8_t current_player = 0;
+    std::vector<uint8_t> occupancy;
+    std::vector<CampDiagnostics> camps;  // indexed by seat
+    // Position repetition over the whole game, keyed on dynamics_key: the
+    // physical state, deliberately excluding turn_number.
+    uint32_t unique_positions = 0;
+    uint32_t max_revisits = 0;
+    // The tail of the game, newest last, so a short cycle is visible directly.
+    std::vector<uint64_t> recent_keys;
+};
+
 struct Episode {
     std::vector<EpisodeMove> moves;
     std::vector<uint8_t> finish_order;
@@ -127,6 +158,17 @@ struct Episode {
     // Set when the game's own monotonic deadline elapsed. This is deliberately
     // distinct from the move limit and caller cancellation.
     bool max_game_seconds_exceeded = false;
+    // Why a game did not terminate.
+    //
+    // A seat finishes only when every cell of its target camp holds its own
+    // piece, so a foreign piece resting there blocks that camp. That alone
+    // proves nothing -- a blocker is free to leave -- so what has to be
+    // distinguished is a transient occupation from a *retained* one: a blocker
+    // that can move, does not, while the position cycles. These fields carry
+    // exactly what that classification needs, and are filled for completed
+    // games too, since the blocked counts only mean something against that
+    // baseline.
+    EpisodeDiagnostics diagnostics;
 };
 
 struct EpisodeConfig {

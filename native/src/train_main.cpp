@@ -780,6 +780,59 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                                           {"completed_moves_max",
                                            Json{static_cast<int64_t>(m.completed_moves_max)}}}}},
                 }});
+
+            // Every aborted game, in full, so the non-terminating tail can be
+            // classified rather than guessed at. Diagnostic sidecar: nothing
+            // reads it back and no gate depends on it.
+            Array aborted_games;
+            for (const auto& aborted : result.aborted_diagnostics) {
+                Array occupancy;
+                for (const uint8_t cell : aborted.state.occupancy)
+                    occupancy.emplace_back(Json{static_cast<int64_t>(cell)});
+                Array camps;
+                for (const auto& camp : aborted.state.camps) {
+                    Array blockers;
+                    for (std::size_t b = 0; b < camp.blocker_cells.size(); ++b) {
+                        blockers.emplace_back(Json{Object{
+                            {"cell", Json{static_cast<int64_t>(camp.blocker_cells[b])}},
+                            {"owner", Json{static_cast<int64_t>(camp.blocker_owners[b])}},
+                            {"legal_moves",
+                             Json{static_cast<int64_t>(camp.blocker_legal_moves[b])}}}});
+                    }
+                    camps.emplace_back(Json{Object{
+                        {"player_id", Json{static_cast<int64_t>(camp.player_id)}},
+                        {"target_camp", Json{static_cast<int64_t>(camp.target_camp)}},
+                        {"own_in_target", Json{static_cast<int64_t>(camp.own_in_target)}},
+                        {"foreign_in_target", Json{static_cast<int64_t>(camp.foreign_in_target)}},
+                        {"empty_in_target", Json{static_cast<int64_t>(camp.empty_in_target)}},
+                        {"plies_since_camp_changed",
+                         Json{static_cast<int64_t>(camp.plies_since_camp_changed)}},
+                        {"blockers", Json{std::move(blockers)}}}});
+                }
+                Array recent_keys;
+                for (const uint64_t key : aborted.state.recent_keys) {
+                    // As text: these exceed the exact range of a JSON double.
+                    recent_keys.emplace_back(Json{std::to_string(key)});
+                }
+                aborted_games.emplace_back(Json{Object{
+                    {"game_id", Json{aborted.game_id}},
+                    {"seed", Json{static_cast<int64_t>(aborted.seed)}},
+                    {"move_count", Json{static_cast<int64_t>(aborted.move_count)}},
+                    {"abort_reason", Json{aborted.abort_reason}},
+                    {"current_player", Json{static_cast<int64_t>(aborted.state.current_player)}},
+                    {"unique_positions",
+                     Json{static_cast<int64_t>(aborted.state.unique_positions)}},
+                    {"max_revisits", Json{static_cast<int64_t>(aborted.state.max_revisits)}},
+                    {"occupancy", Json{std::move(occupancy)}},
+                    {"camps", Json{std::move(camps)}},
+                    {"recent_keys", Json{std::move(recent_keys)}}}});
+            }
+            write_json(per_iteration / "aborted-games.json",
+                       Json{Object{{"schema_version", Json{int64_t{1}}},
+                                   {"operation_id", Json{operation}},
+                                   {"iteration", Json{static_cast<int64_t>(iteration)}},
+                                   {"max_moves", Json{config.self_play.max_moves}},
+                                   {"aborted", Json{std::move(aborted_games)}}}});
         }
         const auto episodes =
             diamond_pipeline::load_episode_artifact(episodes_path, operation, compatibility);

@@ -68,10 +68,28 @@ struct SelfPlayMetrics {
     // inflated pathological tail -- which look identical in the abort rate
     // alone. Aborted games are excluded because they are all exactly max_moves
     // and would only dilute the percentile.
+    // Non-terminating tail diagnosis: how many aborted games ended with at
+    // least one foreign piece in some seat's target camp, which makes that camp
+    // unfillable and the game unwinnable for its owner. Compared against the
+    // same count over completed games, which is the control.
+    uint64_t aborted_with_blocked_camp = 0;
+    uint64_t completed_with_blocked_camp = 0;
+    uint64_t aborted_blocked_cells_total = 0;
+
     uint64_t completed_moves_p50 = 0;
     uint64_t completed_moves_p90 = 0;
     uint64_t completed_moves_p99 = 0;
     uint64_t completed_moves_max = 0;
+};
+
+// One aborted game, with what it takes to tell a retained block from a
+// transient one. Written to a diagnostic sidecar, never to the replay.
+struct AbortedGameDiagnostics {
+    std::string game_id;
+    uint64_t seed = 0;
+    uint64_t move_count = 0;
+    std::string abort_reason;
+    soo::EpisodeDiagnostics state;
 };
 
 struct SelfPlayResult {
@@ -80,6 +98,7 @@ struct SelfPlayResult {
     std::size_t aborted_games = 0;
     std::size_t new_samples = 0;
     SelfPlayMetrics metrics;
+    std::vector<AbortedGameDiagnostics> aborted_diagnostics;
     std::vector<Episode> episodes;
 };
 

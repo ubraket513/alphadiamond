@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #include "soo/batcher.hpp"
 #include "soo/encoder.hpp"
@@ -406,6 +407,22 @@ struct EpisodeLane {
     EvalOutcome outcome;
     // Which job this lane is currently playing.  A lane outlives its game.
     size_t job_index = 0;
+    // Unconditional position history, kept for diagnosis whether or not the
+    // repetition trigger is configured: how often each position recurred over
+    // the whole game, and the tail of the game so a short cycle is visible.
+    std::unordered_map<uint64_t, uint32_t> key_counts;
+    std::deque<uint64_t> key_tail;
+    // Occupancy of every target camp, and the ply it last changed, so a
+    // retained block can be told from a transient one.
+    std::array<std::array<uint8_t, kCampSize>, kMaxPlayers> camp_snapshot{};
+    std::array<uint32_t, kMaxPlayers> camp_changed_ply{};
+
+    void observe(uint64_t key, uint32_t window) {
+        ++key_counts[key];
+        key_tail.push_back(key);
+        while (key_tail.size() > window) key_tail.pop_front();
+    }
+
     // Dynamics keys of the recent plies, newest last, for the repetition
     // trigger.  Bounded by repeat_window, so this is a handful of integers.
     std::deque<uint64_t> recent;
@@ -485,7 +502,19 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 continue;
             }
             lane.recent.clear();
+            lane.key_counts.clear();
+            lane.key_tail.clear();
+            lane.camp_changed_ply.fill(0);
+            {
+                const Topology& topo = topology();
+                for (uint8_t s = 0; s < match.count; ++s) {
+                    const auto& cells = topo.camp_positions[match.players[s].target_camp];
+                    for (int c = 0; c < kCampSize; ++c)
+                        lane.camp_snapshot[s][c] = lane.state.occupancy[cells[c]];
+                }
+            }
             const uint64_t key = dynamics_key(lane.state);
+            lane.observe(key, 64);
             lane.session.reseed(lane.game_seed);
             lane.session.set_simulations(simulations_for(lane, key, 0));
             if (config.repeat_window > 0) {
@@ -604,11 +633,70 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                     lane.state, match,
                     to_physical_action(move.selected_action, match, lane.state.current_player));
                 ++lane.move_count;
+                lane.observe(dynamics_key(lane.state), 64);
+                {
+                    const Topology& topo = topology();
+                    for (uint8_t s = 0; s < match.count; ++s) {
+                        const auto& cells = topo.camp_positions[match.players[s].target_camp];
+                        for (int c = 0; c < kCampSize; ++c) {
+                            const uint8_t held = lane.state.occupancy[cells[c]];
+                            if (held != lane.camp_snapshot[s][c]) {
+                                lane.camp_snapshot[s][c] = held;
+                                lane.camp_changed_ply[s] = static_cast<uint32_t>(lane.move_count);
+                            }
+                        }
+                    }
+                }
 
                 const bool finished = lane.state.status == kFinished;
                 const bool out_of_moves = lane.move_count >= config.max_moves;
                 if (finished || out_of_moves) {
                     episode.move_count = lane.move_count;
+                    {
+                        // See Episode::diagnostics. Blocker mobility is the
+                        // point: a blocker with no legal move is stuck, one
+                        // with legal moves that stays put is being retained.
+                        auto& diag = episode.diagnostics;
+                        diag.current_player = lane.state.current_player;
+                        diag.occupancy.assign(lane.state.occupancy.begin(),
+                                              lane.state.occupancy.end());
+                        diag.unique_positions = static_cast<uint32_t>(lane.key_counts.size());
+                        for (const auto& [ignored, count] : lane.key_counts) {
+                            (void)ignored;
+                            diag.max_revisits = std::max(diag.max_revisits, count);
+                        }
+                        diag.recent_keys.assign(lane.key_tail.begin(), lane.key_tail.end());
+                        const Topology& topo = topology();
+                        std::array<uint8_t, kBoardSize> destinations{};
+                        std::array<uint8_t, kBoardSize> kinds{};
+                        for (uint8_t s = 0; s < match.count; ++s) {
+                            const auto& spec = match.players[s];
+                            const auto& cells = topo.camp_positions[spec.target_camp];
+                            CampDiagnostics camp;
+                            camp.player_id = spec.id;
+                            camp.target_camp = spec.target_camp;
+                            camp.plies_since_camp_changed = static_cast<uint32_t>(lane.move_count) -
+                                                            lane.camp_changed_ply[s];
+                            for (int c = 0; c < kCampSize; ++c) {
+                                const uint8_t cell = cells[c];
+                                const uint8_t held = lane.state.occupancy[cell];
+                                if (held == 0) {
+                                    ++camp.empty_in_target;
+                                } else if (held == spec.id) {
+                                    ++camp.own_in_target;
+                                } else {
+                                    ++camp.foreign_in_target;
+                                    camp.blocker_cells.push_back(cell);
+                                    camp.blocker_owners.push_back(held);
+                                    const int count = moves_from(lane.state, cell,
+                                                                 destinations.data(), kinds.data());
+                                    camp.blocker_legal_moves.push_back(
+                                        static_cast<uint16_t>(count));
+                                }
+                            }
+                            diag.camps.push_back(std::move(camp));
+                        }
+                    }
                     if (finished) {
                         episode.completed = true;
                         episode.finish_order.assign(
