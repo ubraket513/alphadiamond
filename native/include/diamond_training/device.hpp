@@ -29,4 +29,4 @@ struct ResolvedDevice final {
 DeviceRequest parse_device_request(std::string_view requested);
 ResolvedDevice resolve_device(std::string_view requested);
 
-}  // namespace diamond_training
+} // namespace diamond_training

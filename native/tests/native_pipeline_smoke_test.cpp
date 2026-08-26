@@ -16,8 +16,8 @@
 
 namespace {
 
-diamond_training::TrainingSample training_sample(
-    const diamond_training::Compatibility& compatibility) {
+diamond_training::TrainingSample
+training_sample(const diamond_training::Compatibility& compatibility) {
     diamond_training::TrainingSample sample;
     sample.compatibility = compatibility;
     sample.node_features.assign(73U * 4U, 0.0F);
@@ -50,7 +50,8 @@ std::string replay_manifest(const std::filesystem::path& replay_root) {
     std::filesystem::recursive_directory_iterator entry(replay_root, error);
     const std::filesystem::recursive_directory_iterator end;
     for (; entry != end && !error; entry.increment(error)) {
-        if (entry->path().filename() != "manifest.json") continue;
+        if (entry->path().filename() != "manifest.json")
+            continue;
         std::ifstream input(entry->path(), std::ios::binary);
         REQUIRE(static_cast<bool>(input), "cannot open replay manifest");
         return {std::istreambuf_iterator<char>(input), {}};
@@ -59,7 +60,7 @@ std::string replay_manifest(const std::filesystem::path& replay_root) {
     return {};
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     REQUIRE(argc == 2, "usage: native_pipeline_smoke_test <scratch>");

@@ -164,8 +164,8 @@ diamond_training::Compatibility wire(const ProductionConfig& config) {
     return config.model_name == "Soo" ? diamond_training::Compatibility::soo(config.model_version, network)
                                       : diamond_training::Compatibility::min(config.model_version, network);
 }
-std::optional<std::chrono::steady_clock::duration> selfplay_deadline(
-    const ProductionConfig& config) {
+std::optional<std::chrono::steady_clock::duration>
+selfplay_deadline(const ProductionConfig& config) {
     if (!config.self_play.max_game_seconds || *config.self_play.max_game_seconds <= 0.0)
         return std::nullopt;
     return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -1152,7 +1152,8 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
     const auto config_path = root(request) / "resolved-config.json";
     if (resume) {
         std::ifstream input(config_path, std::ios::binary);
-        if (!input) throw CommandArtifactError("resolved run config is missing");
+        if (!input)
+            throw CommandArtifactError("resolved run config is missing");
         const std::string stored((std::istreambuf_iterator<char>(input)), {});
         try {
             if (diamond_support::canonical_json(diamond_support::parse_json(stored)) !=
@@ -1166,14 +1167,20 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
             throw CommandArtifactError("resolved run config is invalid");
         }
     }
-    const auto initial = resume ? store.load(request.model_name, request.run_id) :
-        store.initialize(diamond_orchestration::RunState::initialize(request.run_id,
-            Object{{"model_name", Json{compatibility.model_name}}, {"model_version", Json{compatibility.model_version}},
-                   {"player_count", Json{static_cast<int64_t>(compatibility.player_count)}},
-                   {"value_semantics_version", Json{compatibility.value_semantics_version}},
-                   {"resolved_config_sha256", Json{config_sha256}}},
-            Object{{"pipeline", Json{"native-pipeline-v2"}},
-                   {"rating", Json{request.model_name == "Soo" ? "soo-elo-v1" : "min-trueskill-v1"}}}, config.run_seed));
+    const auto initial =
+        resume
+            ? store.load(request.model_name, request.run_id)
+            : store.initialize(diamond_orchestration::RunState::initialize(
+                  request.run_id,
+                  Object{{"model_name", Json{compatibility.model_name}},
+                         {"model_version", Json{compatibility.model_version}},
+                         {"player_count", Json{static_cast<int64_t>(compatibility.player_count)}},
+                         {"value_semantics_version", Json{compatibility.value_semantics_version}},
+                         {"resolved_config_sha256", Json{config_sha256}}},
+                  Object{{"pipeline", Json{"native-pipeline-v2"}},
+                         {"rating",
+                          Json{request.model_name == "Soo" ? "soo-elo-v1" : "min-trueskill-v1"}}},
+                  config.run_seed));
     if (!resume) {
         write_json(config_path, canonical_config);
         persist_initialization(effective_request);
@@ -1190,14 +1197,15 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
     std::optional<std::chrono::steady_clock::time_point> deadline;
     if (config.run_budget.max_wall_clock_seconds) {
         deadline = std::chrono::steady_clock::now() +
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<double>(*config.run_budget.max_wall_clock_seconds));
+                   std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                       std::chrono::duration<double>(*config.run_budget.max_wall_clock_seconds));
     }
     const auto complete = coordinator.run_bounded(initial, max_iterations, deadline);
     const auto result = aggregate_result(effective_request);
     const auto completed_iterations =
         std::get<int64_t>(complete.payload().at("iteration").value) + 1;
-    return {{"run_id", Json{complete.run_id()}}, {"stage", Json{"COMPLETE"}},
+    return {{"run_id", Json{complete.run_id()}},
+            {"stage", Json{"COMPLETE"}},
             {"completed_iterations", Json{completed_iterations}},
             {"completed_games", Json{static_cast<int64_t>(result.games)}},
             {"config_sha256", Json{config_sha256}},
@@ -1222,7 +1230,8 @@ Object evaluate(const CommandRequest& request, const ProductionConfig& config,
     try {
         candidate_info = diamond_training::inspect_checkpoint_v2(candidate_path);
         champion_info = diamond_training::inspect_checkpoint_v2(champion_path);
-        candidate_key = candidate.install_checkpoint(compatibility, candidate_path, candidate_model);
+        candidate_key =
+            candidate.install_checkpoint(compatibility, candidate_path, candidate_model);
         champion_key = champion.install_checkpoint(compatibility, champion_path, champion_model);
         candidate.activate(candidate_key);
         champion.activate(champion_key);
@@ -1448,7 +1457,8 @@ Object report(const CommandRequest& request) {
 Object service(const CommandRequest& request, const ProductionConfig& config) {
     // Reporting is read-only and must remain available when inspecting a run
     // created on a different device class than the current host.
-    if (request.command == "report") return report(request);
+    if (request.command == "report")
+        return report(request);
 
     const auto resolved = [&] {
         try {
@@ -1461,9 +1471,12 @@ Object service(const CommandRequest& request, const ProductionConfig& config) {
     auto canonical_config = config;
     canonical_config.runtime.device = resolved.canonical_name;
     Object details;
-    if (request.command == "train") details = train(request, canonical_config, false, resolved);
-    else if (request.command == "resume") details = train(request, canonical_config, true, resolved);
-    else details = evaluate(request, canonical_config, resolved);
+    if (request.command == "train")
+        details = train(request, canonical_config, false, resolved);
+    else if (request.command == "resume")
+        details = train(request, canonical_config, true, resolved);
+    else
+        details = evaluate(request, canonical_config, resolved);
     details.emplace("requested_device", Json{resolved.requested_name});
     details.emplace("canonical_device", Json{resolved.canonical_name});
     return details;

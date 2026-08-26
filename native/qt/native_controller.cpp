@@ -412,7 +412,8 @@ QString NativeController::resolvedAiPlayerName() const {
 #ifdef DIAMOND_QT_HAS_SOO
     if (match_.count == 2) {
         const QString label = model_catalog_->activeModelLabel();
-        if (!label.isEmpty() && label != QStringLiteral("None")) return label;
+        if (!label.isEmpty() && label != QStringLiteral("None"))
+            return label;
         return QStringLiteral("Soo AlphaZero");
     }
     return QStringLiteral("Native fallback");
@@ -485,7 +486,8 @@ QString NativeController::playerColor(uint8_t id) const {
 }
 
 QString NativeController::playerName(uint8_t id) const {
-    if (ai_seats_.contains(id) && !ai_player_name_.isEmpty()) return ai_player_name_;
+    if (ai_seats_.contains(id) && !ai_player_name_.isEmpty())
+        return ai_player_name_;
     return QStringLiteral("Player %1").arg(id);
 }
 
@@ -568,8 +570,9 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
     }
     ai_seats_ = aiSeats;
     ai_player_name_ = resolvedAiPlayerName();
-    rating_game_id_ = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddhhmmsszzz"))
-        + QLatin1Char('-') + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    rating_game_id_ =
+        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddhhmmsszzz")) +
+        QLatin1Char('-') + QUuid::createUuid().toString(QUuid::WithoutBraces);
     rating_eligible_ = true;
     rating_event_attempted_ = false;
     rating_note_.clear();
@@ -758,12 +761,17 @@ bool NativeController::loadGame(const QUrl& path) {
             const bool is_ai = ai_seats_.contains(player);
             QStringList path_parts;
             for (uint8_t position : canonical) path_parts.push_back(QString::number(position));
-            history_.push_back(QVariantMap{{"turnNumber", entry.value("turn_number").toInt()},
-                {"playerId", player}, {"playerLabel", playerName(player)},
-                {"playerColor", playerColor(player)}, {"isAi", is_ai},
+            history_.push_back(QVariantMap{
+                {"turnNumber", entry.value("turn_number").toInt()},
+                {"playerId", player},
+                {"playerLabel", playerName(player)},
+                {"playerColor", playerColor(player)},
+                {"isAi", is_ai},
                 {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
-                {"pathText", path_parts.join(QStringLiteral(" → "))}, {"pathIds", path_ids},
-                {"source", source}, {"destination", destination},
+                {"pathText", path_parts.join(QStringLiteral(" → "))},
+                {"pathIds", path_ids},
+                {"source", source},
+                {"destination", destination},
                 {"kind", kind == soo::kJump ? QStringLiteral("jump") : QStringLiteral("step")},
                 {"hopCount", std::max(1, static_cast<int>(canonical.size()) - 1)}});
             last_action_ = action;
@@ -1045,14 +1053,18 @@ void NativeController::commitAction(int32_t action) {
     appendTelemetryForCommit(player, action);
     state_history_.push_back(state_);
     state_ = soo::apply_action(state_, match_, action);
-    history_.push_back(QVariantMap{{"turnNumber", state_.turn_number - 1},
-        {"playerId", player}, {"playerLabel", playerName(player)},
-        {"playerColor", playerColor(player)}, {"isAi", was_ai},
+    history_.push_back(QVariantMap{
+        {"turnNumber", state_.turn_number - 1},
+        {"playerId", player},
+        {"playerLabel", playerName(player)},
+        {"playerColor", playerColor(player)},
+        {"isAi", was_ai},
         {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
-        {"pathText", path_text}, {"pathIds", path_ids}, {"source", source},
-        {"destination", destination}, {"kind", move_kind == soo::kJump
-                                                       ? QStringLiteral("jump")
-                                                       : QStringLiteral("step")},
+        {"pathText", path_text},
+        {"pathIds", path_ids},
+        {"source", source},
+        {"destination", destination},
+        {"kind", move_kind == soo::kJump ? QStringLiteral("jump") : QStringLiteral("step")},
         {"hopCount", std::max(1, static_cast<int>(path.size()) - 1)}});
     last_action_ = action;
     status_message_ = QStringLiteral("Move committed.");
@@ -1110,7 +1122,8 @@ void NativeController::finishMove() {
         recordTerminalRating();
         ai_status_ = QStringLiteral("Idle");
         status_message_ = QStringLiteral("Game over — %1").arg(resultSummary());
-        if (!rating_note_.isEmpty()) status_message_ += QStringLiteral(" %1").arg(rating_note_);
+        if (!rating_note_.isEmpty())
+            status_message_ += QStringLiteral(" %1").arg(rating_note_);
         Q_EMIT changed();
         Q_EMIT gameFinished(winnerId());
         return;
@@ -1128,11 +1141,14 @@ void NativeController::finishMove() {
 }
 
 void NativeController::recordTerminalRating() {
-    if (rating_event_attempted_) return;
+    if (rating_event_attempted_)
+        return;
     rating_event_attempted_ = true;
-    if (!rating_eligible_) return;
+    if (!rating_eligible_)
+        return;
     if (match_.count != 2 || ai_seats_.size() != 1) {
-        rating_note_ = QStringLiteral("Rating not recorded: requires one model and one local human.");
+        rating_note_ =
+            QStringLiteral("Rating not recorded: requires one model and one local human.");
         return;
     }
     const int ai_seat = ai_seats_.constFirst().toInt();

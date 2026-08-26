@@ -232,8 +232,8 @@ RunResult run_once(const Options& options, const std::filesystem::path& root,
         throw std::runtime_error("cannot reset end-to-end scratch: " + cleanup_error.message());
     std::filesystem::create_directories(root);
 
-    const auto compatibility = diamond_training::Compatibility::soo(
-        "benchmark-v1", {.residual_blocks = 1, .width = 8});
+    const auto compatibility =
+        diamond_training::Compatibility::soo("benchmark-v1", {.residual_blocks = 1, .width = 8});
     const soo::Match match = make_match();
     const soo::State opening = one_move_finish(match);
     const auto replay_root = root / "replay";

@@ -18,6 +18,9 @@
 
 #include <ATen/DeviceAccelerator.h>
 #include <c10/core/Event.h>
+#if defined(DIAMOND_TORCH_WITH_CUDA)
+#include <c10/cuda/CUDACachingAllocator.h>
+#endif
 
 #include "diamond_support/json.hpp"
 
@@ -69,7 +72,8 @@ double event_seconds(const c10::Event& start, const c10::Event& end) {
 }
 
 size_t checked_count(int64_t value, const char* name) {
-    if (value <= 0) throw std::invalid_argument(std::string(name) + " must be positive");
+    if (value <= 0)
+        throw std::invalid_argument(std::string(name) + " must be positive");
     if (static_cast<uint64_t>(value) > std::numeric_limits<size_t>::max())
         throw std::invalid_argument(std::string(name) + " is too large");
     return static_cast<size_t>(value);
@@ -146,10 +150,11 @@ void validate_resolved_device(const ResolvedDevice& device) {
 
 void require_tensor_device(const torch::Tensor& tensor, const torch::Device& expected,
                            const std::string& name) {
-    if (!tensor.defined()) throw std::invalid_argument(name + " is undefined");
+    if (!tensor.defined())
+        throw std::invalid_argument(name + " is undefined");
     if (tensor.device() != expected) {
-        throw std::invalid_argument(name + " is on " + tensor.device().str() +
-                                    ", expected " + expected.str());
+        throw std::invalid_argument(name + " is on " + tensor.device().str() + ", expected " +
+                                    expected.str());
     }
 }
 
@@ -158,8 +163,7 @@ void require_model_device(const diamond_model::DiamondModel& model, const torch:
         throw std::invalid_argument("learner has no parameters");
     }
     for (const auto& parameter : model->named_parameters()) {
-        require_tensor_device(parameter.value(), expected,
-                              "learner parameter " + parameter.key());
+        require_tensor_device(parameter.value(), expected, "learner parameter " + parameter.key());
     }
     for (const auto& buffer : model->named_buffers()) {
         require_tensor_device(buffer.value(), expected, "learner buffer " + buffer.key());
@@ -168,7 +172,8 @@ void require_model_device(const diamond_model::DiamondModel& model, const torch:
 
 torch::Tensor finite_flag(std::span<const torch::Tensor> tensors, const torch::Device& expected,
                           const char* name) {
-    if (tensors.empty()) throw std::invalid_argument(std::string(name) + " is empty");
+    if (tensors.empty())
+        throw std::invalid_argument(std::string(name) + " is empty");
     torch::Tensor result;
     for (const torch::Tensor& tensor : tensors) {
         require_tensor_device(tensor, expected, name);
@@ -179,7 +184,8 @@ torch::Tensor finite_flag(std::span<const torch::Tensor> tensors, const torch::D
 }
 
 void require_finite_flag(const torch::Tensor& flag, const char* message) {
-    if (!flag.item<bool>()) throw std::invalid_argument(message);
+    if (!flag.item<bool>())
+        throw std::invalid_argument(message);
 }
 
 void require_gradients(const diamond_model::DiamondModel& model, const torch::Device& expected) {
@@ -189,8 +195,7 @@ void require_gradients(const diamond_model::DiamondModel& model, const torch::De
     }
 }
 
-void require_optimizer_state(const torch::optim::AdamW& optimizer,
-                             const torch::Device& expected) {
+void require_optimizer_state(const torch::optim::AdamW& optimizer, const torch::Device& expected) {
     if (optimizer.state().size() != optimizer.size()) {
         throw std::invalid_argument("AdamW state does not cover every learner parameter");
     }
@@ -213,7 +218,8 @@ torch::optim::AdamWOptions adamw_options(const TrainingConfig& config) {
 }
 
 NamedTensors collect_named_tensors(const diamond_model::DiamondModel& model, bool parameters) {
-    if (!model) throw std::invalid_argument("model snapshot source is empty");
+    if (!model)
+        throw std::invalid_argument("model snapshot source is empty");
 
     NamedTensors result;
     const auto named = parameters ? model->named_parameters() : model->named_buffers();
@@ -228,13 +234,15 @@ NamedTensors collect_named_tensors(const diamond_model::DiamondModel& model, boo
 
 torch::Device model_device(const diamond_model::DiamondModel& model) {
     const auto parameters = collect_named_tensors(model, true);
-    if (parameters.empty()) throw std::invalid_argument("model snapshot source has no parameters");
+    if (parameters.empty())
+        throw std::invalid_argument("model snapshot source has no parameters");
     return parameters.begin()->second.device();
 }
 
 void require_expected_architecture(const diamond_model::DiamondModel& model,
-                                  const Compatibility& compatibility) {
-    if (!model) throw std::invalid_argument("model snapshot source is empty");
+                                   const Compatibility& compatibility) {
+    if (!model)
+        throw std::invalid_argument("model snapshot source is empty");
     compatibility.validate();
     if (model->width() != compatibility.network_config.width ||
         model->residual_blocks() != compatibility.network_config.residual_blocks) {
@@ -253,16 +261,16 @@ void require_expected_architecture(const diamond_model::DiamondModel& model,
 }
 
 void require_matching_named_tensors(const NamedTensors& source, const NamedTensors& destination,
-                                   const torch::Device& source_device,
-                                   const torch::Device& destination_device,
-                                   const char* kind) {
+                                    const torch::Device& source_device,
+                                    const torch::Device& destination_device, const char* kind) {
     if (source.size() != destination.size())
         throw std::invalid_argument(std::string("model snapshot ") + kind + " names differ");
 
     for (const auto& [name, source_tensor] : source) {
         const auto destination_it = destination.find(name);
         if (destination_it == destination.end()) {
-            throw std::invalid_argument(std::string("model snapshot is missing ") + kind + ": " + name);
+            throw std::invalid_argument(std::string("model snapshot is missing ") + kind + ": " +
+                                        name);
         }
         const auto& destination_tensor = destination_it->second;
         if (source_tensor.device() != source_device) {
@@ -297,7 +305,8 @@ void append_string(std::string& stream, std::string_view value) {
 
 void append_tensor(std::string& stream, std::string_view kind, const std::string& name,
                    const torch::Tensor& tensor) {
-    if (!tensor.defined()) throw std::invalid_argument("cannot digest an undefined tensor: " + name);
+    if (!tensor.defined())
+        throw std::invalid_argument("cannot digest an undefined tensor: " + name);
     if (tensor.scalar_type() != torch::kFloat32) {
         throw std::invalid_argument("canonical model tensor must be float32: " + name);
     }
@@ -308,7 +317,8 @@ void append_tensor(std::string& stream, std::string_view kind, const std::string
     append_string(stream, "float32");
     append_u64_le(stream, static_cast<uint64_t>(tensor.dim()));
     for (const int64_t dimension : tensor.sizes()) {
-        if (dimension < 0) throw std::invalid_argument("cannot digest a tensor with a negative dimension");
+        if (dimension < 0)
+            throw std::invalid_argument("cannot digest a tensor with a negative dimension");
         append_u64_le(stream, static_cast<uint64_t>(dimension));
     }
 
@@ -320,12 +330,12 @@ void append_tensor(std::string& stream, std::string_view kind, const std::string
         throw std::invalid_argument("canonical model tensor must be finite: " + name);
     }
     const int64_t element_count = cpu.numel();
-    if (element_count < 0 ||
-        static_cast<uint64_t>(element_count) > std::numeric_limits<uint64_t>::max() / sizeof(float)) {
+    if (element_count < 0 || static_cast<uint64_t>(element_count) >
+                                 std::numeric_limits<uint64_t>::max() / sizeof(float)) {
         throw std::invalid_argument("model tensor is too large to digest: " + name);
     }
     append_u64_le(stream, static_cast<uint64_t>(element_count) * sizeof(float));
-    const float* values = cpu.data_ptr<float>();  // cpu is explicit; never dereference CUDA storage.
+    const float* values = cpu.data_ptr<float>(); // cpu is explicit; never dereference CUDA storage.
     for (int64_t index = 0; index < element_count; ++index) {
         uint32_t bits = 0;
         std::memcpy(&bits, values + index, sizeof(bits));
@@ -352,9 +362,9 @@ diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& so
         const auto destination_parameters = collect_named_tensors(snapshot, true);
         const auto destination_buffers = collect_named_tensors(snapshot, false);
         require_matching_named_tensors(source_parameters, destination_parameters, source_device,
-                                      target_device, "parameter");
+                                       target_device, "parameter");
         require_matching_named_tensors(source_buffers, destination_buffers, source_device,
-                                      target_device, "buffer");
+                                       target_device, "buffer");
         if (snapshot->adjacency.sizes() != torch::IntArrayRef({6, 73, 73})) {
             throw std::invalid_argument("snapshot adjacency must have shape [6,73,73]");
         }
@@ -368,17 +378,19 @@ diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& so
 
     bool trainable = false;
     switch (role) {
-        case ModelRole::actor:
-        case ModelRole::candidate:
-            break;
-        case ModelRole::learner:
-            trainable = true;
-            break;
-        default:
-            throw std::invalid_argument("unknown model snapshot role");
+    case ModelRole::actor:
+    case ModelRole::candidate:
+        break;
+    case ModelRole::learner:
+        trainable = true;
+        break;
+    default:
+        throw std::invalid_argument("unknown model snapshot role");
     }
-    if (trainable) snapshot->train();
-    else snapshot->eval();
+    if (trainable)
+        snapshot->train();
+    else
+        snapshot->eval();
     for (auto& parameter : snapshot->named_parameters()) {
         parameter.value().set_requires_grad(trainable);
     }
@@ -391,18 +403,18 @@ std::string canonical_model_digest(const diamond_model::DiamondModel& model) {
     const auto parameters = collect_named_tensors(model, true);
     const auto buffers = collect_named_tensors(model, false);
     append_u64_le(stream, static_cast<uint64_t>(parameters.size()));
-    for (const auto& [name, tensor] : parameters) append_tensor(stream, "parameter", name, tensor);
+    for (const auto& [name, tensor] : parameters)
+        append_tensor(stream, "parameter", name, tensor);
     append_u64_le(stream, static_cast<uint64_t>(buffers.size()));
-    for (const auto& [name, tensor] : buffers) append_tensor(stream, "buffer", name, tensor);
+    for (const auto& [name, tensor] : buffers)
+        append_tensor(stream, "buffer", name, tensor);
     return diamond_support::sha256(stream);
 }
 
 Trainer::Trainer(diamond_model::DiamondModel model, Compatibility compatibility,
                  TrainingConfig config, const ResolvedDevice& device)
     : model_(snapshot_model(model, compatibility, device.torch_device, ModelRole::learner)),
-      compatibility_(std::move(compatibility)),
-      config_(config),
-      device_(device),
+      compatibility_(std::move(compatibility)), config_(config), device_(device),
       optimizer_(model_->parameters(), adamw_options(config)) {
     validate_resolved_device(device_);
     require_model_device(model_, device_.torch_device);
@@ -421,9 +433,9 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     const int64_t batch_size = static_cast<int64_t>(samples.size());
     const int64_t input_features = model_->input_features();
     const int64_t value_size = model_->value_size();
-    const size_t feature_count = checked_product(static_cast<size_t>(kHoleCount),
-                                                 checked_count(input_features, "model input features"),
-                                                 "training sample feature width");
+    const size_t feature_count = checked_product(
+        static_cast<size_t>(kHoleCount), checked_count(input_features, "model input features"),
+        "training sample feature width");
     const size_t value_count = checked_count(value_size, "model value size");
     const size_t batch_count = static_cast<size_t>(batch_size);
     for (const TrainingSample& sample : samples) {
@@ -433,7 +445,8 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     std::vector<float> feature_buffer(
         checked_product(batch_count, feature_count, "training feature buffer"));
     std::vector<float> policy_buffer(
-        checked_product(batch_count, static_cast<size_t>(kActionCount), "training policy buffer"), 0.0F);
+        checked_product(batch_count, static_cast<size_t>(kActionCount), "training policy buffer"),
+        0.0F);
     std::vector<float> value_buffer(
         checked_product(batch_count, value_count, "training value buffer"));
 
@@ -442,8 +455,8 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
         const size_t batch_offset = static_cast<size_t>(batch);
         std::memcpy(feature_buffer.data() + batch_offset * feature_count,
                     sample.node_features.data(), feature_count * sizeof(float));
-        std::memcpy(value_buffer.data() + batch_offset * value_count,
-                    sample.value_target.data(), value_count * sizeof(float));
+        std::memcpy(value_buffer.data() + batch_offset * value_count, sample.value_target.data(),
+                    value_count * sizeof(float));
         for (const auto& [action, probability] : sample.sparse_policy) {
             policy_buffer[batch_offset * static_cast<size_t>(kActionCount) +
                           static_cast<size_t>(action)] = probability;
@@ -453,10 +466,10 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     const auto host_options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
     const auto host_features = torch::from_blob(
         feature_buffer.data(), {batch_size, kHoleCount, input_features}, host_options);
-    const auto host_policy_targets = torch::from_blob(
-        policy_buffer.data(), {batch_size, kActionCount}, host_options);
-    const auto host_value_targets = torch::from_blob(
-        value_buffer.data(), {batch_size, value_size}, host_options);
+    const auto host_policy_targets =
+        torch::from_blob(policy_buffer.data(), {batch_size, kActionCount}, host_options);
+    const auto host_value_targets =
+        torch::from_blob(value_buffer.data(), {batch_size, value_size}, host_options);
     if (!host_features.is_contiguous() || !host_policy_targets.is_contiguous() ||
         !host_value_targets.is_contiguous()) {
         throw std::invalid_argument("training host tensors must be contiguous");
@@ -467,14 +480,16 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     const bool is_cuda = device_.torch_device.is_cuda();
     const c10::DeviceIndex device_index = device_.torch_device.index();
     bool peak_cuda_memory_available = false;
+#if defined(DIAMOND_TORCH_WITH_CUDA)
     if (is_cuda) {
         try {
-            at::accelerator::resetPeakStats(device_index);
+            c10::cuda::CUDACachingAllocator::resetPeakStats(device_index);
             peak_cuda_memory_available = true;
         } catch (const c10::Error&) {
             peak_cuda_memory_available = false;
         }
     }
+#endif
 
     std::optional<AcceleratorStepEvents> events;
     if (is_cuda) {
@@ -486,13 +501,15 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     auto policy_targets = host_policy_targets.to(device_.torch_device);
     auto value_targets = host_value_targets.to(device_.torch_device);
     const auto h2d_end = StepClock::now();
-    if (events) events->h2d_end.record(events->stream);
+    if (events)
+        events->h2d_end.record(events->stream);
     require_tensor_device(features, device_.torch_device, "training features");
     require_tensor_device(policy_targets, device_.torch_device, "training policy targets");
     require_tensor_device(value_targets, device_.torch_device, "training value targets");
 
     optimizer_.zero_grad();
-    if (events) events->forward_start.record(events->stream);
+    if (events)
+        events->forward_start.record(events->stream);
     const auto forward_start = StepClock::now();
     auto [policy_logits, predicted_values] = model_->forward(features);
     require_tensor_device(policy_logits, device_.torch_device, "learner policy logits");
@@ -505,20 +522,24 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     auto value_loss = torch::mse_loss(predicted_values, value_targets);
     auto total_loss = policy_loss + value_loss;
     const std::array forward_tensors{policy_loss, value_loss, total_loss};
-    const auto forward_finite = finite_flag(forward_tensors, device_.torch_device,
-                                            "learner forward tensor");
+    const auto forward_finite =
+        finite_flag(forward_tensors, device_.torch_device, "learner forward tensor");
     const auto forward_end = StepClock::now();
-    if (events) events->forward_end.record(events->stream);
+    if (events)
+        events->forward_end.record(events->stream);
     require_finite_flag(forward_finite, "training produced a non-finite forward result");
 
-    if (events) events->backward_start.record(events->stream);
+    if (events)
+        events->backward_start.record(events->stream);
     const auto backward_start = StepClock::now();
     total_loss.backward();
     require_gradients(model_, device_.torch_device);
     const auto backward_end = StepClock::now();
-    if (events) events->backward_end.record(events->stream);
+    if (events)
+        events->backward_end.record(events->stream);
 
-    if (events) events->optimizer_start.record(events->stream);
+    if (events)
+        events->optimizer_start.record(events->stream);
     const auto optimizer_start = StepClock::now();
     optimizer_.step();
     require_model_device(model_, device_.torch_device);
@@ -532,9 +553,10 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
 
     uint64_t peak_cuda_allocated_bytes = 0;
     uint64_t peak_cuda_reserved_bytes = 0;
+#if defined(DIAMOND_TORCH_WITH_CUDA)
     if (peak_cuda_memory_available) {
         try {
-            const auto stats = at::accelerator::getDeviceStats(device_index);
+            const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device_index);
             constexpr size_t aggregate =
                 static_cast<size_t>(c10::CachingAllocator::StatType::AGGREGATE);
             if (stats.allocated_bytes[aggregate].peak < 0 ||
@@ -543,12 +565,12 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
             }
             peak_cuda_allocated_bytes =
                 static_cast<uint64_t>(stats.allocated_bytes[aggregate].peak);
-            peak_cuda_reserved_bytes =
-                static_cast<uint64_t>(stats.reserved_bytes[aggregate].peak);
+            peak_cuda_reserved_bytes = static_cast<uint64_t>(stats.reserved_bytes[aggregate].peak);
         } catch (const c10::Error&) {
             peak_cuda_memory_available = false;
         }
     }
+#endif
 
     const auto total_end = StepClock::now();
     const double total_step_seconds = seconds_between(total_start, total_end);
@@ -558,8 +580,9 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
 
     const double h2d_seconds = events ? event_seconds(events->h2d_start, events->h2d_end)
                                       : seconds_between(h2d_start, h2d_end);
-    const double forward_seconds = events ? event_seconds(events->forward_start, events->forward_end)
-                                          : seconds_between(forward_start, forward_end);
+    const double forward_seconds = events
+                                       ? event_seconds(events->forward_start, events->forward_end)
+                                       : seconds_between(forward_start, forward_end);
     const double backward_seconds =
         events ? event_seconds(events->backward_start, events->backward_end)
                : seconds_between(backward_start, backward_end);

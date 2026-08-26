@@ -24,18 +24,15 @@
 namespace {
 
 diamond_training::Compatibility soo_compatibility() {
-    return diamond_training::Compatibility::soo(
-        "1.0.0", {.residual_blocks = 1, .width = 8});
+    return diamond_training::Compatibility::soo("1.0.0", {.residual_blocks = 1, .width = 8});
 }
 
 diamond_training::Compatibility min_compatibility() {
-    return diamond_training::Compatibility::min(
-        "1.0.0", {.residual_blocks = 1, .width = 8});
+    return diamond_training::Compatibility::min("1.0.0", {.residual_blocks = 1, .width = 8});
 }
 
 bool same_outcome(const soo::EvalOutcome& left, const soo::EvalOutcome& right) {
-    return left.priors == right.priors && left.value == right.value &&
-           left.values == right.values;
+    return left.priors == right.priors && left.value == right.value && left.values == right.values;
 }
 
 void check_distribution(const soo::EvalOutcome& outcome, std::size_t expected_size) {
@@ -62,8 +59,8 @@ struct BatchFixture final {
 
             const std::size_t legal_count = 1U + (row % 5U);
             for (std::size_t column = 0; column < legal_count; ++column) {
-                actions[row].push_back(static_cast<int32_t>(
-                    (row * 101U + column * 73U) % (73U * 73U)));
+                actions[row].push_back(
+                    static_cast<int32_t>((row * 101U + column * 73U) % (73U * 73U)));
             }
 
             outcomes[row].priors = {-10.0 - static_cast<double>(row)};
@@ -94,10 +91,8 @@ void check_outcomes_unchanged(const std::vector<soo::EvalOutcome>& actual,
 }
 
 template <typename Mutator>
-void expect_rejected_transactionally(diamond_pipeline::ModelPool& pool,
-                                     int feature_count,
-                                     int value_width,
-                                     Mutator mutate) {
+void expect_rejected_transactionally(diamond_pipeline::ModelPool& pool, int feature_count,
+                                     int value_width, Mutator mutate) {
     BatchFixture fixture(2, feature_count, value_width);
     mutate(fixture);
     const auto before = fixture.outcomes;
@@ -140,7 +135,8 @@ void test_residency_contract(const std::filesystem::path& scratch,
     CHECK(actor->parameters().front().device() == device.torch_device);
     CHECK(actor->adjacency.device() == device.torch_device);
     CHECK(!actor->is_training());
-    for (const auto& parameter : actor->parameters()) CHECK(!parameter.requires_grad());
+    for (const auto& parameter : actor->parameters())
+        CHECK(!parameter.requires_grad());
 
     const auto actor_first_parameter = actor->parameters().front().detach().clone();
     const auto actor_adjacency = actor->adjacency.detach().clone();
@@ -153,8 +149,7 @@ void test_residency_contract(const std::filesystem::path& scratch,
     CHECK(torch::equal(actor->parameters().front(), actor_first_parameter));
     CHECK(torch::equal(actor->adjacency, actor_adjacency));
     CHECK(pool.active_key() == first);
-    CHECK(first.checkpoint_sha256 ==
-          diamond_training::canonical_model_digest(pool.active_model()));
+    CHECK(first.checkpoint_sha256 == diamond_training::canonical_model_digest(pool.active_model()));
 
     auto incompatible = resident_compatibility;
     incompatible.model_version = "2.0.0";
@@ -239,7 +234,8 @@ void test_ragged_min(const diamond_training::ResolvedDevice& device) {
     for (std::size_t row = 0; row < fixture.items.size(); ++row) {
         check_distribution(fixture.outcomes[row], fixture.actions[row].size());
         CHECK(fixture.outcomes[row].value == fixture.outcomes[row].values[0]);
-        for (const double value : fixture.outcomes[row].values) CHECK(std::isfinite(value));
+        for (const double value : fixture.outcomes[row].values)
+            CHECK(std::isfinite(value));
     }
     const auto stats = pool.last_evaluation_stats();
     CHECK_EQ(stats.forward_calls, std::size_t{1});
@@ -257,34 +253,32 @@ void test_transactional_rejections(const diamond_training::ResolvedDevice& devic
     BatchFixture successful(1, 4, 1);
     pool.evaluate(successful.items);
 
+    expect_rejected_transactionally(
+        pool, 4, 1, [](BatchFixture& fixture) { fixture.items[1].encoded = nullptr; });
+    expect_rejected_transactionally(
+        pool, 4, 1, [](BatchFixture& fixture) { fixture.items[1].actions = nullptr; });
+    expect_rejected_transactionally(
+        pool, 4, 1, [](BatchFixture& fixture) { fixture.items[1].outcome = nullptr; });
+    expect_rejected_transactionally(
+        pool, 4, 1, [](BatchFixture& fixture) { fixture.encoded[1].feature_count = 3; });
+    expect_rejected_transactionally(
+        pool, 4, 1, [](BatchFixture& fixture) { fixture.encoded[1].node_features.pop_back(); });
     expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.items[1].encoded = nullptr; });
+                                    [](BatchFixture& fixture) { fixture.actions[1].clear(); });
     expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.items[1].actions = nullptr; });
+                                    [](BatchFixture& fixture) { fixture.actions[1] = {1, 1}; });
     expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.items[1].outcome = nullptr; });
+                                    [](BatchFixture& fixture) { fixture.actions[1] = {-1}; });
     expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.encoded[1].feature_count = 3; });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.encoded[1].node_features.pop_back(); });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.actions[1].clear(); });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.actions[1] = {1, 1}; });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.actions[1] = {-1}; });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.actions[1] = {5329}; });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) {
-            fixture.encoded[1].node_features[0] = std::numeric_limits<float>::quiet_NaN();
-        });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) {
-            fixture.encoded[1].node_features[0] = std::numeric_limits<float>::infinity();
-        });
-    expect_rejected_transactionally(pool, 4, 1,
-        [](BatchFixture& fixture) { fixture.items[1].value_width = 3; });
+                                    [](BatchFixture& fixture) { fixture.actions[1] = {5329}; });
+    expect_rejected_transactionally(pool, 4, 1, [](BatchFixture& fixture) {
+        fixture.encoded[1].node_features[0] = std::numeric_limits<float>::quiet_NaN();
+    });
+    expect_rejected_transactionally(pool, 4, 1, [](BatchFixture& fixture) {
+        fixture.encoded[1].node_features[0] = std::numeric_limits<float>::infinity();
+    });
+    expect_rejected_transactionally(
+        pool, 4, 1, [](BatchFixture& fixture) { fixture.items[1].value_width = 3; });
 }
 
 #ifdef DIAMOND_TEST_WITH_CUDA
@@ -303,8 +297,8 @@ void test_cuda_batches(const diamond_training::ResolvedDevice& device) {
             const std::size_t legal_count = 1U + (row % 9U);
             expected_max_legal = std::max(expected_max_legal, legal_count);
             for (std::size_t column = 0; column < legal_count; ++column) {
-                fixture.actions[row].push_back(static_cast<int32_t>(
-                    (row * 101U + column * 73U) % (73U * 73U)));
+                fixture.actions[row].push_back(
+                    static_cast<int32_t>((row * 101U + column * 73U) % (73U * 73U)));
             }
         }
 
@@ -323,12 +317,11 @@ void test_cuda_batches(const diamond_training::ResolvedDevice& device) {
 }
 #endif
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     const bool run_cuda = argc == 3 && std::string_view(argv[2]) == "--cuda";
-    REQUIRE(argc == 2 || run_cuda,
-            "usage: inference_coordinator_test <scratch> [--cuda]");
+    REQUIRE(argc == 2 || run_cuda, "usage: inference_coordinator_test <scratch> [--cuda]");
     const auto scratch = std::filesystem::path(argv[1]);
     std::filesystem::remove_all(scratch);
 

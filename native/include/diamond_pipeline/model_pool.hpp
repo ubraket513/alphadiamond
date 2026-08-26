@@ -48,7 +48,9 @@ class ModelPool final : public soo::BatchEvaluator {
     void require_compatible(const Compatibility& expected) const;
     void require_ready(std::stop_token stop, std::chrono::steady_clock::time_point deadline) const;
     void evaluate(std::vector<soo::BatchItem>& batch) override;
-    EvaluationStats last_evaluation_stats() const noexcept { return last_evaluation_stats_; }
+    EvaluationStats last_evaluation_stats() const noexcept {
+        return last_evaluation_stats_;
+    }
 
   private:
     struct ResidentModel final {

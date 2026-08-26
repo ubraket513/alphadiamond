@@ -16,29 +16,35 @@ int main() {
         require(!soo.record_event(event), "duplicate Soo event is idempotent");
         require(soo.soo_leaderboard().front().participant_id == "soo-a", "Soo leaderboard order");
 
-        const auto identity = make_participant_identity(
-            diamond_support::JsonValue{diamond_support::JsonValue::Object{
-                {"checkpoint_sha256", diamond_support::JsonValue{"abc"}},
-                {"model", diamond_support::JsonValue{"candidate"}}}}, "Canonical candidate");
-        require(identity.participant_id.starts_with("sha256:"), "full participant identity is canonical");
+        const auto identity =
+            make_participant_identity(diamond_support::JsonValue{diamond_support::JsonValue::Object{
+                                          {"checkpoint_sha256", diamond_support::JsonValue{"abc"}},
+                                          {"model", diamond_support::JsonValue{"candidate"}}}},
+                                      "Canonical candidate");
+        require(identity.participant_id.starts_with("sha256:"),
+                "full participant identity is canonical");
 
         RatingRegistry first{"sha256:soo-v2"}, second{"sha256:soo-v2"};
         for (auto* registry : {&first, &second}) {
-            registry->add_participant("a", "A"); registry->add_participant("b", "B");
+            registry->add_participant("a", "A");
+            registry->add_participant("b", "B");
         }
         const auto one = make_soo_rating_event(91, "sha256:soo-v2", {"a", "b"}, {1, 2}, {1, 2},
                                                "opening-1", true, "a", "b", "game-1");
-        const auto one_reassigned = make_soo_rating_event(3, "sha256:soo-v2", {"a", "b"}, {1, 2}, {1, 2},
-                                                          "opening-1", true, "a", "b", "game-1");
+        const auto one_reassigned = make_soo_rating_event(
+            3, "sha256:soo-v2", {"a", "b"}, {1, 2}, {1, 2}, "opening-1", true, "a", "b", "game-1");
         const auto two = make_soo_rating_event(44, "sha256:soo-v2", {"a", "b"}, {1, 2}, {1, 2},
                                                "opening-2", true, "b", "a", "game-2");
         require(one.event_id == one_reassigned.event_id, "v2 event ID ignores assigned sequence");
         require(one.event_id != two.event_id, "distinct stable game IDs do not collapse");
-        require(first.record_event(two) && first.record_event(one), "v2 events accepted in reverse order");
-        require(!first.record_event(one_reassigned), "same v2 event is idempotent across sequence assignment");
-        require(second.record_event(one) && second.record_event(two), "v2 events accepted in forward order");
+        require(first.record_event(two) && first.record_event(one),
+                "v2 events accepted in reverse order");
+        require(!first.record_event(one_reassigned),
+                "same v2 event is idempotent across sequence assignment");
+        require(second.record_event(one) && second.record_event(two),
+                "v2 events accepted in forward order");
         require(std::get<SooRatingEvent>(first.events()[0]).game_id == "game-1" &&
-                std::get<SooRatingEvent>(first.events()[1]).game_id == "game-2",
+                    std::get<SooRatingEvent>(first.events()[1]).game_id == "game-2",
                 "v2 replay order follows the stable sortable game identity");
         require(first.soo_leaderboard()[0].rating == second.soo_leaderboard()[0].rating,
                 "replay is independent of insertion order");
@@ -49,12 +55,18 @@ int main() {
         auto corrupt = two;
         corrupt.opening_id = "different-payload";
         bool conflict_rejected = false;
-        try { first.record_event(corrupt); } catch (const RatingError&) { conflict_rejected = true; }
+        try {
+            first.record_event(corrupt);
+        } catch (const RatingError&) {
+            conflict_rejected = true;
+        }
         require(conflict_rejected, "same event ID with different payload is rejected");
-        const auto aborted_event = make_soo_rating_event(5, "sha256:soo-v2", {"a", "b"}, {1, 2}, {1, 2},
-                                                         "opening-aborted", false, {}, {}, "game-aborted");
+        const auto aborted_event =
+            make_soo_rating_event(5, "sha256:soo-v2", {"a", "b"}, {1, 2}, {1, 2}, "opening-aborted",
+                                  false, {}, {}, "game-aborted");
         require(first.record_event(aborted_event), "aborted event remains audit record");
-        for (const auto& row : first.soo_leaderboard()) require(row.games == 2, "aborted event is unrated");
+        for (const auto& row : first.soo_leaderboard())
+            require(row.games == 2, "aborted event is unrated");
         first.merge(second);
         require(first.events().size() == 3, "merge is semantic union");
 

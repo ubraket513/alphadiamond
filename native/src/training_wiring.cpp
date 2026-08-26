@@ -15,7 +15,7 @@ int native_int(int64_t value, std::string_view field) {
     return static_cast<int>(value);
 }
 
-}  // namespace
+} // namespace
 
 TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) {
     config.validate();
@@ -30,17 +30,15 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
                 .simulations = native_int(config.mcts.simulations, "mcts.simulations"),
                 .max_moves = native_int(config.self_play.max_moves, "self_play.max_moves"),
                 .temperature = config.self_play.temperature,
-                .temperature_moves = native_int(config.self_play.temperature_moves,
-                                                "self_play.temperature_moves"),
+                .temperature_moves =
+                    native_int(config.self_play.temperature_moves, "self_play.temperature_moves"),
                 .dirichlet_alpha = config.mcts.dirichlet_alpha,
                 .dirichlet_epsilon = config.mcts.dirichlet_epsilon,
             },
-        .games_per_iteration =
-            static_cast<std::size_t>(config.workers.games_per_iteration),
+        .games_per_iteration = static_cast<std::size_t>(config.workers.games_per_iteration),
         .training_batch_size = static_cast<std::size_t>(config.training.batch_size),
-        .training_steps =
-            static_cast<std::size_t>(config.training.train_steps_per_iteration),
+        .training_steps = static_cast<std::size_t>(config.training.train_steps_per_iteration),
     };
 }
 
-}  // namespace diamond_orchestration
+} // namespace diamond_orchestration

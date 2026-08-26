@@ -57,7 +57,7 @@ JsonValue::Object report_object(const std::filesystem::path& path) {
     return std::get<JsonValue::Object>(parsed.value);
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     REQUIRE(argc == 3, "usage: cli_contract_test <scratch> <alphadiamond-train>");

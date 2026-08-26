@@ -70,14 +70,13 @@ void check_selected_values(const torch::Tensor& actual, const std::vector<float>
     }
 }
 
-void check_metrics(const diamond_training::TrainingMetrics& metrics, size_t batch_size,
-                   bool cuda) {
+void check_metrics(const diamond_training::TrainingMetrics& metrics, size_t batch_size, bool cuda) {
     CHECK(std::isfinite(metrics.total_loss));
     CHECK(std::isfinite(metrics.policy_loss));
     CHECK(std::isfinite(metrics.value_loss));
-    for (const double duration : {metrics.collation_seconds, metrics.h2d_seconds,
-                                  metrics.forward_seconds, metrics.backward_seconds,
-                                  metrics.optimizer_seconds}) {
+    for (const double duration :
+         {metrics.collation_seconds, metrics.h2d_seconds, metrics.forward_seconds,
+          metrics.backward_seconds, metrics.optimizer_seconds}) {
         CHECK(std::isfinite(duration));
         CHECK(duration >= 0.0);
     }
@@ -123,9 +122,10 @@ void check_optimizer_device(const torch::optim::AdamW& optimizer, const torch::D
         const auto* state = dynamic_cast<const torch::optim::AdamWParamState*>(entry.second.get());
         REQUIRE(state != nullptr, "AdamW state type");
         CHECK(state->step() > 0);
-        for (const auto& tensor : {state->exp_avg(), state->exp_avg_sq(),
-                                  state->max_exp_avg_sq()}) {
-            if (!tensor.defined()) continue;
+        for (const auto& tensor :
+             {state->exp_avg(), state->exp_avg_sq(), state->max_exp_avg_sq()}) {
+            if (!tensor.defined())
+                continue;
             CHECK(tensor.device() == device);
             CHECK(torch::isfinite(tensor).all().item<bool>());
         }
@@ -133,8 +133,8 @@ void check_optimizer_device(const torch::optim::AdamW& optimizer, const torch::D
 }
 
 void check_named_close(const diamond_model::DiamondModel& actual,
-                       const diamond_model::DiamondModel& expected, bool gradients,
-                       float rtol, float atol, const char* name) {
+                       const diamond_model::DiamondModel& expected, bool gradients, float rtol,
+                       float atol, const char* name) {
     const auto actual_parameters = actual->named_parameters();
     const auto expected_parameters = expected->named_parameters();
     REQUIRE(actual_parameters.size() == expected_parameters.size(), name);
@@ -150,9 +150,9 @@ void check_named_close(const diamond_model::DiamondModel& actual,
         if (!torch::allclose(actual_tensor, expected_tensor, rtol, atol)) {
             const float max_difference =
                 (actual_tensor - expected_tensor).abs().max().item<float>();
-            soo_test::fail(__FILE__, __LINE__, std::string(name) + " " +
-                           expected_parameter.key() + " max difference=" +
-                           std::to_string(max_difference));
+            soo_test::fail(__FILE__, __LINE__,
+                           std::string(name) + " " + expected_parameter.key() +
+                               " max difference=" + std::to_string(max_difference));
         }
     }
 }
@@ -335,8 +335,10 @@ void check_role(const diamond_model::DiamondModel& model, bool trainable, const 
 void check_deep_storage(const diamond_model::DiamondModel& original,
                         const diamond_model::DiamondModel& snapshot, bool parameters,
                         const char* name) {
-    const auto original_tensors = parameters ? original->named_parameters() : original->named_buffers();
-    const auto snapshot_tensors = parameters ? snapshot->named_parameters() : snapshot->named_buffers();
+    const auto original_tensors =
+        parameters ? original->named_parameters() : original->named_buffers();
+    const auto snapshot_tensors =
+        parameters ? snapshot->named_parameters() : snapshot->named_buffers();
     REQUIRE(original_tensors.size() == snapshot_tensors.size(), name);
     for (const auto& original_tensor : original_tensors) {
         const auto* copied_tensor = snapshot_tensors.find(original_tensor.key());
@@ -361,18 +363,15 @@ void check_snapshot_isolation(const std::filesystem::path& root) {
         actor, compatibility, torch::Device(torch::kCPU), diamond_training::ModelRole::candidate);
     {
         torch::NoGradGuard no_grad;
-        nonfinite->parameters().front().flatten()[0].fill_(
-            std::numeric_limits<float>::quiet_NaN());
+        nonfinite->parameters().front().flatten()[0].fill_(std::numeric_limits<float>::quiet_NaN());
     }
-    check_invalid_argument(
-        [&] { (void)diamond_training::canonical_model_digest(nonfinite); },
-        "non-finite model digest");
+    check_invalid_argument([&] { (void)diamond_training::canonical_model_digest(nonfinite); },
+                           "non-finite model digest");
     auto wrong_dtype = diamond_training::snapshot_model(
         actor, compatibility, torch::Device(torch::kCPU), diamond_training::ModelRole::candidate);
     wrong_dtype->to(torch::kFloat64);
-    check_invalid_argument(
-        [&] { (void)diamond_training::canonical_model_digest(wrong_dtype); },
-        "non-FP32 model digest");
+    check_invalid_argument([&] { (void)diamond_training::canonical_model_digest(wrong_dtype); },
+                           "non-FP32 model digest");
     const auto actor_first_parameter = actor->parameters().front().detach().clone();
     const auto actor_adjacency = actor->adjacency.detach().clone();
     diamond_training::Trainer trainer(actor, compatibility, parity_config(), cpu_device());
@@ -428,8 +427,8 @@ void check_parity(const std::filesystem::path& root, const std::string& family) 
     const auto expected_losses = read_f32(root / family / "losses.f32");
     const auto expected_after = read_f32(
         root / family / "after_step_parameters/policy_head__source__weight.f32");
-    const auto expected_gradient = read_f32(
-        root / family / "gradients/policy_head__source__weight.f32");
+    const auto expected_gradient =
+        read_f32(root / family / "gradients/policy_head__source__weight.f32");
     const auto expected_resumed_losses = read_f32(root / family / "resumed_losses.f32");
     const auto expected_resumed = read_f32(
         root / family / "resumed_parameters/policy_head__source__weight.f32");
@@ -476,8 +475,8 @@ void check_parity(const std::filesystem::path& root, const std::string& family) 
     check_selected_values(source, expected_resumed, family + " AdamW stateful update");
 }
 
-std::vector<diamond_training::TrainingSample> repeated_samples(
-    const std::vector<diamond_training::TrainingSample>& source, size_t count) {
+std::vector<diamond_training::TrainingSample>
+repeated_samples(const std::vector<diamond_training::TrainingSample>& source, size_t count) {
     REQUIRE(!source.empty(), "repeated training source");
     std::vector<diamond_training::TrainingSample> result;
     result.reserve(count);
@@ -490,8 +489,9 @@ std::vector<diamond_training::TrainingSample> repeated_samples(
 void check_cuda_close(double actual, double expected, const char* name) {
     if (std::fabs(actual - expected) >
         static_cast<double>(kCudaAtol) + static_cast<double>(kCudaRtol) * std::fabs(expected)) {
-        soo_test::fail(__FILE__, __LINE__, std::string(name) + " differs: actual=" +
-                       std::to_string(actual) + " expected=" + std::to_string(expected));
+        soo_test::fail(__FILE__, __LINE__,
+                       std::string(name) + " differs: actual=" + std::to_string(actual) +
+                           " expected=" + std::to_string(expected));
     }
 }
 

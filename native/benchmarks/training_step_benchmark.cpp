@@ -31,13 +31,17 @@ Args parse_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
         if (i + 1 >= argc)
-            throw std::invalid_argument("usage: training_step_benchmark [--artifact DIR] [--device cpu|cuda|cuda:N] [--batch-size N] [--warmups N] [--repetitions N] [--threads N]");
+            throw std::invalid_argument(
+                "usage: training_step_benchmark [--artifact DIR] [--device cpu|cuda|cuda:N] "
+                "[--batch-size N] [--warmups N] [--repetitions N] [--threads N]");
         const std::string value = argv[++i];
         try {
             if (option == "--artifact") args.artifact = value;
-            else if (option == "--device") args.device = value;
+            else if (option == "--device")
+                args.device = value;
             else if (option == "--batch-size") args.batch_size = std::stoull(value);
-            else if (option == "--warmups") args.warmups = std::stoull(value);
+            else if (option == "--warmups")
+                args.warmups = std::stoull(value);
             else if (option == "--repetitions") args.repetitions = std::stoull(value);
             else if (option == "--threads") args.threads = std::stoi(value);
             else throw std::invalid_argument("unknown option");
@@ -79,7 +83,8 @@ int run(int argc, char** argv) {
                                       {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
     const std::vector<diamond_training::TrainingSample> samples(
         static_cast<std::size_t>(args.batch_size), sample(compatibility, artifact.input_features));
-    for (std::uint64_t i = 0; i < args.warmups; ++i) (void)trainer.train(samples);
+    for (std::uint64_t i = 0; i < args.warmups; ++i)
+        (void)trainer.train(samples);
     diamond_training::TrainingMetrics metrics{};
     std::vector<double> seconds;
     seconds.reserve(args.repetitions);

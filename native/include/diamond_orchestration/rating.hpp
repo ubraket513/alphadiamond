@@ -101,8 +101,7 @@ MinRatingEvent make_min_rating_event(uint64_t sequence_index, std::string protoc
                                      std::array<std::string, 3> participant_ids,
                                      std::array<int, 3> seat_assignment,
                                      std::array<int, 3> turn_order, std::string opening_id,
-                                     bool completed,
-                                     std::array<std::string, 3> final_ranking = {},
+                                     bool completed, std::array<std::string, 3> final_ranking = {},
                                      std::string game_id = {},
                                      std::vector<ParticipantIdentity> participant_identities = {});
 
@@ -143,8 +142,12 @@ class RatingRegistry final {
     void rebuild();
 
     const std::vector<std::variant<SooRatingEvent, MinRatingEvent>>& events() const noexcept { return events_; }
-    const EloConfig& elo_config() const noexcept { return elo_; }
-    const TrueSkillConfig& trueskill_config() const noexcept { return trueskill_; }
+    const EloConfig& elo_config() const noexcept {
+        return elo_;
+    }
+    const TrueSkillConfig& trueskill_config() const noexcept {
+        return trueskill_;
+    }
     std::vector<SooLeaderboardEntry> soo_leaderboard() const;
     std::vector<MinLeaderboardEntry> min_leaderboard() const;
     diamond_support::JsonValue report_json() const;

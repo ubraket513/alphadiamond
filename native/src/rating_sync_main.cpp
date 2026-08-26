@@ -16,43 +16,52 @@ using Json = diamond_support::JsonValue;
 using Object = Json::Object;
 using Array = Json::Array;
 
-[[noreturn]] void fail(const std::string& message) { throw std::runtime_error("rating-sync: " + message); }
+[[noreturn]] void fail(const std::string& message) {
+    throw std::runtime_error("rating-sync: " + message);
+}
 
 std::string read_text(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) fail("cannot read " + path.string());
+    if (!input)
+        fail("cannot read " + path.string());
     return {std::istreambuf_iterator<char>(input), {}};
 }
 
 void write_text(const std::filesystem::path& path, const std::string& text) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) fail("cannot write " + path.string());
+    if (!output)
+        fail("cannot write " + path.string());
     output << text;
     output.flush();
-    if (!output) fail("cannot write " + path.string());
+    if (!output)
+        fail("cannot write " + path.string());
 }
 
 const Object& object(const Json& value, const char* what) {
     const auto* result = std::get_if<Object>(&value.value);
-    if (!result) fail(std::string(what) + " must be an object");
+    if (!result)
+        fail(std::string(what) + " must be an object");
     return *result;
 }
 
 const Array& array(const Json& value, const char* what) {
     const auto* result = std::get_if<Array>(&value.value);
-    if (!result) fail(std::string(what) + " must be an array");
+    if (!result)
+        fail(std::string(what) + " must be an array");
     return *result;
 }
 
 const Json& required(const Object& value, const char* name) {
     const auto found = value.find(name);
-    if (found == value.end()) fail(std::string("missing ") + name);
+    if (found == value.end())
+        fail(std::string("missing ") + name);
     return found->second;
 }
 
 const std::string& text(const Json& value, const char* what) {
     const auto* result = std::get_if<std::string>(&value.value);
-    if (!result || result->empty()) fail(std::string(what) + " must be a non-empty string");
+    if (!result || result->empty())
+        fail(std::string(what) + " must be a non-empty string");
     return *result;
 }
 
@@ -73,11 +82,14 @@ struct EventSet final {
 };
 
 EventSet load_events(const std::filesystem::path& directory) {
-    if (!std::filesystem::is_directory(directory)) fail("events directory does not exist: " + directory.string());
+    if (!std::filesystem::is_directory(directory))
+        fail("events directory does not exist: " + directory.string());
     std::vector<std::filesystem::path> paths;
     for (const auto& item : std::filesystem::directory_iterator(directory)) {
-        if (!item.is_regular_file()) continue;
-        if (item.path().extension() != ".json") fail("events directory contains a non-JSON file");
+        if (!item.is_regular_file())
+            continue;
+        if (item.path().extension() != ".json")
+            fail("events directory contains a non-JSON file");
         paths.push_back(item.path());
     }
     std::sort(paths.begin(), paths.end());
@@ -88,11 +100,14 @@ EventSet load_events(const std::filesystem::path& directory) {
         const Json event = diamond_support::parse_json(read_text(path));
         const auto& row = object(event, "event file");
         const std::string id = text(required(row, "event_id"), "event_id");
-        if (!is_event_file_name(path, id)) fail("event filename must be its SHA-256 event ID");
+        if (!is_event_file_name(path, id))
+            fail("event filename must be its SHA-256 event ID");
         const std::string bytes = diamond_support::canonical_json(event);
         const auto [existing, inserted] = bytes_by_id.emplace(id, bytes);
-        if (!inserted && existing->second != bytes) fail("conflicting duplicate event ID: " + id);
-        if (!inserted) fail("duplicate event ID: " + id);
+        if (!inserted && existing->second != bytes)
+            fail("conflicting duplicate event ID: " + id);
+        if (!inserted)
+            fail("duplicate event ID: " + id);
         event_by_id.emplace(id, event);
     }
 
@@ -121,7 +136,8 @@ Json make_output(const diamond_orchestration::RatingRegistry& registry, const Ev
         const auto& participant = object(row, "participant");
         const std::string& id = text(required(participant, "participant_id"), "participant_id");
         const auto found = ratings.find(id);
-        if (found == ratings.end()) fail("participant is absent from leaderboard");
+        if (found == ratings.end())
+            fail("participant is absent from leaderboard");
         Object merged{{"display_name", required(participant, "display_name")},
                       {"full_identity", required(participant, "full_identity")},
                       {"participant_id", required(participant, "participant_id")}};
@@ -131,31 +147,37 @@ Json make_output(const diamond_orchestration::RatingRegistry& registry, const Ev
         } else if (family == "min") {
             for (const char* name : {"exposure", "mu", "rated_games", "sigma"})
                 merged.emplace(name, required(*found->second, name));
-        } else fail("registry reported an unknown family");
+        } else
+            fail("registry reported an unknown family");
         rows.emplace_back(std::move(merged));
     }
 
-    const std::string digest = "sha256:" + diamond_support::sha256(diamond_support::canonical_json(Json{events.ids}));
+    const std::string digest =
+        "sha256:" + diamond_support::sha256(diamond_support::canonical_json(Json{events.ids}));
     Object protocol{{"config", required(report_object, "protocol_config")},
-                     {"family", required(report_object, "family")},
-                     {"id", required(report_object, "protocol_id")}};
-    return Json{Object{{"event_set", Json{Object{{"count", Json{static_cast<int64_t>(events.events.size())}},
-                                                   {"sha256", Json{digest}}}}},
-                       {"protocol", Json{std::move(protocol)}},
-                       {"ratings", Json{std::move(rows)}},
-                       {"schema_version", Json{int64_t{2}}}}};
+                    {"family", required(report_object, "family")},
+                    {"id", required(report_object, "protocol_id")}};
+    return Json{Object{
+        {"event_set", Json{Object{{"count", Json{static_cast<int64_t>(events.events.size())}},
+                                  {"sha256", Json{digest}}}}},
+        {"protocol", Json{std::move(protocol)}},
+        {"ratings", Json{std::move(rows)}},
+        {"schema_version", Json{int64_t{2}}}}};
 }
 
-void promote_atomically(const std::filesystem::path& temporary, const std::filesystem::path& destination) {
+void promote_atomically(const std::filesystem::path& temporary,
+                        const std::filesystem::path& destination) {
     std::error_code error;
     std::filesystem::rename(temporary, destination, error);
-    if (error) fail("cannot atomically promote " + destination.string() + ": " + error.message());
+    if (error)
+        fail("cannot atomically promote " + destination.string() + ": " + error.message());
 }
 
 void usage() {
-    std::cerr << "usage: alphadiamond-rating-sync --protocol <protocol-v2.json> --events-dir <events> --output <ratings.json>\n";
+    std::cerr << "usage: alphadiamond-rating-sync --protocol <protocol-v2.json> --events-dir "
+                 "<events> --output <ratings.json>\n";
 }
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -164,24 +186,38 @@ int main(int argc, char** argv) {
         std::filesystem::path output;
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
-            if ((argument == "--protocol" || argument == "--events-dir" || argument == "--output") && index + 1 < argc) {
+            if ((argument == "--protocol" || argument == "--events-dir" ||
+                 argument == "--output") &&
+                index + 1 < argc) {
                 const std::filesystem::path value = argv[++index];
-                if (argument == "--protocol") protocol = value;
-                else if (argument == "--events-dir") events_directory = value;
-                else output = value;
-            } else { usage(); return 2; }
+                if (argument == "--protocol")
+                    protocol = value;
+                else if (argument == "--events-dir")
+                    events_directory = value;
+                else
+                    output = value;
+            } else {
+                usage();
+                return 2;
+            }
         }
-        if (protocol.empty() || events_directory.empty() || output.empty()) { usage(); return 2; }
-        if (output.parent_path().empty()) output = std::filesystem::current_path() / output;
+        if (protocol.empty() || events_directory.empty() || output.empty()) {
+            usage();
+            return 2;
+        }
+        if (output.parent_path().empty())
+            output = std::filesystem::current_path() / output;
         std::filesystem::create_directories(output.parent_path());
 
         const Json protocol_document = diamond_support::parse_json(read_text(protocol));
         const auto& protocol_root = object(protocol_document, "protocol");
         const auto version = std::get_if<int64_t>(&required(protocol_root, "schema_version").value);
-        if (!version || *version != 2) fail("protocol schema_version must be 2");
-        const Object& protocol_object = protocol_root.contains("registry")
-            ? object(required(protocol_root, "registry"), "protocol registry")
-            : protocol_root;
+        if (!version || *version != 2)
+            fail("protocol schema_version must be 2");
+        const Object& protocol_object =
+            protocol_root.contains("registry")
+                ? object(required(protocol_root, "registry"), "protocol registry")
+                : protocol_root;
         (void)text(required(protocol_object, "family"), "family");
         (void)text(required(protocol_object, "protocol_id"), "protocol_id");
         (void)object(required(protocol_object, "protocol_config"), "protocol_config");
@@ -191,12 +227,14 @@ int main(int argc, char** argv) {
         const auto snapshot = output.parent_path() / temporary_name("rating-sync-input");
         const auto staged_output = output.parent_path() / temporary_name("rating-sync-output");
         try {
-            write_text(snapshot, diamond_support::canonical_json(Json{Object{{"events", Json{events.events}},
-                                                                         {"registry", Json{protocol_object}},
-                                                                         {"schema_version", Json{int64_t{2}}}}}));
+            write_text(snapshot, diamond_support::canonical_json(
+                                     Json{Object{{"events", Json{events.events}},
+                                                 {"registry", Json{protocol_object}},
+                                                 {"schema_version", Json{int64_t{2}}}}}));
             auto registry = diamond_orchestration::load_rating_registry(snapshot);
             registry.rebuild();
-            write_text(staged_output, diamond_support::canonical_json(make_output(registry, events)) + "\n");
+            write_text(staged_output,
+                       diamond_support::canonical_json(make_output(registry, events)) + "\n");
             std::filesystem::remove(snapshot);
             promote_atomically(staged_output, output);
         } catch (...) {

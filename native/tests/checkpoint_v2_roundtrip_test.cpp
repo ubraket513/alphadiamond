@@ -24,12 +24,11 @@ constexpr diamond_training::TrainingConfig kConfig{
 };
 
 diamond_training::Compatibility compatibility() {
-    return diamond_training::Compatibility::soo(
-        "1.0.0", {.residual_blocks = 1, .width = 8});
+    return diamond_training::Compatibility::soo("1.0.0", {.residual_blocks = 1, .width = 8});
 }
 
-diamond_training::TrainingSample sample_for(
-    const diamond_training::Compatibility& sample_compatibility) {
+diamond_training::TrainingSample
+sample_for(const diamond_training::Compatibility& sample_compatibility) {
     diamond_training::TrainingSample sample;
     sample.compatibility = sample_compatibility;
     sample.node_features.assign(73U * 4U, 0.0F);
@@ -54,14 +53,13 @@ void check_tensor_equal(const torch::Tensor& actual, const torch::Tensor& expect
         soo_test::fail(__FILE__, __LINE__, name + " definedness differs");
         return;
     }
-    if (actual.defined() && !torch::equal(actual.detach().to(torch::kCPU),
-                                           expected.detach().to(torch::kCPU))) {
+    if (actual.defined() &&
+        !torch::equal(actual.detach().to(torch::kCPU), expected.detach().to(torch::kCPU))) {
         soo_test::fail(__FILE__, __LINE__, name + " differs");
     }
 }
 
-void check_adamw_equal(const torch::optim::AdamW& actual,
-                       const torch::optim::AdamW& expected) {
+void check_adamw_equal(const torch::optim::AdamW& actual, const torch::optim::AdamW& expected) {
     const auto actual_parameters = actual.param_groups().front().params();
     const auto expected_parameters = expected.param_groups().front().params();
     REQUIRE(actual_parameters.size() == expected_parameters.size(), "AdamW parameter count");
@@ -69,8 +67,10 @@ void check_adamw_equal(const torch::optim::AdamW& actual,
     CHECK_EQ(actual.state().size(), actual_parameters.size());
 
     for (size_t index = 0; index < actual_parameters.size(); ++index) {
-        const auto actual_entry = actual.state().find(actual_parameters[index].unsafeGetTensorImpl());
-        const auto expected_entry = expected.state().find(expected_parameters[index].unsafeGetTensorImpl());
+        const auto actual_entry =
+            actual.state().find(actual_parameters[index].unsafeGetTensorImpl());
+        const auto expected_entry =
+            expected.state().find(expected_parameters[index].unsafeGetTensorImpl());
         REQUIRE(actual_entry != actual.state().end(), "missing restored AdamW state");
         REQUIRE(expected_entry != expected.state().end(), "missing saved AdamW state");
         const auto* actual_state =
@@ -103,8 +103,7 @@ void check_trainer_device_state(diamond_training::Trainer& trainer,
                             "model parameter " + parameter.key());
     }
     for (const auto& buffer : trainer.model()->named_buffers()) {
-        check_tensor_device(buffer.value(), device.torch_device,
-                            "model buffer " + buffer.key());
+        check_tensor_device(buffer.value(), device.torch_device, "model buffer " + buffer.key());
     }
 
     const auto& groups = trainer.optimizer().param_groups();
@@ -114,8 +113,7 @@ void check_trainer_device_state(diamond_training::Trainer& trainer,
     for (const auto& parameter : parameters) {
         const auto entry = trainer.optimizer().state().find(parameter.unsafeGetTensorImpl());
         REQUIRE(entry != trainer.optimizer().state().end(), "missing AdamW state");
-        const auto* state =
-            dynamic_cast<const torch::optim::AdamWParamState*>(entry->second.get());
+        const auto* state = dynamic_cast<const torch::optim::AdamWParamState*>(entry->second.get());
         REQUIRE(state != nullptr, "AdamW state type");
         CHECK_EQ(state->step(), static_cast<int64_t>(trainer.training_step()));
         check_tensor_device(state->exp_avg(), device.torch_device, "AdamW exp_avg");
@@ -139,8 +137,8 @@ void check_cuda_roundtrips(const std::filesystem::path& scratch,
     auto check_restored = [&](const std::filesystem::path& root,
                               const diamond_training::ResolvedDevice& target,
                               const std::string& expected_digest, uint64_t expected_step) {
-        diamond_training::Trainer destination(
-            diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, target);
+        diamond_training::Trainer destination(diamond_model::DiamondModel(8, 1, 4, 1),
+                                              checkpoint_compatibility, kConfig, target);
         const auto loaded = diamond_training::load_checkpoint_v2(root, destination, target);
         CHECK_EQ(loaded.training_step, expected_step);
         CHECK_EQ(destination.training_step(), expected_step);
@@ -150,16 +148,16 @@ void check_cuda_roundtrips(const std::filesystem::path& scratch,
         check_trainer_device_state(destination, target);
     };
 
-    diamond_training::Trainer cpu_source(
-        diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, cpu);
+    diamond_training::Trainer cpu_source(diamond_model::DiamondModel(8, 1, 4, 1),
+                                         checkpoint_compatibility, kConfig, cpu);
     CHECK_EQ(cpu_source.train(samples).training_step, uint64_t{1});
     const auto cpu_digest = diamond_training::canonical_model_digest(cpu_source.model());
     const auto cpu_checkpoint = scratch / "cpu-to-cuda";
     (void)diamond_training::save_checkpoint_v2(cpu_checkpoint, cpu_source);
     check_restored(cpu_checkpoint, cuda, cpu_digest, cpu_source.training_step());
 
-    diamond_training::Trainer cuda_source(
-        diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, cuda);
+    diamond_training::Trainer cuda_source(diamond_model::DiamondModel(8, 1, 4, 1),
+                                          checkpoint_compatibility, kConfig, cuda);
     CHECK_EQ(cuda_source.train(samples).training_step, uint64_t{1});
     const auto cuda_digest = diamond_training::canonical_model_digest(cuda_source.model());
     const auto cuda_checkpoint = scratch / "cuda-source";
@@ -169,12 +167,11 @@ void check_cuda_roundtrips(const std::filesystem::path& scratch,
 }
 #endif
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     const bool run_cuda = argc == 3 && std::string_view(argv[2]) == "--cuda";
-    REQUIRE(argc == 2 || run_cuda,
-            "usage: checkpoint_v2_roundtrip_test <scratch> [--cuda]");
+    REQUIRE(argc == 2 || run_cuda, "usage: checkpoint_v2_roundtrip_test <scratch> [--cuda]");
     const auto scratch = std::filesystem::path(argv[1]);
     std::filesystem::remove_all(scratch);
 
@@ -192,8 +189,8 @@ int main(int argc, char** argv) {
 #endif
     }
 
-    diamond_training::Trainer saved(
-        diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, device);
+    diamond_training::Trainer saved(diamond_model::DiamondModel(8, 1, 4, 1),
+                                    checkpoint_compatibility, kConfig, device);
     CHECK_EQ(saved.train(samples).training_step, uint64_t{1});
     REQUIRE(!saved.optimizer().state().empty(), "training must create AdamW state");
     const std::string saved_digest = diamond_training::canonical_model_digest(saved.model());
@@ -203,8 +200,8 @@ int main(int argc, char** argv) {
     CHECK(std::filesystem::exists(written.generation / "optimizer.pt"));
     CHECK_EQ(written.training_step, uint64_t{1});
 
-    diamond_training::Trainer restored(
-        diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, device);
+    diamond_training::Trainer restored(diamond_model::DiamondModel(8, 1, 4, 1),
+                                       checkpoint_compatibility, kConfig, device);
     const auto loaded = diamond_training::load_checkpoint_v2(scratch, restored, device);
     CHECK_EQ(loaded.training_step, saved.training_step());
     CHECK_EQ(restored.training_step(), saved.training_step());

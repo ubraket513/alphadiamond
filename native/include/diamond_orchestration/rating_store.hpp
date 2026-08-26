@@ -15,8 +15,7 @@ void save_rating_registry(const std::filesystem::path& path, const RatingRegistr
 RatingRegistry load_rating_registry(const std::filesystem::path& path);
 
 enum class RatingStoreFailpoint { before_event_commit, before_receipt_commit };
-void set_rating_store_failpoint_for_testing(
-    std::function<void(RatingStoreFailpoint)> failpoint);
+void set_rating_store_failpoint_for_testing(std::function<void(RatingStoreFailpoint)> failpoint);
 
 // Immutable local event/receipt outbox. Events publish once; receipts acknowledge
 // durable delivery separately so pending work survives process interruption.

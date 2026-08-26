@@ -346,9 +346,8 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
 
     const JsonValue::Object& provenance = object_field(*object, "source");
     require_keys(provenance,
-                 provenance.contains("training_simulations")
-                     ? source_keys_with_simulations
-                     : source_keys,
+                 provenance.contains("training_simulations") ? source_keys_with_simulations
+                                                             : source_keys,
                  "source");
     require_nullable_digest(provenance, "checkpoint_sha256");
     require_nullable_commit(provenance, "training_commit");

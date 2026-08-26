@@ -21,12 +21,11 @@ constexpr diamond_training::TrainingConfig kConfig{
 };
 
 diamond_training::Compatibility compatibility() {
-    return diamond_training::Compatibility::soo(
-        "1.0.0", {.residual_blocks = 1, .width = 8});
+    return diamond_training::Compatibility::soo("1.0.0", {.residual_blocks = 1, .width = 8});
 }
 
-std::vector<diamond_training::TrainingSample> samples_for(
-    const diamond_training::Compatibility& sample_compatibility) {
+std::vector<diamond_training::TrainingSample>
+samples_for(const diamond_training::Compatibility& sample_compatibility) {
     diamond_training::TrainingSample sample;
     sample.compatibility = sample_compatibility;
     sample.node_features.assign(73U * 4U, 0.0F);
@@ -42,21 +41,22 @@ void check_tensor_equal(const torch::Tensor& actual, const torch::Tensor& expect
         soo_test::fail(__FILE__, __LINE__, name + " definedness differs");
         return;
     }
-    if (actual.defined() && !torch::equal(actual.detach().to(torch::kCPU),
-                                           expected.detach().to(torch::kCPU))) {
+    if (actual.defined() &&
+        !torch::equal(actual.detach().to(torch::kCPU), expected.detach().to(torch::kCPU))) {
         soo_test::fail(__FILE__, __LINE__, name + " differs");
     }
 }
 
-void check_adamw_equal(const torch::optim::AdamW& actual,
-                       const torch::optim::AdamW& expected) {
+void check_adamw_equal(const torch::optim::AdamW& actual, const torch::optim::AdamW& expected) {
     const auto actual_parameters = actual.param_groups().front().params();
     const auto expected_parameters = expected.param_groups().front().params();
     REQUIRE(actual_parameters.size() == expected_parameters.size(), "AdamW parameter count");
     CHECK_EQ(actual.state().size(), expected.state().size());
     for (size_t index = 0; index < actual_parameters.size(); ++index) {
-        const auto actual_entry = actual.state().find(actual_parameters[index].unsafeGetTensorImpl());
-        const auto expected_entry = expected.state().find(expected_parameters[index].unsafeGetTensorImpl());
+        const auto actual_entry =
+            actual.state().find(actual_parameters[index].unsafeGetTensorImpl());
+        const auto expected_entry =
+            expected.state().find(expected_parameters[index].unsafeGetTensorImpl());
         REQUIRE(actual_entry != actual.state().end(), "missing actual AdamW state");
         REQUIRE(expected_entry != expected.state().end(), "missing expected AdamW state");
         const auto* actual_state =
@@ -111,35 +111,37 @@ void write_text(const std::filesystem::path& path, const std::string& contents) 
     REQUIRE(static_cast<bool>(output), "cannot corrupt checkpoint archive");
 }
 
-diamond_training::Trainer make_trained(const diamond_training::ResolvedDevice& device,
-                                       const diamond_training::Compatibility& checkpoint_compatibility,
-                                       const std::vector<diamond_training::TrainingSample>& samples) {
-    diamond_training::Trainer trainer(
-        diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, device);
+diamond_training::Trainer
+make_trained(const diamond_training::ResolvedDevice& device,
+             const diamond_training::Compatibility& checkpoint_compatibility,
+             const std::vector<diamond_training::TrainingSample>& samples) {
+    diamond_training::Trainer trainer(diamond_model::DiamondModel(8, 1, 4, 1),
+                                      checkpoint_compatibility, kConfig, device);
     CHECK_EQ(trainer.train(samples).training_step, uint64_t{1});
     REQUIRE(!trainer.optimizer().state().empty(), "training must create AdamW state");
     return trainer;
 }
 
-diamond_training::Trainer clone_trainer(const std::filesystem::path& root,
-                                        diamond_training::Trainer& source,
-                                        const diamond_training::ResolvedDevice& device,
-                                        const diamond_training::Compatibility& checkpoint_compatibility) {
+diamond_training::Trainer
+clone_trainer(const std::filesystem::path& root, diamond_training::Trainer& source,
+              const diamond_training::ResolvedDevice& device,
+              const diamond_training::Compatibility& checkpoint_compatibility) {
     (void)diamond_training::save_checkpoint_v2(root, source);
-    diamond_training::Trainer clone(
-        diamond_model::DiamondModel(8, 1, 4, 1), checkpoint_compatibility, kConfig, device);
+    diamond_training::Trainer clone(diamond_model::DiamondModel(8, 1, 4, 1),
+                                    checkpoint_compatibility, kConfig, device);
     (void)diamond_training::load_checkpoint_v2(root, clone, device);
     return clone;
 }
 
-void check_rejected_load_is_unchanged(
-    const std::filesystem::path& corrupt_root, diamond_training::Trainer& destination,
-    diamond_training::Trainer& control,
-    const std::vector<diamond_training::TrainingSample>& samples,
-    const diamond_training::ResolvedDevice& device) {
+void check_rejected_load_is_unchanged(const std::filesystem::path& corrupt_root,
+                                      diamond_training::Trainer& destination,
+                                      diamond_training::Trainer& control,
+                                      const std::vector<diamond_training::TrainingSample>& samples,
+                                      const diamond_training::ResolvedDevice& device) {
     const auto before = snapshot(destination);
     check_adamw_equal(destination.optimizer(), control.optimizer());
-    CHECK(rejects([&] { (void)diamond_training::load_checkpoint_v2(corrupt_root, destination, device); }));
+    CHECK(rejects(
+        [&] { (void)diamond_training::load_checkpoint_v2(corrupt_root, destination, device); }));
     check_snapshot(destination, before);
     check_adamw_equal(destination.optimizer(), control.optimizer());
 
@@ -153,7 +155,7 @@ void check_rejected_load_is_unchanged(
     check_adamw_equal(destination.optimizer(), control.optimizer());
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     REQUIRE(argc == 2, "usage: checkpoint_v2_transaction_test <scratch>");
@@ -164,12 +166,27 @@ int main(int argc, char** argv) {
     const auto samples = samples_for(checkpoint_compatibility);
     auto trainer = make_trained(device, checkpoint_compatibility, samples);
     const auto first = diamond_training::save_checkpoint_v2(scratch / "activation", trainer);
-    const auto current_before = [&] { std::ifstream in(scratch / "activation" / "CURRENT"); std::string value; std::getline(in, value); return value; }();
+    const auto current_before = [&] {
+        std::ifstream in(scratch / "activation" / "CURRENT");
+        std::string value;
+        std::getline(in, value);
+        return value;
+    }();
     _putenv_s("DIAMOND_CHECKPOINT_FAIL_ACTIVATE", "1");
-    bool failed = false; try { (void)diamond_training::save_checkpoint_v2(scratch / "activation", trainer); } catch (const diamond_training::CheckpointError&) { failed = true; }
+    bool failed = false;
+    try {
+        (void)diamond_training::save_checkpoint_v2(scratch / "activation", trainer);
+    } catch (const diamond_training::CheckpointError&) {
+        failed = true;
+    }
     _putenv_s("DIAMOND_CHECKPOINT_FAIL_ACTIVATE", "");
     CHECK(failed);
-    const auto current_after = [&] { std::ifstream in(scratch / "activation" / "CURRENT"); std::string value; std::getline(in, value); return value; }();
+    const auto current_after = [&] {
+        std::ifstream in(scratch / "activation" / "CURRENT");
+        std::string value;
+        std::getline(in, value);
+        return value;
+    }();
     CHECK_EQ(current_after, current_before); CHECK(std::filesystem::exists(first.generation));
 
     auto source = make_trained(device, checkpoint_compatibility, samples);
@@ -194,8 +211,8 @@ int main(int argc, char** argv) {
     nan_source.optimizer().save(archive);
     archive.save_to((nan_info.generation / "optimizer.pt").string());
     auto nan_destination = make_trained(device, checkpoint_compatibility, samples);
-    auto nan_control = clone_trainer(scratch / "nan-control", nan_destination,
-                                     device, checkpoint_compatibility);
+    auto nan_control =
+        clone_trainer(scratch / "nan-control", nan_destination, device, checkpoint_compatibility);
     check_rejected_load_is_unchanged(nan_optimizer, nan_destination, nan_control, samples, device);
 
     const auto corrupt_weights = scratch / "corrupt-weights";
@@ -203,10 +220,11 @@ int main(int argc, char** argv) {
     write_text(weight_info.generation / "state.pt", "not a LibTorch archive");
     auto weight_destination = make_trained(device, checkpoint_compatibility, samples);
     const auto weight_before = snapshot(weight_destination);
-    auto optimizer_before = clone_trainer(scratch / "weights-control", weight_destination,
-                                          device, checkpoint_compatibility);
+    auto optimizer_before = clone_trainer(scratch / "weights-control", weight_destination, device,
+                                          checkpoint_compatibility);
     CHECK(rejects([&] {
-        (void)diamond_training::load_checkpoint_v2_weights(corrupt_weights, weight_destination.model(), device);
+        (void)diamond_training::load_checkpoint_v2_weights(corrupt_weights,
+                                                           weight_destination.model(), device);
     }));
     check_snapshot(weight_destination, weight_before);
     check_adamw_equal(weight_destination.optimizer(), optimizer_before.optimizer());

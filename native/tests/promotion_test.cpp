@@ -23,9 +23,8 @@ int main(int argc, char** argv) {
         auto compatibility = diamond_training::Compatibility::soo(
             "1.0.0", {.residual_blocks = 1, .width = 8});
         const auto device = diamond_training::resolve_device("cpu");
-        diamond_training::Trainer trainer(
-            diamond_model::DiamondModel(8, 1, 4, 1), compatibility,
-            {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
+        diamond_training::Trainer trainer(diamond_model::DiamondModel(8, 1, 4, 1), compatibility,
+                                          {.learning_rate = 1e-3, .weight_decay = 1e-4}, device);
         const auto checkpoint = diamond_training::save_checkpoint_v2(root, trainer);
         const auto archival = diamond_release::initialize_promotion(root, "soo");
         require(archival.state == diamond_release::PromotionState::archival,

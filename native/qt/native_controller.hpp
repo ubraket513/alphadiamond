@@ -148,7 +148,9 @@ class NativeController final : public QObject {
     QString winnerName() const { return winnerId() ? playerName(static_cast<uint8_t>(winnerId())) : QString(); }
     QString resultSummary() const;
     bool canSelect() const { return !isGameOver() && !ai_thinking_ && !animating_ && !proposal_is_ai_; }
-    bool canUndo() const { return !isGameOver() && !history_.isEmpty() && !animating_; }
+    bool canUndo() const {
+        return !isGameOver() && !history_.isEmpty() && !animating_;
+    }
     bool canConfirm() const { return proposal_action_ >= 0; }
     bool canCancel() const { return (!proposal_is_ai_ && proposal_action_ >= 0) || selected_position_ >= 0; }
     bool hasProposal() const { return proposal_action_ >= 0; }

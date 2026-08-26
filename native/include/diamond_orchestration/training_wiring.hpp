@@ -16,4 +16,4 @@ struct TrainingIterationWiring final {
 
 TrainingIterationWiring wire_training_iteration(const ProductionConfig& config);
 
-}  // namespace diamond_orchestration
+} // namespace diamond_orchestration

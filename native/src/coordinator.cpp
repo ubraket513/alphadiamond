@@ -107,14 +107,14 @@ RunState Coordinator::run(const RunState& state) {
     return current;
 }
 
-RunState Coordinator::run_bounded(
-    const RunState& state, std::optional<uint64_t> max_iterations,
-    std::optional<std::chrono::steady_clock::time_point> deadline) {
+RunState Coordinator::run_bounded(const RunState& state, std::optional<uint64_t> max_iterations,
+                                  std::optional<std::chrono::steady_clock::time_point> deadline) {
     if ((!max_iterations && !deadline) || (max_iterations && *max_iterations == 0))
         throw CoordinatorError("bounded run requires a positive iteration or wall-clock budget");
 
     auto current = state;
-    if (current.stage() != RunStage::complete) current = run(current);
+    if (current.stage() != RunStage::complete)
+        current = run(current);
     while ((!max_iterations ||
             static_cast<uint64_t>(integer_field(current.payload(), "iteration")) + 1 <
                 *max_iterations) &&

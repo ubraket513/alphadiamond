@@ -470,8 +470,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             lane.state = job.initial_state;
             lane.game_seed = job.seed;
             lane.move_count = 0;
-            if (config.max_game_duration &&
-                *config.max_game_duration > Clock::duration::zero()) {
+            if (config.max_game_duration && *config.max_game_duration > Clock::duration::zero()) {
                 lane.deadline = Clock::now() + *config.max_game_duration;
             } else {
                 lane.deadline.reset();

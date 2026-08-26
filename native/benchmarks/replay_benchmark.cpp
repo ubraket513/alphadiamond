@@ -22,21 +22,31 @@ Args parse_args(int argc, char** argv) {
     Args args;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
-        if ((option != "--repetitions" && option != "--pool-size" && option != "--batch-size" && option != "--scratch") || i + 1 >= argc)
-            throw std::invalid_argument("usage: replay_benchmark --scratch PATH [--repetitions N] [--pool-size N] [--batch-size N]");
+        if ((option != "--repetitions" && option != "--pool-size" && option != "--batch-size" &&
+             option != "--scratch") ||
+            i + 1 >= argc)
+            throw std::invalid_argument("usage: replay_benchmark --scratch PATH [--repetitions N] "
+                                        "[--pool-size N] [--batch-size N]");
         const std::string value = argv[++i];
         if (option == "--scratch") args.scratch = value;
         else {
             try {
                 const auto parsed = std::stoull(value);
-                if (option == "--repetitions") args.repetitions = parsed;
-                else if (option == "--pool-size") args.pool_size = parsed;
-                else args.batch_size = parsed;
-            } catch (...) { throw std::invalid_argument("benchmark counts must be positive integers"); }
+                if (option == "--repetitions")
+                    args.repetitions = parsed;
+                else if (option == "--pool-size")
+                    args.pool_size = parsed;
+                else
+                    args.batch_size = parsed;
+            } catch (...) {
+                throw std::invalid_argument("benchmark counts must be positive integers");
+            }
         }
     }
-    if (args.scratch.empty() || args.repetitions == 0 || args.pool_size == 0 || args.batch_size == 0 || args.batch_size > args.pool_size)
-        throw std::invalid_argument("scratch and positive pool/repetition counts with batch <= pool are required");
+    if (args.scratch.empty() || args.repetitions == 0 || args.pool_size == 0 ||
+        args.batch_size == 0 || args.batch_size > args.pool_size)
+        throw std::invalid_argument(
+            "scratch and positive pool/repetition counts with batch <= pool are required");
     return args;
 }
 diamond_pipeline::Episode episode(const diamond_pipeline::Compatibility& compatibility, std::uint64_t id) {
@@ -56,7 +66,8 @@ int run(int argc, char** argv) {
     diamond_pipeline::ReplayStore store(args.scratch, compatibility, args.pool_size, 17);
     std::vector<diamond_pipeline::Episode> pool;
     pool.reserve(args.pool_size);
-    for (std::uint64_t id = 0; id < args.pool_size; ++id) pool.push_back(episode(compatibility, id));
+    for (std::uint64_t id = 0; id < args.pool_size; ++id)
+        pool.push_back(episode(compatibility, id));
     (void)store.ingest(pool);
     std::vector<double> seconds;
     for (std::uint64_t i = 0; i < args.repetitions; ++i) {

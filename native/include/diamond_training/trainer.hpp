@@ -44,8 +44,8 @@ enum class ModelRole {
 // and buffer to target. The result owns distinct storage and has the requested
 // runtime role applied.
 diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& source,
-                                           const Compatibility& compatibility,
-                                           torch::Device target, ModelRole role);
+                                           const Compatibility& compatibility, torch::Device target,
+                                           ModelRole role);
 
 // A versioned SHA-256 identity over sorted named parameters then named buffers.
 // FP32 tensor data is serialized canonically as contiguous CPU little-endian bytes.
@@ -53,18 +53,26 @@ std::string canonical_model_digest(const diamond_model::DiamondModel& model);
 
 class Trainer {
   public:
-    Trainer(diamond_model::DiamondModel model, Compatibility compatibility,
-            TrainingConfig config, const ResolvedDevice& device);
+    Trainer(diamond_model::DiamondModel model, Compatibility compatibility, TrainingConfig config,
+            const ResolvedDevice& device);
 
     TrainingMetrics train(std::span<const TrainingSample> samples);
     uint64_t training_step() const { return training_step_; }
     const Compatibility& compatibility() const { return compatibility_; }
     const TrainingConfig& config() const { return config_; }
-    const ResolvedDevice& device() const { return device_; }
+    const ResolvedDevice& device() const {
+        return device_;
+    }
     diamond_model::DiamondModel& model() { return model_; }
-    const diamond_model::DiamondModel& model() const { return model_; }
-    diamond_model::DiamondModel& learner() { return model_; }
-    const diamond_model::DiamondModel& learner() const { return model_; }
+    const diamond_model::DiamondModel& model() const {
+        return model_;
+    }
+    diamond_model::DiamondModel& learner() {
+        return model_;
+    }
+    const diamond_model::DiamondModel& learner() const {
+        return model_;
+    }
     diamond_model::DiamondModel candidate_snapshot() const;
     torch::optim::AdamW& optimizer() { return optimizer_; }
     void restore_checkpoint_state(TrainingConfig config, uint64_t training_step) {

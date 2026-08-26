@@ -150,8 +150,8 @@ int main(int argc, char** argv) {
     timed.max_moves = 1000;
     timed.max_game_duration = std::chrono::nanoseconds(1);
     soo::EpisodeMetrics timeout_metrics;
-    const auto timed_out = soo::run_episodes(match, {{*opening, 17}}, timed, evaluator,
-                                             timeout_metrics);
+    const auto timed_out =
+        soo::run_episodes(match, {{*opening, 17}}, timed, evaluator, timeout_metrics);
     REQUIRE(timed_out.size() == 1, "deadline run did not return one episode");
     CHECK_EQ(timed_out[0].completed, false);
     CHECK_EQ(timed_out[0].max_game_seconds_exceeded, true);
@@ -162,8 +162,8 @@ int main(int argc, char** argv) {
     deadline_disabled.max_moves = 1;
     deadline_disabled.max_game_duration = std::chrono::steady_clock::duration::zero();
     soo::EpisodeMetrics disabled_metrics;
-    const auto zero_budget = soo::run_episodes(match, {{*opening, 23}}, deadline_disabled,
-                                                evaluator, disabled_metrics);
+    const auto zero_budget =
+        soo::run_episodes(match, {{*opening, 23}}, deadline_disabled, evaluator, disabled_metrics);
     REQUIRE(zero_budget.size() == 1, "zero-deadline run did not return one episode");
     CHECK_EQ(zero_budget[0].max_game_seconds_exceeded, false);
     CHECK_EQ(zero_budget[0].move_limit_exceeded, true);

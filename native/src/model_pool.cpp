@@ -18,7 +18,8 @@ ModelPool::ModelPool(std::size_t capacity, diamond_training::ResolvedDevice devi
 ModelKey ModelPool::install(const Compatibility& compatibility,
                             const diamond_model::DiamondModel& source) {
     compatibility.validate();
-    if (!source) throw std::invalid_argument("model pool requires a model");
+    if (!source)
+        throw std::invalid_argument("model pool requires a model");
     auto actor = diamond_training::snapshot_model(source, compatibility, device_.torch_device,
                                                   diamond_training::ModelRole::actor);
     ModelKey key{compatibility.model_name, compatibility.model_version,
@@ -32,7 +33,8 @@ ModelKey ModelPool::install(const Compatibility& compatibility,
 ModelKey ModelPool::install_checkpoint(const Compatibility& compatibility,
                                        const std::filesystem::path& checkpoint_root,
                                        diamond_model::DiamondModel staging) {
-    if (!staging) throw std::invalid_argument("model pool requires a checkpoint staging model");
+    if (!staging)
+        throw std::invalid_argument("model pool requires a checkpoint staging model");
     try {
         (void)diamond_training::load_checkpoint_v2_weights(checkpoint_root, staging, device_);
     } catch (const diamond_training::CheckpointError& error) {
@@ -99,7 +101,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         if (item.encoded->feature_count != features_per_node ||
             item.encoded->node_features.size() !=
                 static_cast<std::size_t>(kBoardNodes * features_per_node)) {
-            throw PipelineError("native inference feature shape is incompatible with the active model");
+            throw PipelineError(
+                "native inference feature shape is incompatible with the active model");
         }
         if (!std::all_of(item.encoded->node_features.begin(), item.encoded->node_features.end(),
                          [](float value) { return std::isfinite(value); })) {
@@ -141,16 +144,15 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     }
 
     const auto cpu_options = torch::TensorOptions().device(torch::kCPU);
-    const auto host_features = torch::from_blob(
-        feature_buffer.data(), {batch_size, kBoardNodes, features_per_node},
-        cpu_options.dtype(torch::kFloat32));
+    const auto host_features =
+        torch::from_blob(feature_buffer.data(), {batch_size, kBoardNodes, features_per_node},
+                         cpu_options.dtype(torch::kFloat32));
     const auto host_legal_indices = torch::from_blob(
         legal_index_buffer.data(), {batch_size, max_legal}, cpu_options.dtype(torch::kInt64));
-    const auto host_valid_mask = torch::from_blob(
-        valid_mask_buffer.data(), {batch_size, max_legal}, cpu_options.dtype(torch::kUInt8));
+    const auto host_valid_mask = torch::from_blob(valid_mask_buffer.data(), {batch_size, max_legal},
+                                                  cpu_options.dtype(torch::kUInt8));
 
-    EvaluationStats stats{.batch_size = batch.size(),
-                          .max_legal_actions = max_legal_actions};
+    EvaluationStats stats{.batch_size = batch.size(), .max_legal_actions = max_legal_actions};
     auto device_features = host_features;
     auto device_legal_indices = host_legal_indices;
     auto device_valid_mask = host_valid_mask;
@@ -166,9 +168,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     torch::NoGradGuard no_grad;
     ++stats.forward_calls;
     const auto [logits, values] = model->forward(device_features);
-    if (logits.dim() != 2 || logits.size(0) != batch_size ||
-        logits.size(1) != kActionSpace || values.dim() != 2 ||
-        values.size(0) != batch_size || values.size(1) != value_width ||
+    if (logits.dim() != 2 || logits.size(0) != batch_size || logits.size(1) != kActionSpace ||
+        values.dim() != 2 || values.size(0) != batch_size || values.size(1) != value_width ||
         logits.scalar_type() != torch::kFloat32 || values.scalar_type() != torch::kFloat32 ||
         logits.device() != device_.torch_device || values.device() != device_.torch_device) {
         throw PipelineError("active model produced an incompatible inference output");
@@ -176,11 +177,10 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
 
     const auto legal_logits = logits.gather(1, device_legal_indices);
     const auto padded_priors = torch::softmax(
-        legal_logits.masked_fill(device_valid_mask.eq(0),
-                                 -std::numeric_limits<float>::infinity()),
+        legal_logits.masked_fill(device_valid_mask.eq(0), -std::numeric_limits<float>::infinity()),
         1);
-    const auto finite_rows = torch::logical_and(
-        torch::isfinite(padded_priors).all(1), torch::isfinite(values).all(1));
+    const auto finite_rows =
+        torch::logical_and(torch::isfinite(padded_priors).all(1), torch::isfinite(values).all(1));
     const auto compact_device =
         torch::cat({padded_priors, values, finite_rows.unsqueeze(1).to(torch::kFloat32)}, 1)
             .contiguous();
@@ -217,8 +217,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
             staged.priors[column] = prior;
         }
         for (int64_t value = 0; value < value_width; ++value) {
-            const float component = compact[offset + max_legal_actions +
-                                            static_cast<std::size_t>(value)];
+            const float component =
+                compact[offset + max_legal_actions + static_cast<std::size_t>(value)];
             if (!std::isfinite(component))
                 throw PipelineError("native model produced a non-finite value");
             staged.values[static_cast<std::size_t>(value)] = component;

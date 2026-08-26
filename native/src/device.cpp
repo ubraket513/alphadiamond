@@ -14,21 +14,28 @@ constexpr std::string_view kCudaPrefix = "cuda:";
     throw DeviceResolutionError("runtime.device must be cpu, cuda, or cuda:N");
 }
 
-}  // namespace
+} // namespace
 
 DeviceRequest parse_device_request(std::string_view requested) {
-    if (requested == "cpu") return {.requested_name = std::string(requested), .cuda_index = std::nullopt};
-    if (requested == "cuda") return {.requested_name = std::string(requested), .cuda_index = 0};
-    if (!requested.starts_with(kCudaPrefix)) invalid_device_name();
+    if (requested == "cpu")
+        return {.requested_name = std::string(requested), .cuda_index = std::nullopt};
+    if (requested == "cuda")
+        return {.requested_name = std::string(requested), .cuda_index = 0};
+    if (!requested.starts_with(kCudaPrefix))
+        invalid_device_name();
 
     const auto index_text = requested.substr(kCudaPrefix.size());
-    if (index_text.empty()) invalid_device_name();
+    if (index_text.empty())
+        invalid_device_name();
     for (const unsigned char character : index_text)
-        if (character < '0' || character > '9') invalid_device_name();
+        if (character < '0' || character > '9')
+            invalid_device_name();
 
     int index = 0;
-    const auto [end, error] = std::from_chars(index_text.data(), index_text.data() + index_text.size(), index);
-    if (error != std::errc{} || end != index_text.data() + index_text.size()) invalid_device_name();
+    const auto [end, error] =
+        std::from_chars(index_text.data(), index_text.data() + index_text.size(), index);
+    if (error != std::errc{} || end != index_text.data() + index_text.size())
+        invalid_device_name();
     return {.requested_name = std::string(requested), .cuda_index = index};
 }
 
@@ -47,9 +54,9 @@ ResolvedDevice resolve_device(std::string_view requested) {
                                     " requires CUDA, but no CUDA device is available");
     }
     if (*parsed.cuda_index >= available) {
-        throw DeviceResolutionError("runtime.device " + parsed.requested_name +
-                                    " is out of range; available CUDA devices: " +
-                                    std::to_string(available));
+        throw DeviceResolutionError(
+            "runtime.device " + parsed.requested_name +
+            " is out of range; available CUDA devices: " + std::to_string(available));
     }
     return {.torch_device = torch::Device(torch::kCUDA, *parsed.cuda_index),
             .requested_name = parsed.requested_name,
@@ -57,4 +64,4 @@ ResolvedDevice resolve_device(std::string_view requested) {
             .cuda_index = parsed.cuda_index};
 }
 
-}  // namespace diamond_training
+} // namespace diamond_training

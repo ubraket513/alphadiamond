@@ -55,7 +55,8 @@ void require_target(const ResolvedDevice& target) {
 }
 
 NamedTensors collect_named_tensors(const diamond_model::DiamondModel& model, bool parameters) {
-    if (!model) throw CheckpointError("checkpoint model destination is empty");
+    if (!model)
+        throw CheckpointError("checkpoint model destination is empty");
     NamedTensors result;
     const auto named = parameters ? model->named_parameters() : model->named_buffers();
     for (const auto& entry : named) {
@@ -69,10 +70,11 @@ NamedTensors collect_named_tensors(const diamond_model::DiamondModel& model, boo
 
 void require_finite_target_tensor(const torch::Tensor& tensor, const torch::Device& target,
                                   const std::string& name) {
-    if (!tensor.defined()) throw CheckpointError(name + " is undefined");
+    if (!tensor.defined())
+        throw CheckpointError(name + " is undefined");
     if (tensor.device() != target)
-        throw CheckpointError(name + " is on " + tensor.device().str() +
-                              ", expected " + target.str());
+        throw CheckpointError(name + " is on " + tensor.device().str() + ", expected " +
+                              target.str());
     if (tensor.scalar_type() != torch::kFloat32)
         throw CheckpointError(name + " must be float32");
     if (!torch::isfinite(tensor).all().item<bool>())
@@ -82,7 +84,8 @@ void require_finite_target_tensor(const torch::Tensor& tensor, const torch::Devi
 void require_model_matches(const diamond_model::DiamondModel& model,
                            const diamond_model::DiamondModel& prototype,
                            const torch::Device& target) {
-    if (!model || !prototype) throw CheckpointError("checkpoint model destination is empty");
+    if (!model || !prototype)
+        throw CheckpointError("checkpoint model destination is empty");
     if (model->width() != prototype->width() ||
         model->residual_blocks() != prototype->residual_blocks() ||
         model->input_features() != prototype->input_features() ||
@@ -108,8 +111,7 @@ void require_model_matches(const diamond_model::DiamondModel& model,
             actual->second.requires_grad() != expected.requires_grad()) {
             throw CheckpointError("checkpoint model parameter is incompatible: " + name);
         }
-        require_finite_target_tensor(actual->second, target,
-                                     "checkpoint model parameter " + name);
+        require_finite_target_tensor(actual->second, target, "checkpoint model parameter " + name);
     }
     for (const auto& [name, expected] : expected_buffers) {
         const auto actual = actual_buffers.find(name);
@@ -117,20 +119,21 @@ void require_model_matches(const diamond_model::DiamondModel& model,
             actual->second.scalar_type() != expected.scalar_type()) {
             throw CheckpointError("checkpoint model buffer is incompatible: " + name);
         }
-        require_finite_target_tensor(actual->second, target,
-                                     "checkpoint model buffer " + name);
+        require_finite_target_tensor(actual->second, target, "checkpoint model buffer " + name);
     }
 }
 
 diamond_model::DiamondModel fresh_model_like(const diamond_model::DiamondModel& prototype,
                                              const torch::Device& target) {
-    if (!prototype) throw CheckpointError("checkpoint model destination is empty");
-    auto staged = diamond_model::DiamondModel(
-        prototype->width(), prototype->residual_blocks(),
-        prototype->input_features(), prototype->value_size());
+    if (!prototype)
+        throw CheckpointError("checkpoint model destination is empty");
+    auto staged = diamond_model::DiamondModel(prototype->width(), prototype->residual_blocks(),
+                                              prototype->input_features(), prototype->value_size());
     staged->to(target);
-    if (prototype->is_training()) staged->train();
-    else staged->eval();
+    if (prototype->is_training())
+        staged->train();
+    else
+        staged->eval();
 
     const auto expected_parameters = collect_named_tensors(prototype, true);
     auto staged_parameters = collect_named_tensors(staged, true);
@@ -145,35 +148,29 @@ diamond_model::DiamondModel fresh_model_like(const diamond_model::DiamondModel& 
     return staged;
 }
 
-void load_model_archive(const std::filesystem::path& path,
-                        diamond_model::DiamondModel& model,
+void load_model_archive(const std::filesystem::path& path, diamond_model::DiamondModel& model,
                         const torch::Device& target) {
     torch::serialize::InputArchive archive;
     archive.load_from(path.string(), target);
     model->load(archive);
 }
 
-void load_optimizer_archive(const std::filesystem::path& path,
-                            torch::optim::AdamW& optimizer,
+void load_optimizer_archive(const std::filesystem::path& path, torch::optim::AdamW& optimizer,
                             const torch::Device& target) {
     torch::serialize::InputArchive archive;
     archive.load_from(path.string(), target);
     optimizer.load(archive);
 }
 
-void require_adamw_state_tensor(const torch::Tensor& tensor,
-                                const torch::Tensor& parameter,
-                                const torch::Device& target,
-                                const std::string& name) {
+void require_adamw_state_tensor(const torch::Tensor& tensor, const torch::Tensor& parameter,
+                                const torch::Device& target, const std::string& name) {
     require_finite_target_tensor(tensor, target, name);
-    if (tensor.sizes() != parameter.sizes() ||
-        tensor.scalar_type() != parameter.scalar_type()) {
+    if (tensor.sizes() != parameter.sizes() || tensor.scalar_type() != parameter.scalar_type()) {
         throw CheckpointError(name + " is incompatible with its parameter");
     }
 }
 
-void validate_staged_trainer(Trainer& trainer, const ResolvedDevice& target,
-                             uint64_t training_step,
+void validate_staged_trainer(Trainer& trainer, const ResolvedDevice& target, uint64_t training_step,
                              const diamond_model::DiamondModel& prototype) {
     trainer.compatibility().validate();
     if (trainer.device().torch_device != target.torch_device ||
@@ -193,14 +190,14 @@ void validate_staged_trainer(Trainer& trainer, const ResolvedDevice& target,
 
     const auto* options =
         dynamic_cast<const torch::optim::AdamWOptions*>(&groups.front().options());
-    if (!options) throw CheckpointError("checkpoint optimizer is not AdamW");
+    if (!options)
+        throw CheckpointError("checkpoint optimizer is not AdamW");
     const auto [beta1, beta2] = options->betas();
     if (!std::isfinite(options->lr()) || options->lr() != trainer.config().learning_rate ||
         !std::isfinite(options->weight_decay()) ||
         options->weight_decay() != trainer.config().weight_decay ||
-        !std::isfinite(options->eps()) || options->eps() <= 0.0 ||
-        !std::isfinite(beta1) || !std::isfinite(beta2) ||
-        beta1 < 0.0 || beta1 >= 1.0 || beta2 < 0.0 || beta2 >= 1.0) {
+        !std::isfinite(options->eps()) || options->eps() <= 0.0 || !std::isfinite(beta1) ||
+        !std::isfinite(beta2) || beta1 < 0.0 || beta1 >= 1.0 || beta2 < 0.0 || beta2 >= 1.0) {
         throw CheckpointError("checkpoint AdamW options are incompatible");
     }
 
@@ -235,8 +232,7 @@ void validate_staged_trainer(Trainer& trainer, const ResolvedDevice& target,
         require_adamw_state_tensor(state->exp_avg_sq(), parameter, target.torch_device,
                                    "checkpoint AdamW exp_avg_sq");
         if (options->amsgrad()) {
-            require_adamw_state_tensor(state->max_exp_avg_sq(), parameter,
-                                       target.torch_device,
+            require_adamw_state_tensor(state->max_exp_avg_sq(), parameter, target.torch_device,
                                        "checkpoint AdamW max_exp_avg_sq");
         } else if (state->max_exp_avg_sq().defined()) {
             throw CheckpointError("non-AMSGrad checkpoint contains max_exp_avg_sq");
@@ -704,8 +700,7 @@ CheckpointInfo validate_checkpoint_v2(const std::filesystem::path& root) {
         torch::serialize::InputArchive state;
         state.load_from((info.generation / kState).string(), torch::Device(torch::kCPU));
         torch::serialize::InputArchive optimizer;
-        optimizer.load_from((info.generation / kOptimizer).string(),
-                            torch::Device(torch::kCPU));
+        optimizer.load_from((info.generation / kOptimizer).string(), torch::Device(torch::kCPU));
         return info;
     } catch (const c10::Error& error) {
         throw CheckpointError(std::string("checkpoint v2 archive is unreadable: ") + error.what());

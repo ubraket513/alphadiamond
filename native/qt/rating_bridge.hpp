@@ -16,12 +16,14 @@ class RatingBridge final : public QObject {
     explicit RatingBridge(std::filesystem::path root = {}, QObject* parent = nullptr);
 
     bool recordTerminalSooMatch(const QString& gameId, const QString& modelPath,
-                                const QString& modelId, const QString& modelLabel,
-                                int aiSeat, int winnerSeat, const QVariantList& turnOrder);
+                                const QString& modelId, const QString& modelLabel, int aiSeat,
+                                int winnerSeat, const QVariantList& turnOrder);
     void syncPending();
 
     int pendingEventCount() const;
-    QString syncState() const { return sync_state_; }
+    QString syncState() const {
+        return sync_state_;
+    }
     bool syncRunning() const;
 
   Q_SIGNALS:

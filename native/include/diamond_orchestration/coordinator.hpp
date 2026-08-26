@@ -40,9 +40,8 @@ class Coordinator final {
     // Complete the current iteration, then start fresh iterations until the
     // total run budget or wall-clock deadline is reached. At least one bound
     // is required. A returned state is always at a durable stage boundary.
-    RunState run_bounded(
-        const RunState& state, std::optional<uint64_t> max_iterations,
-        std::optional<std::chrono::steady_clock::time_point> deadline);
+    RunState run_bounded(const RunState& state, std::optional<uint64_t> max_iterations,
+                         std::optional<std::chrono::steady_clock::time_point> deadline);
 
     // Load an interrupted run and advance only the stage at its saved cursor
     // and later stages.

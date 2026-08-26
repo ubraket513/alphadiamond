@@ -14,7 +14,10 @@ void set_environment(const char* name, const char* value) {
 #ifdef _WIN32
     _putenv_s(name, value);
 #else
-    if (*value) setenv(name, value, 1); else unsetenv(name);
+    if (*value)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
 #endif
 }
 
@@ -35,19 +38,21 @@ diamond_pipeline::Episode episode(const diamond_pipeline::Compatibility& compati
 
 std::vector<int> ids(const std::vector<diamond_pipeline::TrainingSample>& rows) {
     std::vector<int> result;
-    for (const auto& row : rows) result.push_back(row.canonical_player_ids.front());
+    for (const auto& row : rows)
+        result.push_back(row.canonical_player_ids.front());
     return result;
 }
 
 std::size_t chunk_file_count(const std::filesystem::path& root) {
     std::size_t count = 0;
     std::error_code error;
-    for (std::filesystem::recursive_directory_iterator it(root, error), end;
-         !error && it != end; it.increment(error)) {
-        if (it->is_regular_file(error) && !error &&
-            it->path().parent_path().filename() == "chunks") ++count;
+    for (std::filesystem::recursive_directory_iterator it(root, error), end; !error && it != end;
+         it.increment(error)) {
+        if (it->is_regular_file(error) && !error && it->path().parent_path().filename() == "chunks")
+            ++count;
     }
-    if (error) throw std::runtime_error("cannot inspect replay chunks");
+    if (error)
+        throw std::runtime_error("cannot inspect replay chunks");
     return count;
 }
 
@@ -65,7 +70,7 @@ void remove_tree(const std::filesystem::path& path, std::error_code& error) {
     std::filesystem::remove_all(path, error);
 #endif
 }
-}
+} // namespace
 
 int main(int argc, char** argv) {
     REQUIRE(argc == 3, "usage: replay_store_test <fixture-dir> <scratch-dir>");
@@ -78,7 +83,8 @@ int main(int argc, char** argv) {
     REQUIRE(!cleanup_error, "remove scratch before replay test");
     std::filesystem::create_directories(scratch);
     CHECK_EQ(diamond_support::sha256(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    CHECK_EQ(diamond_support::sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK_EQ(diamond_support::sha256("abc"),
+             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 
     const auto durable_root = scratch / "durable";
     auto fresh = episode(compatibility, 1);
@@ -113,7 +119,8 @@ int main(int argc, char** argv) {
 #endif
 
     std::vector<diamond_pipeline::Episode> pool;
-    for (int id = 10; id < 74; ++id) pool.push_back(episode(compatibility, id));
+    for (int id = 10; id < 74; ++id)
+        pool.push_back(episode(compatibility, id));
     const auto selection_root = scratch / "selection";
     {
         diamond_pipeline::ReplayStore store(selection_root, compatibility, 128, 17);
@@ -135,7 +142,11 @@ int main(int argc, char** argv) {
         (void)store.ingest(pool);
         set_environment("DIAMOND_REPLAY_FAIL_ACTIVATE", "1");
         bool failed = false;
-        try { (void)store.sample(4); } catch (const std::runtime_error&) { failed = true; }
+        try {
+            (void)store.sample(4);
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
         set_environment("DIAMOND_REPLAY_FAIL_ACTIVATE", "");
         CHECK(failed);
         CHECK(ids(store.sample(4)) == expected_first);
@@ -145,8 +156,11 @@ int main(int argc, char** argv) {
         diamond_pipeline::ReplayStore store(orphan_root, compatibility, 8, 19);
         set_environment("DIAMOND_REPLAY_FAIL_AFTER_CHUNK_ACTIVATE", "1");
         bool failed = false;
-        try { (void)store.ingest(std::span<const diamond_pipeline::Episode>(&fresh, 1)); }
-        catch (const std::runtime_error&) { failed = true; }
+        try {
+            (void)store.ingest(std::span<const diamond_pipeline::Episode>(&fresh, 1));
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
         set_environment("DIAMOND_REPLAY_FAIL_AFTER_CHUNK_ACTIVATE", "");
         CHECK(failed);
         const auto orphan_chunks = chunk_file_count(orphan_root);
@@ -160,8 +174,18 @@ int main(int argc, char** argv) {
         CHECK_EQ(recovered.size(), 0U);
     }
     {
-        std::ifstream manifest(selection_root / "persistent-replay-v2" / "soo" /
-                             diamond_support::sha256("{\"action_space_version\":\"diamond73-srcdst-v1\",\"board_topology_version\":\"diamond73-v1\",\"encoder_version\":\"diamond-camp-relative-v1\",\"model_name\":\"Soo\",\"model_version\":\"1.2.3\",\"network_config\":{\"residual_blocks\":1,\"width\":16},\"player_count\":2,\"ruleset_fingerprint\":\"sha256:02fff0c9c9436f247c4a2b5fb6b01903f658aae1c752377073011d0d150ba7a1\",\"ruleset_version\":\"diamond-authoritative-rules-v1\",\"seat_layout_version\":\"diamond-seat-layout-v1\",\"value_semantics_version\":\"current-player-scalar-winloss-v1\"}") / "manifest.json");
+        std::ifstream manifest(
+            selection_root / "persistent-replay-v2" / "soo" /
+            diamond_support::sha256(
+                "{\"action_space_version\":\"diamond73-srcdst-v1\",\"board_topology_version\":"
+                "\"diamond73-v1\",\"encoder_version\":\"diamond-camp-relative-v1\",\"model_name\":"
+                "\"Soo\",\"model_version\":\"1.2.3\",\"network_config\":{\"residual_blocks\":1,"
+                "\"width\":16},\"player_count\":2,\"ruleset_fingerprint\":\"sha256:"
+                "02fff0c9c9436f247c4a2b5fb6b01903f658aae1c752377073011d0d150ba7a1\",\"ruleset_"
+                "version\":\"diamond-authoritative-rules-v1\",\"seat_layout_version\":\"diamond-"
+                "seat-layout-v1\",\"value_semantics_version\":\"current-player-scalar-winloss-"
+                "v1\"}") /
+            "manifest.json");
         const std::string contents{std::istreambuf_iterator<char>(manifest), {}};
         CHECK(contents.find("selection_transaction") != std::string::npos);
         CHECK(contents.find("\"state\":\"committed\"") != std::string::npos);
@@ -173,14 +197,18 @@ int main(int argc, char** argv) {
     catch (const std::runtime_error&) { corrupt = true; }
     CHECK(corrupt);
     {
-        std::filesystem::copy(fixtures / "capacity-prune", scratch / "capacity-prune", std::filesystem::copy_options::recursive);
+        std::filesystem::copy(fixtures / "capacity-prune", scratch / "capacity-prune",
+                              std::filesystem::copy_options::recursive);
         diamond_pipeline::ReplayStore capacity(scratch / "capacity-prune", compatibility, 3, 3);
         REQUIRE(capacity.sample(3).size() == 3, "capacity fixture retains only reachable rows");
     }
     {
-        std::filesystem::copy(fixtures / "rollback", scratch / "rollback", std::filesystem::copy_options::recursive);
+        std::filesystem::copy(fixtures / "rollback", scratch / "rollback",
+                              std::filesystem::copy_options::recursive);
         diamond_pipeline::ReplayStore rollback(scratch / "rollback", compatibility, 8, 3);
-        rollback.restore_manifest(scratch / "rollback" / "persistent-replay-v1" / "Soo" / "3f3372c174dba4b7bfa9288e2c7e0a33e284dfdc3313f1d073210de8e47df229" / "before.json");
+        rollback.restore_manifest(
+            scratch / "rollback" / "persistent-replay-v1" / "Soo" /
+            "3f3372c174dba4b7bfa9288e2c7e0a33e284dfdc3313f1d073210de8e47df229" / "before.json");
         CHECK_EQ(rollback.sample(1).size(), 1U);
     }
     remove_tree(scratch, cleanup_error);
