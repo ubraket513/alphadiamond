@@ -92,6 +92,22 @@ class ModelPool final : public soo::BatchEvaluator {
     EvaluationStats last_evaluation_stats_;
     EvaluationStats accumulated_evaluation_stats_;
     std::size_t evaluated_batches_ = 0;
+
+    // Reused pinned staging buffers, grown on demand and never shrunk.
+    //
+    // Three fresh heap allocations and three pageable host-to-device copies per
+    // batch cost a third of the evaluator's time, close to the forward pass
+    // itself. Pageable memory cannot be copied asynchronously: the driver has
+    // to stage it through an internal pinned buffer first. Pinning the source
+    // once removes that staging copy and lets the transfer overlap.
+    //
+    // Reuse is safe because one evaluator thread drives one pool, and because
+    // the device-to-host copy at the end of every evaluate() synchronises the
+    // stream -- so the previous batch's transfers have completed before the
+    // next one can overwrite these buffers.
+    torch::Tensor staging_features_;
+    torch::Tensor staging_legal_indices_;
+    torch::Tensor staging_valid_mask_;
 };
 
 }  // namespace diamond_pipeline

@@ -176,15 +176,39 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     const auto batch_size = static_cast<int64_t>(batch.size());
     const auto max_legal = static_cast<int64_t>(max_legal_actions);
     const auto feature_row_size = static_cast<std::size_t>(kBoardNodes * features_per_node);
-    std::vector<float> feature_buffer(batch.size() * feature_row_size);
-    std::vector<int64_t> legal_index_buffer(batch.size() * max_legal_actions, 0);
-    std::vector<std::uint8_t> valid_mask_buffer(batch.size() * max_legal_actions, 0);
+    const bool cuda_destination = device_.torch_device.is_cuda();
+    // Grow the reused staging buffers if this batch needs more than the last.
+    // Pinning is only meaningful when the destination is CUDA.
+    const auto staging_options =
+        torch::TensorOptions().device(torch::kCPU).pinned_memory(cuda_destination);
+    const auto ensure = [&staging_options](torch::Tensor& buffer, int64_t rows, int64_t columns,
+                                           torch::ScalarType type) {
+        if (!buffer.defined() || buffer.size(0) < rows || buffer.size(1) < columns ||
+            buffer.scalar_type() != type) {
+            buffer = torch::empty({rows, columns}, staging_options.dtype(type));
+        }
+    };
+    const auto feature_columns = static_cast<int64_t>(feature_row_size);
+    const auto legal_columns = std::max<int64_t>(max_legal, 1);
+    ensure(staging_features_, batch_size, feature_columns, torch::kFloat32);
+    ensure(staging_legal_indices_, batch_size, legal_columns, torch::kInt64);
+    ensure(staging_valid_mask_, batch_size, legal_columns, torch::kUInt8);
+
+    float* feature_buffer = staging_features_.data_ptr<float>();
+    int64_t* legal_index_buffer = staging_legal_indices_.data_ptr<int64_t>();
+    std::uint8_t* valid_mask_buffer = staging_valid_mask_.data_ptr<std::uint8_t>();
+    const auto feature_stride = static_cast<std::size_t>(staging_features_.size(1));
+    const auto legal_stride = static_cast<std::size_t>(staging_legal_indices_.size(1));
 
     for (std::size_t row = 0; row < batch.size(); ++row) {
         const auto& item = batch[row];
         std::copy(item.encoded->node_features.begin(), item.encoded->node_features.end(),
-                  feature_buffer.begin() + static_cast<std::ptrdiff_t>(row * feature_row_size));
-        const std::size_t legal_offset = row * max_legal_actions;
+                  feature_buffer + row * feature_stride);
+        const std::size_t legal_offset = row * legal_stride;
+        // The buffers outlive a batch, so padding must be cleared rather than
+        // assumed zero the way a fresh allocation could be.
+        std::fill_n(legal_index_buffer + legal_offset, max_legal_actions, int64_t{0});
+        std::fill_n(valid_mask_buffer + legal_offset, max_legal_actions, std::uint8_t{0});
         for (std::size_t column = 0; column < item.actions->size(); ++column) {
             legal_index_buffer[legal_offset + column] = (*item.actions)[column];
             valid_mask_buffer[legal_offset + column] = 1;
@@ -193,14 +217,15 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
 
     const auto collation_end = EvalClock::now();
 
-    const auto cpu_options = torch::TensorOptions().device(torch::kCPU);
+    using torch::indexing::Slice;
     const auto host_features =
-        torch::from_blob(feature_buffer.data(), {batch_size, kBoardNodes, features_per_node},
-                         cpu_options.dtype(torch::kFloat32));
-    const auto host_legal_indices = torch::from_blob(
-        legal_index_buffer.data(), {batch_size, max_legal}, cpu_options.dtype(torch::kInt64));
-    const auto host_valid_mask = torch::from_blob(valid_mask_buffer.data(), {batch_size, max_legal},
-                                                  cpu_options.dtype(torch::kUInt8));
+        staging_features_.index({Slice(0, batch_size), Slice(0, feature_columns)})
+            .contiguous()
+            .view({batch_size, kBoardNodes, features_per_node});
+    const auto host_legal_indices =
+        staging_legal_indices_.index({Slice(0, batch_size), Slice(0, max_legal)}).contiguous();
+    const auto host_valid_mask =
+        staging_valid_mask_.index({Slice(0, batch_size), Slice(0, max_legal)}).contiguous();
 
     EvaluationStats stats{.batch_size = batch.size(), .max_legal_actions = max_legal_actions};
     auto device_features = host_features;
@@ -209,11 +234,14 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     const auto h2d_host_start = EvalClock::now();
     if (device_.torch_device.is_cuda()) {
         if (on_cuda) events->h2d_start.record(events->stream);
-        device_features = host_features.to(device_.torch_device);
+        // Non-blocking is only honoured from pinned memory, which is what the
+        // staging buffers are for; the forward pass is enqueued on the same
+        // stream and therefore stays ordered after these copies.
+        device_features = host_features.to(device_.torch_device, /*non_blocking=*/true);
         ++stats.h2d_transfers;
-        device_legal_indices = host_legal_indices.to(device_.torch_device);
+        device_legal_indices = host_legal_indices.to(device_.torch_device, /*non_blocking=*/true);
         ++stats.h2d_transfers;
-        device_valid_mask = host_valid_mask.to(device_.torch_device);
+        device_valid_mask = host_valid_mask.to(device_.torch_device, /*non_blocking=*/true);
         ++stats.h2d_transfers;
         if (on_cuda) events->h2d_end.record(events->stream);
     }
