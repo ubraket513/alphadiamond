@@ -257,6 +257,24 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
         result.episodes.push_back(std::move(record));
     }
 
+    {
+        std::vector<uint64_t> completed_moves;
+        completed_moves.reserve(result.completed_games);
+        for (const auto& record : result.episodes)
+            if (record.completed) completed_moves.push_back(record.move_count);
+        if (!completed_moves.empty()) {
+            std::sort(completed_moves.begin(), completed_moves.end());
+            const auto quantile = [&completed_moves](double q) {
+                const auto last = static_cast<double>(completed_moves.size() - 1);
+                return completed_moves[static_cast<std::size_t>(q * last)];
+            };
+            result.metrics.completed_moves_p50 = quantile(0.50);
+            result.metrics.completed_moves_p90 = quantile(0.90);
+            result.metrics.completed_moves_p99 = quantile(0.99);
+            result.metrics.completed_moves_max = completed_moves.back();
+        }
+    }
+
     result.metrics.evaluations = metrics.evaluations;
     result.metrics.batches = metrics.batches;
     result.metrics.moves = metrics.moves;

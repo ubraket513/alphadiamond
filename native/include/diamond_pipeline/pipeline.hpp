@@ -62,6 +62,16 @@ struct SelfPlayMetrics {
     uint32_t batch_p50 = 0;
     uint32_t batch_p90 = 0;
     uint32_t batch_max = 0;
+    // Move counts of the *completed* games only. Completion rate and game
+    // length degrade together when the network itself is degrading, so the two
+    // read side by side distinguish that from a healthy network with an
+    // inflated pathological tail -- which look identical in the abort rate
+    // alone. Aborted games are excluded because they are all exactly max_moves
+    // and would only dilute the percentile.
+    uint64_t completed_moves_p50 = 0;
+    uint64_t completed_moves_p90 = 0;
+    uint64_t completed_moves_p99 = 0;
+    uint64_t completed_moves_max = 0;
 };
 
 struct SelfPlayResult {

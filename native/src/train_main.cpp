@@ -770,7 +770,15 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                                            Json{static_cast<int64_t>(result.completed_games)}},
                                           {"aborted",
                                            Json{static_cast<int64_t>(result.aborted_games)}},
-                                          {"abort_reasons", Json{std::move(abort_reasons)}}}}},
+                                          {"abort_reasons", Json{std::move(abort_reasons)}},
+                                          {"completed_moves_p50",
+                                           Json{static_cast<int64_t>(m.completed_moves_p50)}},
+                                          {"completed_moves_p90",
+                                           Json{static_cast<int64_t>(m.completed_moves_p90)}},
+                                          {"completed_moves_p99",
+                                           Json{static_cast<int64_t>(m.completed_moves_p99)}},
+                                          {"completed_moves_max",
+                                           Json{static_cast<int64_t>(m.completed_moves_max)}}}}},
                 }});
         }
         const auto episodes =
