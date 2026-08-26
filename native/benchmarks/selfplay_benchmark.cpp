@@ -337,13 +337,14 @@ int main(int argc, char** argv) {
             << "{\"schema_version\":1,\"benchmark\":\"selfplay\",\"workload\":{\"repetitions\":"
             << options.repetitions << ",\"warmups\":" << options.warmups
             << ",\"games\":" << (options.games != 0 ? options.games : options.lanes)
-            << ",\"queued\":" << ((options.games != 0 && options.games > options.lanes) ? "true" : "false")
+            << ",\"queued\":"
+            << ((options.games != 0 && options.games > options.lanes) ? "true" : "false")
             << ",\"temperature\":" << options.temperature
             << ",\"temperature_moves\":" << options.temperature_moves
             << ",\"dirichlet_epsilon\":" << options.dirichlet_epsilon
-            << ",\"seed\":" << options.seed
-            << ",\"lanes\":" << options.lanes << ",\"threads\":" << options.threads
-            << ",\"max_batch\":" << options.max_batch << ",\"max_wait_us\":" << options.max_wait_us
+            << ",\"seed\":" << options.seed << ",\"lanes\":" << options.lanes
+            << ",\"threads\":" << options.threads << ",\"max_batch\":" << options.max_batch
+            << ",\"max_wait_us\":" << options.max_wait_us
             << ",\"simulations\":" << options.simulations << ",\"max_moves\":" << options.max_moves
             << "},\"environment\":{\"requested_device\":\"" << device.requested_name
             << "\",\"canonical_device\":\"" << device.canonical_name
@@ -391,12 +392,10 @@ int main(int argc, char** argv) {
                   // itself mean the GPU is saturated.
                   << ",\"evaluator_stage_seconds\":{"
                   << "\"collation\":" << totals.collation_seconds
-                  << ",\"h2d\":" << totals.h2d_seconds
-                  << ",\"forward\":" << totals.forward_seconds
+                  << ",\"h2d\":" << totals.h2d_seconds << ",\"forward\":" << totals.forward_seconds
                   << ",\"policy_postprocess\":" << totals.postprocess_seconds
-                  << ",\"d2h\":" << totals.d2h_seconds
-                  << ",\"scatter\":" << totals.scatter_seconds << "}"
-                  << "}}\n";
+                  << ",\"d2h\":" << totals.d2h_seconds << ",\"scatter\":" << totals.scatter_seconds
+                  << "}" << "}}\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "selfplay_benchmark: " << error.what() << '\n';

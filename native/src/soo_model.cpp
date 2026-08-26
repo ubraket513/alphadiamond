@@ -68,7 +68,8 @@ torch::Tensor DirectionalResidualBlockImpl::forward(const torch::Tensor& nodes,
     auto selected = nodes.index_select(1, neighbour_index);
     // Only the board edges have no neighbour in a given direction, so zero
     // those rows directly instead of sweeping the whole [B,6,73,W] tensor.
-    if (neighbour_missing.numel() > 0) selected.index_fill_(1, neighbour_missing, 0);
+    if (neighbour_missing.numel() > 0)
+        selected.index_fill_(1, neighbour_missing, 0);
     const auto neighbours = selected.view({nodes.size(0), 6, nodes.size(1), width});
     std::vector<torch::Tensor> weights;
     for (const auto& module : direction_projections) {

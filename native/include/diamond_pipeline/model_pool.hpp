@@ -69,7 +69,9 @@ class ModelPool final : public soo::BatchEvaluator {
     EvaluationStats accumulated_evaluation_stats() const noexcept {
         return accumulated_evaluation_stats_;
     }
-    std::size_t evaluated_batches() const noexcept { return evaluated_batches_; }
+    std::size_t evaluated_batches() const noexcept {
+        return evaluated_batches_;
+    }
     void reset_evaluation_stats() noexcept {
         accumulated_evaluation_stats_ = EvaluationStats{};
         evaluated_batches_ = 0;

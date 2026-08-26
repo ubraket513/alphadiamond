@@ -137,8 +137,7 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     // enqueued asynchronously.
     struct StageEvents {
         explicit StageEvents(const c10::Stream& s)
-            : stream(s),
-              h2d_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+            : stream(s), h2d_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
               h2d_end(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
               forward_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
               forward_end(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
@@ -233,7 +232,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     auto device_valid_mask = host_valid_mask;
     const auto h2d_host_start = EvalClock::now();
     if (device_.torch_device.is_cuda()) {
-        if (on_cuda) events->h2d_start.record(events->stream);
+        if (on_cuda)
+            events->h2d_start.record(events->stream);
         // Non-blocking is only honoured from pinned memory, which is what the
         // staging buffers are for; the forward pass is enqueued on the same
         // stream and therefore stays ordered after these copies.
@@ -243,16 +243,19 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         ++stats.h2d_transfers;
         device_valid_mask = host_valid_mask.to(device_.torch_device, /*non_blocking=*/true);
         ++stats.h2d_transfers;
-        if (on_cuda) events->h2d_end.record(events->stream);
+        if (on_cuda)
+            events->h2d_end.record(events->stream);
     }
     const auto h2d_host_end = EvalClock::now();
 
     torch::NoGradGuard no_grad;
     ++stats.forward_calls;
     const auto forward_host_start = EvalClock::now();
-    if (on_cuda) events->forward_start.record(events->stream);
+    if (on_cuda)
+        events->forward_start.record(events->stream);
     const auto [logits, values] = model->forward(device_features);
-    if (on_cuda) events->forward_end.record(events->stream);
+    if (on_cuda)
+        events->forward_end.record(events->stream);
     const auto forward_host_end = EvalClock::now();
     if (logits.dim() != 2 || logits.size(0) != batch_size || logits.size(1) != kActionSpace ||
         values.dim() != 2 || values.size(0) != batch_size || values.size(1) != value_width ||
@@ -262,7 +265,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     }
 
     const auto post_host_start = EvalClock::now();
-    if (on_cuda) events->post_start.record(events->stream);
+    if (on_cuda)
+        events->post_start.record(events->stream);
     const auto legal_logits = logits.gather(1, device_legal_indices);
     const auto padded_priors = torch::softmax(
         legal_logits.masked_fill(device_valid_mask.eq(0), -std::numeric_limits<float>::infinity()),
@@ -273,16 +277,19 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         torch::cat({padded_priors, values, finite_rows.unsqueeze(1).to(torch::kFloat32)}, 1)
             .contiguous();
 
-    if (on_cuda) events->post_end.record(events->stream);
+    if (on_cuda)
+        events->post_end.record(events->stream);
     const auto post_host_end = EvalClock::now();
 
     const auto d2h_host_start = EvalClock::now();
     auto compact_cpu = compact_device;
     if (device_.torch_device.is_cuda()) {
-        if (on_cuda) events->d2h_start.record(events->stream);
+        if (on_cuda)
+            events->d2h_start.record(events->stream);
         compact_cpu = compact_device.to(torch::kCPU);
         ++stats.d2h_transfers;
-        if (on_cuda) events->d2h_end.record(events->stream);
+        if (on_cuda)
+            events->d2h_end.record(events->stream);
     }
     const auto d2h_host_end = EvalClock::now();
     if (!compact_cpu.is_contiguous() || compact_cpu.scalar_type() != torch::kFloat32 ||
