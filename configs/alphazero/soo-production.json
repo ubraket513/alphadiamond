@@ -11,7 +11,7 @@
     "precision": "fp32"
   },
   "mcts": {
-    "simulations": 400,
+    "simulations": 128,
     "simulations_late": 0,
     "repeat_window": 0,
     "c_puct": 1.5,
