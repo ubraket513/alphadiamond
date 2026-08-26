@@ -20,6 +20,17 @@ constexpr diamond_training::TrainingConfig kConfig{
     .weight_decay = 1e-4,
 };
 
+void set_environment(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    if (*value)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
+#endif
+}
+
 diamond_training::Compatibility compatibility() {
     return diamond_training::Compatibility::soo("1.0.0", {.residual_blocks = 1, .width = 8});
 }
@@ -172,14 +183,14 @@ int main(int argc, char** argv) {
         std::getline(in, value);
         return value;
     }();
-    _putenv_s("DIAMOND_CHECKPOINT_FAIL_ACTIVATE", "1");
+    set_environment("DIAMOND_CHECKPOINT_FAIL_ACTIVATE", "1");
     bool failed = false;
     try {
         (void)diamond_training::save_checkpoint_v2(scratch / "activation", trainer);
     } catch (const diamond_training::CheckpointError&) {
         failed = true;
     }
-    _putenv_s("DIAMOND_CHECKPOINT_FAIL_ACTIVATE", "");
+    set_environment("DIAMOND_CHECKPOINT_FAIL_ACTIVATE", "");
     CHECK(failed);
     const auto current_after = [&] {
         std::ifstream in(scratch / "activation" / "CURRENT");
