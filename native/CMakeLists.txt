@@ -93,6 +93,7 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(rules_golden_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(match_geometry_test "${DIAMOND_GOLDEN_DIR}")
+    diamond_add_native_test(geometry_hygiene_test "${CMAKE_CURRENT_SOURCE_DIR}")
     diamond_add_native_test(mcts_golden_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(mcts_stochastic_test
