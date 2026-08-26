@@ -42,3 +42,5 @@ az-bench/**/checkpoints/
 *.ckpt
 *.safetensors
 !/runtime/runs/soo/cpu8h-soo-20260819/latest.pt
+!/tests/golden/training-v1/min/checkpoint-v1.pt
+!/tests/golden/training-v1/soo/checkpoint-v1.pt
