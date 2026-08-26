@@ -722,6 +722,56 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             const auto result = diamond_pipeline::run_self_play(
                 iteration_job(config, state, operation, key), models, {});
             diamond_pipeline::save_episode_artifact(episodes_path, operation, result.episodes);
+
+            // Engine counters the episode artifact cannot carry, written beside
+            // it so they are as durable as the episodes themselves and survive
+            // resume. Diagnostic only: nothing reads this back, and no gate
+            // depends on it.
+            Object abort_reasons;
+            for (const auto& episode : result.episodes) {
+                if (episode.completed) continue;
+                auto [found, inserted] =
+                    abort_reasons.try_emplace(episode.aborted_reason, Json{int64_t{0}});
+                (void)inserted;
+                ++std::get<int64_t>(found->second.value);
+            }
+            const auto& m = result.metrics;
+            write_json(
+                per_iteration / "selfplay.metrics.json",
+                Json{Object{
+                    {"schema_version", Json{int64_t{1}}},
+                    {"operation_id", Json{operation}},
+                    {"iteration", Json{static_cast<int64_t>(iteration)}},
+                    {"search",
+                     Json{Object{{"simulations", Json{config.mcts.simulations}},
+                                 {"simulations_late", Json{config.mcts.simulations_late}},
+                                 {"repeat_window", Json{config.mcts.repeat_window}},
+                                 {"boosted_moves", Json{static_cast<int64_t>(m.boosted_moves)}},
+                                 {"boosted_fraction", Json{m.boosted_fraction}}}}},
+                    {"throughput",
+                     Json{Object{
+                         {"moves", Json{static_cast<int64_t>(m.moves)}},
+                         {"evaluations", Json{static_cast<int64_t>(m.evaluations)}},
+                         {"batches", Json{static_cast<int64_t>(m.batches)}},
+                         {"wall_seconds", Json{m.wall_seconds}},
+                         {"evaluator_seconds", Json{m.evaluator_seconds}},
+                         {"worker_busy_seconds", Json{m.worker_busy_seconds}},
+                         {"evaluator_busy_fraction", Json{m.evaluator_busy_fraction}}}}},
+                    {"batching",
+                     Json{Object{{"max_batch_size", Json{config.inference.max_batch_size}},
+                                 {"max_wait_us", Json{config.inference.max_wait_us}},
+                                 {"batch_mean", Json{m.batch_mean}},
+                                 {"batch_p50", Json{static_cast<int64_t>(m.batch_p50)}},
+                                 {"batch_p90", Json{static_cast<int64_t>(m.batch_p90)}},
+                                 {"batch_max", Json{static_cast<int64_t>(m.batch_max)}}}}},
+                    {"games", Json{Object{{"requested",
+                                           Json{static_cast<int64_t>(result.episodes.size())}},
+                                          {"completed",
+                                           Json{static_cast<int64_t>(result.completed_games)}},
+                                          {"aborted",
+                                           Json{static_cast<int64_t>(result.aborted_games)}},
+                                          {"abort_reasons", Json{std::move(abort_reasons)}}}}},
+                }});
         }
         const auto episodes =
             diamond_pipeline::load_episode_artifact(episodes_path, operation, compatibility);

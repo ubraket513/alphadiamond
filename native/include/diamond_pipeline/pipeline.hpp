@@ -41,11 +41,35 @@ struct IterationResult {
     uint64_t training_step = 0;
 };
 
+// Engine-side counters for one self-play stage. These live only for the
+// duration of the run -- the stage report is rebuilt from the reloaded episode
+// artifact so that it survives `resume`, and episodes carry no scheduler state
+// -- so they are written to a sidecar at the moment self-play executes. Without
+// that, `boosted_moves` in particular is computed and dropped, leaving no way to
+// tell a repetition trigger that was configured and never needed from one that
+// was configured and silently did nothing.
+struct SelfPlayMetrics {
+    uint64_t evaluations = 0;
+    uint64_t batches = 0;
+    uint64_t moves = 0;
+    uint64_t boosted_moves = 0;
+    double boosted_fraction = 0.0;
+    double wall_seconds = 0.0;
+    double evaluator_seconds = 0.0;
+    double worker_busy_seconds = 0.0;
+    double evaluator_busy_fraction = 0.0;
+    double batch_mean = 0.0;
+    uint32_t batch_p50 = 0;
+    uint32_t batch_p90 = 0;
+    uint32_t batch_max = 0;
+};
+
 struct SelfPlayResult {
     std::string operation_id;
     std::size_t completed_games = 0;
     std::size_t aborted_games = 0;
     std::size_t new_samples = 0;
+    SelfPlayMetrics metrics;
     std::vector<Episode> episodes;
 };
 

@@ -256,6 +256,34 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
         }
         result.episodes.push_back(std::move(record));
     }
+
+    result.metrics.evaluations = metrics.evaluations;
+    result.metrics.batches = metrics.batches;
+    result.metrics.moves = metrics.moves;
+    result.metrics.boosted_moves = metrics.boosted_moves;
+    if (metrics.moves > 0) {
+        result.metrics.boosted_fraction =
+            static_cast<double>(metrics.boosted_moves) / static_cast<double>(metrics.moves);
+    }
+    result.metrics.wall_seconds = metrics.wall_seconds;
+    result.metrics.evaluator_seconds = metrics.evaluator_seconds;
+    result.metrics.worker_busy_seconds = metrics.worker_busy_seconds;
+    if (metrics.wall_seconds > 0.0)
+        result.metrics.evaluator_busy_fraction = metrics.evaluator_seconds / metrics.wall_seconds;
+    if (!metrics.batch_sizes.empty()) {
+        auto sizes = metrics.batch_sizes;
+        std::sort(sizes.begin(), sizes.end());
+        double total = 0.0;
+        for (const uint32_t size : sizes) total += size;
+        result.metrics.batch_mean = total / static_cast<double>(sizes.size());
+        const auto quantile = [&sizes](double q) {
+            const auto last = static_cast<double>(sizes.size() - 1);
+            return sizes[static_cast<std::size_t>(q * last)];
+        };
+        result.metrics.batch_p50 = quantile(0.50);
+        result.metrics.batch_p90 = quantile(0.90);
+        result.metrics.batch_max = sizes.back();
+    }
     return result;
 }
 
