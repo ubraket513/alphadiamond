@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   native-core:
     name: native-core (${{ matrix.os }})
@@ -49,6 +52,32 @@ jobs:
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
+  native-training:
+    name: native-training (LibTorch CPU)
+    runs-on: ubuntu-latest
+    env:
+      LIBTORCH_VERSION: 2.7.1
+      CC: gcc-14
+      CXX: g++-14
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned official LibTorch CPU archive
+        run: |
+          mkdir -p .deps
+          curl --fail --location --retry 3 \
+            "https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip" \
+            --output .deps/libtorch.zip
+          unzip -q .deps/libtorch.zip -d .deps
+      - name: Configure LibTorch training
+        run: >-
+          tools/native_training.sh cmake --preset native-training
+          -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/.deps/libtorch"
+      - run: tools/native_training.sh cmake --build --preset native-training --parallel
+      - run: tools/native_training.sh ctest --preset native-training --output-on-failure --no-tests=error
+
   native-qt:
     name: native-qt
     runs-on: ubuntu-latest
@@ -77,28 +106,77 @@ jobs:
 
   native-format:
     name: native-format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      CLANG_FORMAT_MAJOR: 18
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
     steps:
       - uses: actions/checkout@v5
-      - run: git diff --check
+        with:
+          fetch-depth: 0
+      - name: Check whitespace
+        run: git diff --check
+      - name: Install pinned clang-format major
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            "clang-format-$CLANG_FORMAT_MAJOR"
+          formatter="clang-format-$CLANG_FORMAT_MAJOR"
+          "$formatter" --version
+          "$formatter" --version | grep -Eq 'version 18([.]|$)'
+      - name: Check only changed C and C++ lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          formatter="clang-format-$CLANG_FORMAT_MAJOR"
+          base="$BASE_SHA"
+          if test -z "$base" || test "$base" = 0000000000000000000000000000000000000000 \
+              || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          ranges="$RUNNER_TEMP/clang-format-ranges.tsv"
+          git diff --unified=0 --no-color --diff-filter=ACMR "$base" -- \
+              '*.c' '*.cc' '*.cpp' '*.h' '*.hpp' \
+            | awk '
+                /^\+\+\+ b\// { file = substr($0, 7); next }
+                /^@@ / {
+                    plus = index($0, "+")
+                    tail = substr($0, plus + 1)
+                    space = index(tail, " ")
+                    range = substr(tail, 1, space - 1)
+                    comma = index(range, ",")
+                    if (comma == 0) { start = range + 0; count = 1 }
+                    else {
+                        start = substr(range, 1, comma - 1) + 0
+                        count = substr(range, comma + 1) + 0
+                    }
+                    if (count > 0) print file "\t" start "\t" start + count - 1
+                }
+              ' > "$ranges"
+          status=0
+          while IFS=$'\t' read -r file start end; do
+            "$formatter" --dry-run --Werror --style=file \
+              --lines="$start:$end" "$file" || status=1
+          done < "$ranges"
+          exit "$status"
 
   compatibility-core:
     name: core (py3.12)
-    needs: native-core
+    needs: [native-core, native-training]
     runs-on: ubuntu-latest
     steps:
-      - run: test '${{ needs.native-core.result }}' = success
+      - run: test '${{ needs.native-core.result }}' = success && test '${{ needs.native-training.result }}' = success
 
   compatibility-bridge:
     name: bridge (pybind boundary)
-    needs: native-core
+    needs: [native-core, native-training]
     runs-on: ubuntu-latest
     steps:
-      - run: test '${{ needs.native-core.result }}' = success
+      - run: test '${{ needs.native-core.result }}' = success && test '${{ needs.native-training.result }}' = success
 
   compatibility-lint:
     name: lint (changed files)
-    needs: native-format
+    needs: [native-format, native-training]
     runs-on: ubuntu-latest
     steps:
-      - run: test '${{ needs.native-format.result }}' = success
+      - run: test '${{ needs.native-format.result }}' = success && test '${{ needs.native-training.result }}' = success

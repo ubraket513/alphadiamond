@@ -295,6 +295,8 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
     static const std::set<std::string> shape_keys = {"input", "policy", "value"};
     static const std::set<std::string> source_keys = {
         "checkpoint_sha256", "training_commit", "training_step"};
+    static const std::set<std::string> source_keys_with_simulations = {
+        "checkpoint_sha256", "training_commit", "training_simulations", "training_step"};
 
     const JsonValue parsed = diamond_support::parse_json(read_text(root / "metadata.json"));
     const auto* object = std::get_if<JsonValue::Object>(&parsed.value);
@@ -343,10 +345,15 @@ DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& roo
     require_batched_shape(shapes, "value", {value_size});
 
     const JsonValue::Object& provenance = object_field(*object, "source");
-    require_keys(provenance, source_keys, "source");
+    require_keys(provenance,
+                 provenance.contains("training_simulations") ? source_keys_with_simulations
+                                                             : source_keys,
+                 "source");
     require_nullable_digest(provenance, "checkpoint_sha256");
     require_nullable_commit(provenance, "training_commit");
     require_nullable_nonnegative_integer(provenance, "training_step");
+    if (provenance.contains("training_simulations"))
+        require_nullable_nonnegative_integer(provenance, "training_simulations");
 
     (void)integer_field(*object, "corpus_seed");
 

@@ -47,36 +47,93 @@ Json nullable_string(const std::string& value) {
     return value.empty() ? Json{nullptr} : Json{value};
 }
 
+Json participant_identity_array(const std::vector<ParticipantIdentity>& identities) {
+    Json::Array result;
+    for (const auto& identity : identities) {
+        result.emplace_back(Json::Object{{"display_name", Json{identity.display_name}},
+                                         {"full_identity", identity.full_identity},
+                                         {"participant_id", Json{identity.participant_id}}});
+    }
+    return Json{std::move(result)};
+}
+
+template <size_t Count>
+void validate_embedded_identities(const std::array<std::string, Count>& participant_ids,
+                                  const std::vector<ParticipantIdentity>& identities) {
+    if (identities.empty())
+        return;
+    if (identities.size() != Count)
+        throw RatingError("embedded participant identity count does not match event");
+    for (size_t index = 0; index < Count; ++index) {
+        identities[index].validate();
+        if (identities[index].participant_id != participant_ids[index])
+            throw RatingError("embedded participant identity does not match event participant");
+    }
+}
+
 std::string event_digest(const char* event_type, Json::Object payload) {
     payload.emplace("event_type", Json{std::string(event_type)});
     return "sha256:" + diamond_support::sha256(diamond_support::canonical_json(Json{std::move(payload)}));
 }
-
 Json::Object soo_payload(const SooRatingEvent& event) {
-    return {{"completed", Json{event.completed}},
-            {"loser_id", nullable_string(event.loser_id)},
-            {"opening_id", Json{event.opening_id}},
-            {"participant_ids", string_array(event.participant_ids)},
-            {"protocol_id", Json{event.protocol_id}},
-            {"seat_assignment", int_array(event.seat_assignment)},
-            {"sequence_index", Json{static_cast<int64_t>(event.sequence_index)}},
-            {"turn_order", int_array(event.turn_order)},
-            {"winner_id", nullable_string(event.winner_id)}};
+    Json::Object payload{{"completed", Json{event.completed}},
+                         {"loser_id", nullable_string(event.loser_id)},
+                         {"opening_id", Json{event.opening_id}},
+                         {"participant_ids", string_array(event.participant_ids)},
+                         {"protocol_id", Json{event.protocol_id}},
+                         {"seat_assignment", int_array(event.seat_assignment)},
+                         {"turn_order", int_array(event.turn_order)},
+                         {"winner_id", nullable_string(event.winner_id)}};
+    if (event.game_id.empty())
+        payload.emplace("sequence_index", Json{static_cast<int64_t>(event.sequence_index)});
+    else
+        payload.emplace("game_id", Json{event.game_id});
+    if (!event.participant_identities.empty())
+        payload.emplace("participant_identities",
+                        participant_identity_array(event.participant_identities));
+    return payload;
 }
 
 Json::Object min_payload(const MinRatingEvent& event) {
     Json ranking{nullptr};
     if (event.completed) ranking = string_array(event.final_ranking);
-    return {{"completed", Json{event.completed}},
-            {"final_ranking", std::move(ranking)},
-            {"opening_id", Json{event.opening_id}},
-            {"participant_ids", string_array(event.participant_ids)},
-            {"protocol_id", Json{event.protocol_id}},
-            {"seat_assignment", int_array(event.seat_assignment)},
-            {"sequence_index", Json{static_cast<int64_t>(event.sequence_index)}},
-            {"turn_order", int_array(event.turn_order)}};
+    Json::Object payload{{"completed", Json{event.completed}},
+                         {"final_ranking", std::move(ranking)},
+                         {"opening_id", Json{event.opening_id}},
+                         {"participant_ids", string_array(event.participant_ids)},
+                         {"protocol_id", Json{event.protocol_id}},
+                         {"seat_assignment", int_array(event.seat_assignment)},
+                         {"turn_order", int_array(event.turn_order)}};
+    if (event.game_id.empty())
+        payload.emplace("sequence_index", Json{static_cast<int64_t>(event.sequence_index)});
+    else
+        payload.emplace("game_id", Json{event.game_id});
+    if (!event.participant_identities.empty())
+        payload.emplace("participant_identities",
+                        participant_identity_array(event.participant_identities));
+    return payload;
 }
 
+bool same_payload(const SooRatingEvent& left, const SooRatingEvent& right) {
+    return left.event_id == right.event_id && left.protocol_id == right.protocol_id &&
+           left.participant_ids == right.participant_ids &&
+           left.seat_assignment == right.seat_assignment && left.turn_order == right.turn_order &&
+           left.opening_id == right.opening_id && left.completed == right.completed &&
+           left.winner_id == right.winner_id && left.loser_id == right.loser_id &&
+           left.game_id == right.game_id &&
+           left.participant_identities == right.participant_identities &&
+           (!left.game_id.empty() || left.sequence_index == right.sequence_index);
+}
+
+bool same_payload(const MinRatingEvent& left, const MinRatingEvent& right) {
+    return left.event_id == right.event_id && left.protocol_id == right.protocol_id &&
+           left.participant_ids == right.participant_ids &&
+           left.seat_assignment == right.seat_assignment && left.turn_order == right.turn_order &&
+           left.opening_id == right.opening_id && left.completed == right.completed &&
+           left.final_ranking == right.final_ranking && left.game_id == right.game_id &&
+           left.participant_identities == right.participant_identities &&
+           (!left.game_id.empty() || left.sequence_index == right.sequence_index);
+}
 double normal_pdf(double value) {
     return (1.0 / std::sqrt(2.0 * std::acos(-1.0))) * std::exp(-0.5 * value * value);
 }
@@ -319,8 +376,7 @@ std::array<MinRating, 3> rate_ranked_min_event(const std::array<MinRating, 3>& r
     return result;
 }
 
-}  // namespace
-
+} // namespace
 void EloConfig::validate() const {
     if (!std::isfinite(initial_rating) || !std::isfinite(k_factor) || !std::isfinite(logistic_scale) ||
         k_factor <= 0 || logistic_scale <= 0 || rating_system_version != "soo-elo-v1")
@@ -334,9 +390,34 @@ void TrueSkillConfig::validate() const {
         throw RatingError("invalid Min TrueSkill configuration");
 }
 
+std::string canonical_participant_id(const Json& full_identity) {
+    if (!std::holds_alternative<Json::Object>(full_identity.value))
+        throw RatingError("participant full identity must be an object");
+    return "sha256:" + diamond_support::sha256(diamond_support::canonical_json(full_identity));
+}
+
+ParticipantIdentity make_participant_identity(Json full_identity, std::string display_name) {
+    ParticipantIdentity result{canonical_participant_id(full_identity), std::move(display_name),
+                               std::move(full_identity)};
+    result.validate();
+    return result;
+}
+
+void ParticipantIdentity::validate() const {
+    if (display_name.empty() || participant_id != canonical_participant_id(full_identity))
+        throw RatingError("participant identity is invalid");
+}
+
+bool ParticipantIdentity::operator==(const ParticipantIdentity& other) const {
+    return participant_id == other.participant_id && display_name == other.display_name &&
+           diamond_support::canonical_json(full_identity) ==
+               diamond_support::canonical_json(other.full_identity);
+}
+
 void SooRatingEvent::validate() const {
     if (protocol_id.empty() || opening_id.empty()) throw RatingError("event protocol_id and opening_id must be non-empty");
     validate_ids(participant_ids); validate_permutation(seat_assignment, "seat_assignment"); validate_permutation(turn_order, "turn_order");
+    validate_embedded_identities(participant_ids, participant_identities);
     if (completed) {
         if (winner_id.empty() || loser_id.empty() || winner_id == loser_id ||
             std::set<std::string>{winner_id, loser_id} != std::set<std::string>{participant_ids[0], participant_ids[1]})
@@ -356,6 +437,7 @@ Json SooRatingEvent::to_json() const {
 void MinRatingEvent::validate() const {
     if (protocol_id.empty() || opening_id.empty()) throw RatingError("event protocol_id and opening_id must be non-empty");
     validate_ids(participant_ids); validate_permutation(seat_assignment, "seat_assignment"); validate_permutation(turn_order, "turn_order");
+    validate_embedded_identities(participant_ids, participant_identities);
     if (completed) {
         validate_ids(final_ranking);
         if (std::set<std::string>(final_ranking.begin(), final_ranking.end()) !=
@@ -375,20 +457,43 @@ Json MinRatingEvent::to_json() const {
 }
 
 SooRatingEvent make_soo_rating_event(uint64_t sequence_index, std::string protocol_id,
-                                     std::array<std::string, 2> participants, std::array<int, 2> seats,
-                                     std::array<int, 2> order, std::string opening, bool completed,
-                                     std::string winner, std::string loser) {
-    SooRatingEvent event{sequence_index, std::move(protocol_id), std::move(participants), seats, order,
-                         std::move(opening), completed, std::move(winner), std::move(loser), {}};
+                                     std::array<std::string, 2> participants,
+                                     std::array<int, 2> seats, std::array<int, 2> order,
+                                     std::string opening, bool completed, std::string winner,
+                                     std::string loser, std::string game_id,
+                                     std::vector<ParticipantIdentity> participant_identities) {
+    SooRatingEvent event{sequence_index,
+                         std::move(protocol_id),
+                         std::move(participants),
+                         seats,
+                         order,
+                         std::move(opening),
+                         completed,
+                         std::move(winner),
+                         std::move(loser),
+                         {},
+                         std::move(game_id),
+                         std::move(participant_identities)};
     event.event_id = event_digest("soo", soo_payload(event)); event.validate(); return event;
 }
 
 MinRatingEvent make_min_rating_event(uint64_t sequence_index, std::string protocol_id,
-                                     std::array<std::string, 3> participants, std::array<int, 3> seats,
-                                     std::array<int, 3> order, std::string opening, bool completed,
-                                     std::array<std::string, 3> ranking) {
-    MinRatingEvent event{sequence_index, std::move(protocol_id), std::move(participants), seats, order,
-                         std::move(opening), completed, std::move(ranking), {}};
+                                     std::array<std::string, 3> participants,
+                                     std::array<int, 3> seats, std::array<int, 3> order,
+                                     std::string opening, bool completed,
+                                     std::array<std::string, 3> ranking, std::string game_id,
+                                     std::vector<ParticipantIdentity> participant_identities) {
+    MinRatingEvent event{sequence_index,
+                         std::move(protocol_id),
+                         std::move(participants),
+                         seats,
+                         order,
+                         std::move(opening),
+                         completed,
+                         std::move(ranking),
+                         {},
+                         std::move(game_id),
+                         std::move(participant_identities)};
     event.event_id = event_digest("min", min_payload(event)); event.validate(); return event;
 }
 
@@ -423,13 +528,67 @@ void RatingRegistry::add_participant(std::string id, std::string name) {
     else min_ratings_[it->first] = {trueskill_.mu, trueskill_.sigma, trueskill_.mu - 3.0 * trueskill_.sigma, 0};
 }
 
+void RatingRegistry::add_participant(ParticipantIdentity identity) {
+    identity.validate();
+    const auto id = identity.participant_id;
+    const auto [it, inserted] = participants_.emplace(id, identity.display_name);
+    if (!inserted) {
+        const auto found = identities_.find(id);
+        if (found != identities_.end() &&
+            diamond_support::canonical_json(found->second) !=
+                diamond_support::canonical_json(identity.full_identity))
+            throw RatingError("participant ID conflicts with a different full identity");
+        return;
+    }
+    identities_.emplace(id, std::move(identity.full_identity));
+    if (family_ == Family::soo)
+        soo_ratings_[it->first] = elo_.initial_rating;
+    else
+        min_ratings_[it->first] = {trueskill_.mu, trueskill_.sigma,
+                                   trueskill_.mu - 3.0 * trueskill_.sigma, 0};
+}
+
+void RatingRegistry::normalize_events() {
+    std::sort(events_.begin(), events_.end(), [](const auto& left, const auto& right) {
+        return std::visit(
+            [](const auto& a, const auto& b) {
+                const bool a_v2 = !a.game_id.empty();
+                const bool b_v2 = !b.game_id.empty();
+                if (a_v2 != b_v2)
+                    return a_v2;
+                if (a_v2)
+                    return a.game_id != b.game_id ? a.game_id < b.game_id : a.event_id < b.event_id;
+                return a.sequence_index != b.sequence_index ? a.sequence_index < b.sequence_index
+                                                            : a.event_id < b.event_id;
+            },
+            left, right);
+    });
+    uint64_t sequence = 0;
+    for (auto& record : events_)
+        std::visit(
+            [&](auto& event) {
+                if (!event.game_id.empty())
+                    event.sequence_index = sequence++;
+            },
+            record);
+}
+
 bool RatingRegistry::record_event(const SooRatingEvent& event) {
     if (family_ != Family::soo) throw RatingError("Min registry accepts only Min events");
     event.validate();
     if (event.protocol_id != protocol_id_) throw RatingError("event protocol does not match registry protocol");
     for (const auto& id : event.participant_ids) if (!participants_.contains(id)) throw RatingError("event references unregistered participant");
-    for (const auto& recorded : events_) if (const auto* current = std::get_if<SooRatingEvent>(&recorded); current && current->event_id == event.event_id) return false;
-    events_.emplace_back(event); rebuild(); return true;
+    for (const auto& recorded : events_)
+        if (const auto* current = std::get_if<SooRatingEvent>(&recorded);
+            current && current->event_id == event.event_id) {
+            if (!same_payload(*current, event))
+                throw RatingError("Soo event ID conflicts with a different payload");
+            return false;
+        }
+    events_.emplace_back(event);
+    normalize_events();
+    rebuild();
+    return true;
 }
 
 bool RatingRegistry::record_event(const MinRatingEvent& event) {
@@ -437,8 +596,41 @@ bool RatingRegistry::record_event(const MinRatingEvent& event) {
     event.validate();
     if (event.protocol_id != protocol_id_) throw RatingError("event protocol does not match registry protocol");
     for (const auto& id : event.participant_ids) if (!participants_.contains(id)) throw RatingError("event references unregistered participant");
-    for (const auto& recorded : events_) if (const auto* current = std::get_if<MinRatingEvent>(&recorded); current && current->event_id == event.event_id) return false;
-    events_.emplace_back(event); rebuild(); return true;
+    for (const auto& recorded : events_)
+        if (const auto* current = std::get_if<MinRatingEvent>(&recorded);
+            current && current->event_id == event.event_id) {
+            if (!same_payload(*current, event))
+                throw RatingError("Min event ID conflicts with a different payload");
+            return false;
+        }
+    events_.emplace_back(event);
+    normalize_events();
+    rebuild();
+    return true;
+}
+
+void RatingRegistry::merge(const RatingRegistry& other) {
+    if (family_ != other.family_ || protocol_id_ != other.protocol_id_ ||
+        (family_ == Family::soo &&
+         (elo_.initial_rating != other.elo_.initial_rating ||
+          elo_.k_factor != other.elo_.k_factor ||
+          elo_.logistic_scale != other.elo_.logistic_scale ||
+          elo_.rating_system_version != other.elo_.rating_system_version)) ||
+        (family_ == Family::min &&
+         (trueskill_.mu != other.trueskill_.mu || trueskill_.sigma != other.trueskill_.sigma ||
+          trueskill_.beta != other.trueskill_.beta || trueskill_.tau != other.trueskill_.tau ||
+          trueskill_.draw_probability != other.trueskill_.draw_probability ||
+          trueskill_.rating_system_version != other.trueskill_.rating_system_version)))
+        throw RatingError("rating registries have incompatible protocols");
+    for (const auto& [id, name] : other.participants_) {
+        const auto identity = other.identities_.find(id);
+        if (identity == other.identities_.end())
+            add_participant(id, name);
+        else
+            add_participant(ParticipantIdentity{id, name, identity->second});
+    }
+    for (const auto& event : other.events_)
+        std::visit([this](const auto& value) { record_event(value); }, event);
 }
 
 void RatingRegistry::rebuild() {
@@ -481,10 +673,38 @@ std::vector<MinLeaderboardEntry> RatingRegistry::min_leaderboard() const {
 }
 
 Json RatingRegistry::report_json() const {
-    Json::Array rows;
+    Json::Array rows, participants;
+    for (const auto& [id, name] : participants_) {
+        const auto identity = identities_.find(id);
+        participants.emplace_back(Json::Object{
+            {"display_name", Json{name}},
+            {"full_identity", identity == identities_.end() ? Json{nullptr} : identity->second},
+            {"participant_id", Json{id}}});
+    }
     if (family_ == Family::soo) for (const auto& entry : soo_leaderboard()) rows.emplace_back(Json::Object{{"display_name", Json{entry.display_name}}, {"games", Json{static_cast<int64_t>(entry.games)}}, {"participant_id", Json{entry.participant_id}}, {"rating", Json{entry.rating}}});
     else for (const auto& entry : min_leaderboard()) rows.emplace_back(Json::Object{{"display_name", Json{entry.display_name}}, {"exposure", Json{entry.rating.exposure}}, {"mu", Json{entry.rating.mu}}, {"participant_id", Json{entry.participant_id}}, {"rated_games", Json{static_cast<int64_t>(entry.rating.rated_games)}}, {"sigma", Json{entry.rating.sigma}}});
-    return Json{Json::Object{{"event_count", Json{static_cast<int64_t>(events_.size())}}, {"family", Json{family_ == Family::soo ? "soo" : "min"}}, {"leaderboard", Json{std::move(rows)}}, {"protocol_id", Json{protocol_id_}}}};
+    Json::Object config{{"schema_version", Json{int64_t{2}}}};
+    if (family_ == Family::soo)
+        config.emplace(
+            "elo", Json{Json::Object{{"initial_rating", Json{elo_.initial_rating}},
+                                     {"k_factor", Json{elo_.k_factor}},
+                                     {"logistic_scale", Json{elo_.logistic_scale}},
+                                     {"rating_system_version", Json{elo_.rating_system_version}}}});
+    else
+        config.emplace(
+            "trueskill",
+            Json{Json::Object{{"beta", Json{trueskill_.beta}},
+                              {"draw_probability", Json{trueskill_.draw_probability}},
+                              {"mu", Json{trueskill_.mu}},
+                              {"rating_system_version", Json{trueskill_.rating_system_version}},
+                              {"sigma", Json{trueskill_.sigma}},
+                              {"tau", Json{trueskill_.tau}}}});
+    return Json{Json::Object{{"event_count", Json{static_cast<int64_t>(events_.size())}},
+                             {"family", Json{family_ == Family::soo ? "soo" : "min"}},
+                             {"leaderboard", Json{std::move(rows)}},
+                             {"participants", Json{std::move(participants)}},
+                             {"protocol_config", Json{std::move(config)}},
+                             {"protocol_id", Json{protocol_id_}}}};
 }
 
 }  // namespace diamond_orchestration

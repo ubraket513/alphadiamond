@@ -11,7 +11,7 @@ AppDialog {
 
     objectName: "modelsDialog"
     title: "Models"
-    message: "Browse native models from the GitHub repository and Hugging Face bucket. "
+    message: "Browse native models from GitHub and Hugging Face. "
              + "A selection becomes active when the next game starts."
     acceptText: "Close"
     showReject: false
@@ -139,22 +139,22 @@ AppDialog {
                                 font.weight: Theme.weightBold
                             }
 
-                            Rectangle {
-                                implicitWidth: sourceText.implicitWidth + 14
-                                implicitHeight: 22
-                                radius: Theme.radiusSmall
-                                color: Theme.surfaceAlt
-                                border.width: 1
-                                border.color: Theme.border
+                            Image {
+                                visible: modelData.github
+                                source: "qrc:/assets/models/github.svg"
+                                sourceSize.width: 16
+                                sourceSize.height: 16
+                                Layout.preferredWidth: 16
+                                Layout.preferredHeight: 16
+                            }
 
-                                Text {
-                                    id: sourceText
-                                    anchors.centerIn: parent
-                                    text: modelData.source
-                                    color: Theme.textMuted
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontTiny
-                                }
+                            Image {
+                                visible: modelData.huggingFace
+                                source: "qrc:/assets/models/huggingface.svg"
+                                sourceSize.width: 16
+                                sourceSize.height: 16
+                                Layout.preferredWidth: 16
+                                Layout.preferredHeight: 16
                             }
 
                             Text {
@@ -177,9 +177,11 @@ AppDialog {
                         }
 
                         Text {
-                            text: (modelData.trainingStep > 0
-                                   ? "Training step " + modelData.trainingStep + "  ·  "
-                                   : "") + modelData.note
+                            text: "Training steps: " + modelData.trainingStep
+                                  + "  ·  Latest ELO: "
+                                  + (modelData.latestElo === "" ? "unavailable" : modelData.latestElo)
+                                  + "  ·  Training simulations: "
+                                  + modelData.trainingSimulations
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSmall
@@ -187,34 +189,26 @@ AppDialog {
                             Layout.fillWidth: true
                         }
 
-                        Text {
-                            visible: modelData.installed
-                            text: "Available locally"
-                            color: Theme.success
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontTiny
-                        }
                     }
 
                     ActionButton {
-                        visible: modelData.webUrl !== ""
+                        visible: modelData.githubUrl !== "" || modelData.huggingFaceUrl !== ""
                         text: "View"
-                        onClicked: Qt.openUrlExternally(modelData.webUrl)
+                        onClicked: Qt.openUrlExternally(modelData.huggingFaceUrl !== ""
+                            ? modelData.huggingFaceUrl : modelData.githubUrl)
                     }
 
                     ActionButton {
                         text: modelData.selected ? "Selected"
-                              : modelData.installed ? "Use next game"
-                              : modelData.compatible ? "Download"
-                              : "Export required"
+                              : modelData.installed ? "Use next game" : "Download"
                         primary: modelData.installed && !modelData.selected
-                        enabled: !root.catalog.busy && modelData.compatible
-                                 && !modelData.selected
+                        enabled: !root.catalog.busy && !modelData.selected
+                                 && (modelData.installed || modelData.github || modelData.huggingFace)
                         onClicked: {
                             if (modelData.installed)
                                 root.catalog.selectModel(modelData.id)
                             else
-                                root.catalog.downloadModel(modelData.source, modelData.id)
+                                root.catalog.downloadModel(modelData.id)
                         }
                     }
                 }

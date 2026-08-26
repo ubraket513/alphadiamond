@@ -363,6 +363,23 @@ int main(int argc, char** argv) {
 
     NativeController ai_controller;
     ai_controller.startMatch(QVariantList{1, 2}, QVariantList{2});
+    auto* ai_players = qobject_cast<QAbstractItemModel*>(ai_controller.playerModel());
+    if (!require(ai_players != nullptr, "AI player model is unavailable"))
+        return 1;
+    const int ai_player_name_role = role_for(ai_players, QByteArrayLiteral("name"));
+    const int ai_player_flag_role = role_for(ai_players, QByteArrayLiteral("isAi"));
+    int ai_player_row = -1;
+    for (int row = 0; ai_players && row < ai_players->rowCount(); ++row) {
+        if (ai_players->data(ai_players->index(row, 0), ai_player_flag_role).toBool()) {
+            ai_player_row = row;
+            break;
+        }
+    }
+    if (!require(ai_player_row >= 0 && !ai_controller.aiAgentName().isEmpty() &&
+                     ai_players->data(ai_players->index(ai_player_row, 0), ai_player_name_role)
+                             .toString() == ai_controller.aiAgentName(),
+                 "Game panel does not use the active model as the AI player name"))
+        return 1;
     auto* ai_board = qobject_cast<QAbstractItemModel*>(ai_controller.boardModel());
     const int ai_legal_step = role_for(ai_board, QByteArrayLiteral("isLegalStep"));
     const int ai_legal_jump = role_for(ai_board, QByteArrayLiteral("isLegalJump"));
@@ -421,6 +438,17 @@ int main(int argc, char** argv) {
     if (!require(ai_controller.positionTelemetry().size() == 2 &&
                  ai_controller.decisionTelemetry().size() == 2,
                  "confirmed AI move did not append its search telemetry")) return 1;
+    auto* ai_history = qobject_cast<QAbstractItemModel*>(ai_controller.historyModel());
+    if (!require(ai_history != nullptr, "AI history model is unavailable"))
+        return 1;
+    const int ai_history_label_role = role_for(ai_history, QByteArrayLiteral("playerLabel"));
+    if (!require(ai_history->rowCount() >= 2 &&
+                     ai_history
+                             ->data(ai_history->index(ai_history->rowCount() - 1, 0),
+                                    ai_history_label_role)
+                             .toString() == ai_controller.aiAgentName(),
+                 "history does not use the active model as the AI player name"))
+        return 1;
     qInfo("controller contract: AI controller");
 
     NativeController failure_controller;

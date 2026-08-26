@@ -8,8 +8,10 @@
 // lane to the batcher and immediately look for another runnable one.
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -122,6 +124,9 @@ struct Episode {
     // runner returns zero samples for an aborted episode; the moves are kept
     // here anyway so the caller can decide, and the caller does discard them.
     bool move_limit_exceeded = false;
+    // Set when the game's own monotonic deadline elapsed. This is deliberately
+    // distinct from the move limit and caller cancellation.
+    bool max_game_seconds_exceeded = false;
 };
 
 struct EpisodeConfig {
@@ -141,6 +146,8 @@ struct EpisodeConfig {
     int max_wait_us = 2000;
     int simulations = 64;
     int max_moves = 2000;
+    // Per-game, monotonic budget. An absent or zero duration disables it.
+    std::optional<std::chrono::steady_clock::duration> max_game_duration;
     double temperature = 1.0;
     int temperature_moves = 20;
     double dirichlet_alpha = 0.3;

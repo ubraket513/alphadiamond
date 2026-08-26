@@ -17,6 +17,8 @@ blueprint/** linguist-vendored
 # binary and the rules file is parsed with getline, so neither may be
 # line-ending-translated on checkout.
 tests/golden/topology/* binary
+tests/golden/**/*.f32 binary
+tests/golden/**/*.i64 binary
 tests/golden/*.txt text eol=lf
 tests/native/fixtures/positions.jsonl text eol=lf
 

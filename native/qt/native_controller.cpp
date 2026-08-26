@@ -11,6 +11,7 @@
 #include <QPointF>
 #include <QSet>
 #include <QTimer>
+#include <QUuid>
 
 #include <cmath>
 #include <algorithm>
@@ -24,6 +25,9 @@
 #include "soo/rules.hpp"
 #include "model_catalog.hpp"
 #include "native_move_player.hpp"
+#ifdef DIAMOND_QT_HAS_RATINGS
+#include "rating_bridge.hpp"
+#endif
 #include "soo_search_runtime.hpp"
 
 namespace {
@@ -223,6 +227,11 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     player_model_ = new ContractListModel("players", this);
     ai_worker_ = new NativeAiWorker(this);
     model_catalog_ = new ModelCatalog(this);
+#ifdef DIAMOND_QT_HAS_RATINGS
+    rating_bridge_ = new RatingBridge({}, this);
+#else
+    rating_bridge_ = nullptr;
+#endif
     soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     sound_player_ = new NativeMovePlayer(this);
     connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
@@ -305,6 +314,7 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
     match_.players[0] = soo::PlayerSpec{1, 2, 5};
     match_.players[1] = soo::PlayerSpec{2, 0, 3};
     ai_seats_ = {2};
+    ai_player_name_ = resolvedAiPlayerName();
     geometry_->setPlayerCount(match_.count);
     state_.current_player = 1;
     loadTopology();
@@ -395,9 +405,18 @@ void NativeController::publishLatestCompute(const SearchTelemetry& telemetry) {
 }
 
 QString NativeController::aiAgentName() const {
+    return ai_player_name_;
+}
+
+QString NativeController::resolvedAiPlayerName() const {
 #ifdef DIAMOND_QT_HAS_SOO
-    return match_.count == 2 ? QStringLiteral("Soo AlphaZero")
-                             : QStringLiteral("Native fallback");
+    if (match_.count == 2) {
+        const QString label = model_catalog_->activeModelLabel();
+        if (!label.isEmpty() && label != QStringLiteral("None"))
+            return label;
+        return QStringLiteral("Soo AlphaZero");
+    }
+    return QStringLiteral("Native fallback");
 #else
     return QStringLiteral("Native deterministic");
 #endif
@@ -466,7 +485,11 @@ QString NativeController::playerColor(uint8_t id) const {
     return QStringLiteral("#34C759");
 }
 
-QString NativeController::playerName(uint8_t id) const { return QStringLiteral("Player %1").arg(id); }
+QString NativeController::playerName(uint8_t id) const {
+    if (ai_seats_.contains(id) && !ai_player_name_.isEmpty())
+        return ai_player_name_;
+    return QStringLiteral("Player %1").arg(id);
+}
 
 QString NativeController::currentPlayerName() const { return playerName(state_.current_player); }
 QString NativeController::currentPlayerColor() const { return playerColor(state_.current_player); }
@@ -546,6 +569,16 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
                                              static_cast<uint8_t>(target)};
     }
     ai_seats_ = aiSeats;
+    ai_player_name_ = resolvedAiPlayerName();
+    rating_game_id_ =
+        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddhhmmsszzz")) +
+        QLatin1Char('-') + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    rating_eligible_ = true;
+    rating_event_attempted_ = false;
+    rating_note_.clear();
+#ifdef DIAMOND_QT_HAS_RATINGS
+    rating_bridge_->syncPending();
+#endif
     state_ = {};
     state_.current_player = static_cast<uint8_t>(order.at(0).toInt());
     stopAnimation();
@@ -600,6 +633,8 @@ bool NativeController::saveGame(const QUrl& path) {
             {"color", playerColor(player.id)}});
     }
     root["players"] = players;
+    if (!model_catalog_->activeModelId().isEmpty())
+        root["ai_model_id"] = model_catalog_->activeModelId();
     QJsonArray occupancy;
     for (const auto piece : state_.occupancy) occupancy.push_back(piece);
     root["occupancy"] = occupancy;
@@ -677,7 +712,20 @@ bool NativeController::loadGame(const QUrl& path) {
         fail(QStringLiteral("Load failed: unsupported save schema version."));
         return false;
     }
+    if (schema == 2 && order.size() == 2 && !ai.isEmpty()) {
+        const QString saved_model_id = root.value("ai_model_id").toString();
+        if (!saved_model_id.isEmpty()) {
+            model_catalog_->selectModel(saved_model_id);
+            if (model_catalog_->selectedModelId() != saved_model_id) {
+                fail(QStringLiteral("Load failed: saved AI model is not installed."));
+                return false;
+            }
+        }
+    }
     if (!startMatch(order, ai)) return false;
+    // Replayed/save-loaded positions lack a locally scheduled game identity;
+    // never rate them, even if the next move ends the restored position.
+    rating_eligible_ = false;
     cancelSearch();
 
     const auto occupancy = root.value("occupancy").toArray();
@@ -713,13 +761,17 @@ bool NativeController::loadGame(const QUrl& path) {
             const bool is_ai = ai_seats_.contains(player);
             QStringList path_parts;
             for (uint8_t position : canonical) path_parts.push_back(QString::number(position));
-            history_.push_back(QVariantMap{{"turnNumber", entry.value("turn_number").toInt()},
-                {"playerId", player}, {"playerLabel", is_ai ? QStringLiteral("AI")
-                                                              : QStringLiteral("P%1").arg(player)},
-                {"playerColor", playerColor(player)}, {"isAi", is_ai},
+            history_.push_back(QVariantMap{
+                {"turnNumber", entry.value("turn_number").toInt()},
+                {"playerId", player},
+                {"playerLabel", playerName(player)},
+                {"playerColor", playerColor(player)},
+                {"isAi", is_ai},
                 {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
-                {"pathText", path_parts.join(QStringLiteral(" → "))}, {"pathIds", path_ids},
-                {"source", source}, {"destination", destination},
+                {"pathText", path_parts.join(QStringLiteral(" → "))},
+                {"pathIds", path_ids},
+                {"source", source},
+                {"destination", destination},
                 {"kind", kind == soo::kJump ? QStringLiteral("jump") : QStringLiteral("step")},
                 {"hopCount", std::max(1, static_cast<int>(canonical.size()) - 1)}});
             last_action_ = action;
@@ -1001,15 +1053,18 @@ void NativeController::commitAction(int32_t action) {
     appendTelemetryForCommit(player, action);
     state_history_.push_back(state_);
     state_ = soo::apply_action(state_, match_, action);
-    history_.push_back(QVariantMap{{"turnNumber", state_.turn_number - 1},
-        {"playerId", player}, {"playerLabel", was_ai ? QStringLiteral("AI")
-                                                       : QStringLiteral("P%1").arg(player)},
-        {"playerColor", playerColor(player)}, {"isAi", was_ai},
+    history_.push_back(QVariantMap{
+        {"turnNumber", state_.turn_number - 1},
+        {"playerId", player},
+        {"playerLabel", playerName(player)},
+        {"playerColor", playerColor(player)},
+        {"isAi", was_ai},
         {"moveText", QStringLiteral("%1 → %2").arg(source).arg(destination)},
-        {"pathText", path_text}, {"pathIds", path_ids}, {"source", source},
-        {"destination", destination}, {"kind", move_kind == soo::kJump
-                                                       ? QStringLiteral("jump")
-                                                       : QStringLiteral("step")},
+        {"pathText", path_text},
+        {"pathIds", path_ids},
+        {"source", source},
+        {"destination", destination},
+        {"kind", move_kind == soo::kJump ? QStringLiteral("jump") : QStringLiteral("step")},
         {"hopCount", std::max(1, static_cast<int>(path.size()) - 1)}});
     last_action_ = action;
     status_message_ = QStringLiteral("Move committed.");
@@ -1064,8 +1119,11 @@ void NativeController::stopAnimation() {
 void NativeController::finishMove() {
     announceFinishers();
     if (isGameOver()) {
+        recordTerminalRating();
         ai_status_ = QStringLiteral("Idle");
         status_message_ = QStringLiteral("Game over — %1").arg(resultSummary());
+        if (!rating_note_.isEmpty())
+            status_message_ += QStringLiteral(" %1").arg(rating_note_);
         Q_EMIT changed();
         Q_EMIT gameFinished(winnerId());
         return;
@@ -1080,6 +1138,33 @@ void NativeController::finishMove() {
     status_message_ = QStringLiteral("%1 to move.").arg(currentPlayerName());
     Q_EMIT changed();
     startHumanAnalysis();
+}
+
+void NativeController::recordTerminalRating() {
+    if (rating_event_attempted_)
+        return;
+    rating_event_attempted_ = true;
+    if (!rating_eligible_)
+        return;
+    if (match_.count != 2 || ai_seats_.size() != 1) {
+        rating_note_ =
+            QStringLiteral("Rating not recorded: requires one model and one local human.");
+        return;
+    }
+    const int ai_seat = ai_seats_.constFirst().toInt();
+    if (ai_seat != 1 && ai_seat != 2) {
+        rating_note_ = QStringLiteral("Rating not recorded: invalid model seat.");
+        return;
+    }
+#ifdef DIAMOND_QT_HAS_RATINGS
+    const bool queued = rating_bridge_->recordTerminalSooMatch(
+        rating_game_id_, model_catalog_->activeModelPath(), model_catalog_->activeModelId(),
+        ai_player_name_, ai_seat, winnerId(), turnOrder());
+    if (queued || !rating_bridge_->syncState().isEmpty())
+        rating_note_ = rating_bridge_->syncState();
+#else
+    rating_note_ = QStringLiteral("Rating sync is unavailable in this build.");
+#endif
 }
 
 void NativeController::announceFinishers() {

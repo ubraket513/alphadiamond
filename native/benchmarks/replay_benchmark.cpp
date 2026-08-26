@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -8,20 +9,44 @@
 #include <vector>
 
 #include "diamond_pipeline/replay_store.hpp"
+#include "diamond_support/build_provenance.hpp"
 
 namespace {
-struct Args { std::uint64_t repetitions = 1; std::filesystem::path scratch; };
+struct Args {
+    std::uint64_t repetitions = 1;
+    std::uint64_t pool_size = 128;
+    std::uint64_t batch_size = 4;
+    std::filesystem::path scratch;
+};
 Args parse_args(int argc, char** argv) {
     Args args;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
-        if ((option != "--repetitions" && option != "--scratch") || i + 1 >= argc)
-            throw std::invalid_argument("usage: replay_benchmark --scratch PATH [--repetitions N]");
+        if ((option != "--repetitions" && option != "--pool-size" && option != "--batch-size" &&
+             option != "--scratch") ||
+            i + 1 >= argc)
+            throw std::invalid_argument("usage: replay_benchmark --scratch PATH [--repetitions N] "
+                                        "[--pool-size N] [--batch-size N]");
         const std::string value = argv[++i];
         if (option == "--scratch") args.scratch = value;
-        else { try { args.repetitions = std::stoull(value); } catch (...) { throw std::invalid_argument("repetitions must be a positive integer"); } }
+        else {
+            try {
+                const auto parsed = std::stoull(value);
+                if (option == "--repetitions")
+                    args.repetitions = parsed;
+                else if (option == "--pool-size")
+                    args.pool_size = parsed;
+                else
+                    args.batch_size = parsed;
+            } catch (...) {
+                throw std::invalid_argument("benchmark counts must be positive integers");
+            }
+        }
     }
-    if (args.scratch.empty() || args.repetitions == 0) throw std::invalid_argument("scratch and positive repetitions are required");
+    if (args.scratch.empty() || args.repetitions == 0 || args.pool_size == 0 ||
+        args.batch_size == 0 || args.batch_size > args.pool_size)
+        throw std::invalid_argument(
+            "scratch and positive pool/repetition counts with batch <= pool are required");
     return args;
 }
 diamond_pipeline::Episode episode(const diamond_pipeline::Compatibility& compatibility, std::uint64_t id) {
@@ -38,15 +63,34 @@ int run(int argc, char** argv) {
     const auto args = parse_args(argc, argv);
     std::filesystem::remove_all(args.scratch);
     const auto compatibility = diamond_pipeline::Compatibility::soo("benchmark-1", {.residual_blocks = 1, .width = 8});
-    diamond_pipeline::ReplayStore store(args.scratch, compatibility, args.repetitions + 1, 17);
-    auto operation = [&](std::uint64_t id) { auto item = episode(compatibility, id); (void)store.ingest(std::span<const diamond_pipeline::Episode>(&item, 1)); (void)store.sample(1); };
-    operation(0);
-    const auto start = std::chrono::steady_clock::now();
-    for (std::uint64_t i = 0; i < args.repetitions; ++i) operation(i + 1);
-    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    std::cout << "{\"name\":\"replay\",\"repetitions\":" << args.repetitions
-              << ",\"elapsed_seconds\":" << elapsed
-              << ",\"seconds_per_repetition\":" << elapsed / args.repetitions << "}\n";
+    diamond_pipeline::ReplayStore store(args.scratch, compatibility, args.pool_size, 17);
+    std::vector<diamond_pipeline::Episode> pool;
+    pool.reserve(args.pool_size);
+    for (std::uint64_t id = 0; id < args.pool_size; ++id)
+        pool.push_back(episode(compatibility, id));
+    (void)store.ingest(pool);
+    std::vector<double> seconds;
+    for (std::uint64_t i = 0; i < args.repetitions; ++i) {
+        const auto start = std::chrono::steady_clock::now();
+        (void)store.sample(args.batch_size);
+        seconds.push_back(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    }
+    auto sorted = seconds;
+    std::sort(sorted.begin(), sorted.end());
+    const auto stats = store.last_sampling_stats();
+    std::cout << "{\"schema_version\":1,\"benchmark\":\"replay\",\"workload\":{\"repetitions\":"
+              << args.repetitions << ",\"warmups\":0,\"batch_size\":" << args.batch_size
+              << ",\"pool_size\":" << args.pool_size
+              << "},\"environment\":{\"requested_device\":\"cpu\",\"canonical_device\":\"cpu\","
+                 "\"precision\":\"float32\"},\"provenance\":"
+              << diamond_support::build_provenance_json() << ",\"samples_seconds\":[";
+    for (std::size_t i = 0; i < seconds.size(); ++i)
+        std::cout << (i ? "," : "") << seconds[i];
+    std::cout << "],\"summary_seconds\":{\"min\":" << sorted.front()
+              << ",\"median\":" << sorted[sorted.size() / 2] << ",\"max\":" << sorted.back()
+              << ",\"range\":" << sorted.back() - sorted.front()
+              << "},\"domain\":{\"selection_slots\":" << stats.selection_slots << "}}\n";
     return 0;
 }
 } // namespace

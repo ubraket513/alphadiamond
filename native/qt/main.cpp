@@ -10,6 +10,7 @@
 #include <QQuickWindow>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlProperty>
 #include <QQuickStyle>
 #include <QPainter>
 #include <QPen>
@@ -162,16 +163,70 @@ int main(int argc, char* argv[]) {
                 return condition;
             };
             QObject* console = root->findChild<QObject*>(QStringLiteral("analysisConsole"));
+            QObject* footer = root->findChild<QObject*>(QStringLiteral("analysisFooter"));
             QObject* outlook = root->findChild<QObject*>(QStringLiteral("positionOutlookPanel"));
             QObject* decision = root->findChild<QObject*>(QStringLiteral("decisionValuePanel"));
             QObject* preference = root->findChild<QObject*>(QStringLiteral("movePreferencePanel"));
+            QObject* outlook_chart =
+                root->findChild<QObject*>(QStringLiteral("positionOutlookChart"));
+            QObject* decision_chart =
+                root->findChild<QObject*>(QStringLiteral("decisionValueChart"));
+            QObject* preference_chart =
+                root->findChild<QObject*>(QStringLiteral("movePreferenceChart"));
             QObject* compute = root->findChild<QObject*>(QStringLiteral("searchComputePanel"));
             QObject* title_bar = root->findChild<QObject*>(QStringLiteral("titleBar"));
             QObject* drawer = root->findChild<QObject*>(QStringLiteral("historyDrawer"));
             QObject* history = root->findChild<QObject*>(QStringLiteral("drawerHistoryPanel"));
-            if (!require_analysis(console && outlook && decision && preference && compute,
-                                  "analysis console components are missing") ||
-                !require_analysis(title_bar && drawer && history, "history drawer is missing")) return 1;
+            if (!require_analysis(console && footer && outlook && decision && preference && compute,
+                                  "analysis layout components are missing") ||
+                !require_analysis(outlook_chart && decision_chart && preference_chart,
+                                  "analysis charts are missing") ||
+                !require_analysis(title_bar && drawer && history, "history drawer is missing"))
+                return 1;
+            if (!require_analysis(console->findChild<QObject*>(
+                                      QStringLiteral("positionOutlookPanel")) == nullptr &&
+                                      console->findChild<QObject*>(
+                                          QStringLiteral("decisionValuePanel")) == nullptr &&
+                                      console->findChild<QObject*>(
+                                          QStringLiteral("movePreferencePanel")) == nullptr,
+                                  "analysis monitors still belong to the sidebar") ||
+                !require_analysis(
+                    footer->findChild<QObject*>(QStringLiteral("positionOutlookPanel")) &&
+                        footer->findChild<QObject*>(QStringLiteral("decisionValuePanel")) &&
+                        footer->findChild<QObject*>(QStringLiteral("movePreferencePanel")),
+                    "analysis monitors are not in the footer") ||
+                !require_analysis(outlook_chart->property("height").toDouble() >= 150.0,
+                                  "footer analysis chart is too small"))
+                return 1;
+            if (!QQmlProperty::write(outlook_chart, QStringLiteral("points"),
+                                     QVariantList{
+                                         QVariantMap{{"available", true},
+                                                     {"ply", 1},
+                                                     {"nnEstimate", 0.50},
+                                                     {"mctsEstimate", 0.40}},
+                                         QVariantMap{{"available", true},
+                                                     {"ply", 2},
+                                                     {"nnEstimate", 0.60},
+                                                     {"mctsEstimate", 0.35}},
+                                     })) {
+                std::fprintf(stderr, "analysis smoke failed: points property is not writable\n");
+                return 1;
+            }
+            QCoreApplication::processEvents();
+            const auto current_value = outlook_chart->property("firstValueText").toString();
+            const auto current_delta = outlook_chart->property("firstDeltaText").toString();
+            if (!require_analysis(
+                    current_value == QStringLiteral("60.00%"),
+                    qPrintable(QStringLiteral("analysis chart current value is not exact: value=%1 "
+                                              "index=%2 key=%3 points=%4")
+                                   .arg(current_value)
+                                   .arg(outlook_chart->property("displayIndex").toInt())
+                                   .arg(outlook_chart->property("firstKey").toString())
+                                   .arg(outlook_chart->property("points").toList().size()))) ||
+                !require_analysis(current_delta == QStringLiteral("+10.00% up"),
+                                  qPrintable(QStringLiteral("analysis chart delta is not exact: %1")
+                                                 .arg(current_delta))))
+                return 1;
             if (!require_analysis(
                     console->findChild<QObject*>(QStringLiteral("drawerHistoryPanel")) == nullptr,
                     "history still belongs to permanent analysis console")) return 1;

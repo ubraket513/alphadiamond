@@ -33,6 +33,15 @@ target_include_directories(diamond_qt_backend PUBLIC
 )
 target_compile_features(diamond_qt_backend PUBLIC cxx_std_20)
 set_target_properties(diamond_qt_backend PROPERTIES AUTOMOC ON)
+if(TARGET alphadiamond::diamond_orchestration)
+    target_sources(diamond_qt_backend PRIVATE
+        rating_bridge.cpp
+        rating_bridge.hpp
+    )
+    target_link_libraries(diamond_qt_backend PUBLIC
+        alphadiamond::diamond_orchestration)
+    target_compile_definitions(diamond_qt_backend PRIVATE DIAMOND_QT_HAS_RATINGS)
+endif()
 if(DIAMOND_BUILD_QT_SOO)
     target_link_libraries(diamond_qt_backend PUBLIC alphadiamond::diamond_model ${TORCH_LIBRARIES})
     target_include_directories(diamond_qt_backend PRIVATE ${TORCH_INCLUDE_DIRS})
@@ -99,6 +108,14 @@ qt_add_resources(diamond_qt font_resources
         "${ASSET_ROOT}/fonts/GoogleSansFlex-Bold.ttf"
 )
 
+qt_add_resources(diamond_qt model_source_icons
+    PREFIX "/assets/models"
+    BASE "${ASSET_ROOT}"
+    FILES
+        "${ASSET_ROOT}/github.svg"
+        "${ASSET_ROOT}/huggingface.svg"
+)
+
 target_link_libraries(diamond_qt PRIVATE
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Multimedia
     diamond_qt_backend
@@ -127,13 +144,48 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME diamond_qt_controller_contract COMMAND diamond_qt_controller_contract)
     add_test(NAME diamond_qt_analysis_smoke COMMAND diamond_qt --analysis-smoke)
+
+    add_executable(diamond_qt_model_catalog_test tests/model_catalog_test.cpp)
+    target_link_libraries(diamond_qt_model_catalog_test PRIVATE diamond_qt_backend)
+    target_compile_features(diamond_qt_model_catalog_test PRIVATE cxx_std_20)
+    set_target_properties(diamond_qt_model_catalog_test PROPERTIES AUTOMOC ON)
+    if(MSVC)
+        target_compile_options(diamond_qt_model_catalog_test PRIVATE /W4)
+    endif()
+    add_test(NAME diamond_qt_model_catalog_test COMMAND diamond_qt_model_catalog_test)
+
+    if(TARGET alphadiamond::diamond_orchestration)
+        add_executable(diamond_qt_rating_bridge_test tests/rating_bridge_test.cpp)
+        target_link_libraries(diamond_qt_rating_bridge_test PRIVATE diamond_qt_backend)
+        target_compile_features(diamond_qt_rating_bridge_test PRIVATE cxx_std_20)
+        set_target_properties(diamond_qt_rating_bridge_test PROPERTIES AUTOMOC ON)
+        if(MSVC)
+            target_compile_options(diamond_qt_rating_bridge_test PRIVATE /W4)
+        endif()
+        add_test(NAME diamond_qt_rating_bridge_test COMMAND diamond_qt_rating_bridge_test)
+    endif()
+
     get_filename_component(DIAMOND_QT_ENV_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
-    set_tests_properties(diamond_qt_controller_contract diamond_qt_analysis_smoke PROPERTIES
+    set(DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS
+        "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/bin"
+        "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/lib/qt6/bin")
+    if(DIAMOND_BUILD_QT_SOO)
+        get_filename_component(DIAMOND_TORCH_PACKAGE_ROOT "${Torch_DIR}/../../.." ABSOLUTE)
+        list(APPEND DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS
+            "PATH=path_list_prepend:${DIAMOND_TORCH_PACKAGE_ROOT}/lib")
+    endif()
+    set(DIAMOND_QT_TESTS
+        diamond_qt_controller_contract
+        diamond_qt_analysis_smoke
+        diamond_qt_model_catalog_test)
+    if(TARGET diamond_qt_rating_bridge_test)
+        list(APPEND DIAMOND_QT_TESTS diamond_qt_rating_bridge_test)
+    endif()
+    set_tests_properties(${DIAMOND_QT_TESTS} PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         ENVIRONMENT
             "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins;QML_IMPORT_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/qml;QT_FORCE_STDERR_LOGGING=1"
-        ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/bin;PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/lib/qt6/bin"
+        ENVIRONMENT_MODIFICATION "${DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS}"
     )
 endif()
 
@@ -150,3 +202,6 @@ endforeach()
 
 install(TARGETS diamond_qt RUNTIME DESTINATION bin BUNDLE DESTINATION .)
 install(FILES "${MOVE_SOUND}" DESTINATION bin/assets/sounds)
+if(TARGET alphadiamond-rating-sync)
+    install(PROGRAMS "${PROJECT_SOURCE_DIR}/tools/sync_ratings.sh" DESTINATION bin)
+endif()

@@ -62,49 +62,80 @@ ApplicationWindow {
     }
 
     // -- body ------------------------------------------------------------
-    RowLayout {
+    ColumnLayout {
         anchors.fill: parent
         anchors.margins: Theme.spacingLarge
         spacing: Theme.spacingLarge
 
-        // Collapsing animates the laid-out width, so the board grows into the
-        // space in the same frames rather than snapping afterwards. `visible`
-        // only drops once the panel is actually gone, which keeps it out of
-        // hit-testing and focus while leaving it on screen for the animation.
-        SidePanel {
-            id: sidePanel
-            controller: window.ctrl
-            clip: true
-            visible: Layout.preferredWidth > 0.5
-            opacity: titleBar.panelVisible ? 1 : 0
-            Layout.preferredWidth: titleBar.panelVisible ? Theme.panelWidth : 0
-            Layout.maximumWidth: Theme.panelWidth
+        RowLayout {
+            Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.minimumHeight: 330
+            spacing: Theme.spacingLarge
 
-            Behavior on Layout.preferredWidth {
-                NumberAnimation {
-                    duration: Theme.panelDuration
-                    easing.type: Easing.Bezier
-                    easing.bezierCurve: Theme.easeEmphasized
+            // Collapsing animates the laid-out width, so the board grows into
+            // the space in the same frames rather than snapping afterwards.
+            SidePanel {
+                id: sidePanel
+                controller: window.ctrl
+                clip: true
+                visible: Layout.preferredWidth > 0.5
+                opacity: titleBar.panelVisible ? 1 : 0
+                Layout.preferredWidth: titleBar.panelVisible ? Theme.panelWidth : 0
+                Layout.maximumWidth: Theme.panelWidth
+                Layout.fillHeight: true
+
+                Behavior on Layout.preferredWidth {
+                    NumberAnimation {
+                        duration: Theme.panelDuration
+                        easing.type: Easing.Bezier
+                        easing.bezierCurve: Theme.easeEmphasized
+                    }
+                }
+                Behavior on opacity {
+                    NumberAnimation {
+                        duration: Math.round(Theme.panelDuration * 0.6)
+                        easing.type: Easing.Bezier
+                        easing.bezierCurve: Theme.easeStandard
+                    }
                 }
             }
-            // Fades a little faster than it slides, so the content is gone
-            // before the panel is narrow enough to squash it.
-            Behavior on opacity {
-                NumberAnimation {
-                    duration: Math.round(Theme.panelDuration * 0.6)
-                    easing.type: Easing.Bezier
-                    easing.bezierCurve: Theme.easeStandard
-                }
+
+            Board {
+                id: board
+                controller: window.ctrl
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumWidth: 420
             }
         }
 
-        Board {
-            id: board
-            controller: window.ctrl
+        RowLayout {
+            id: analysisFooter
+            objectName: "analysisFooter"
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.minimumWidth: 420
+            Layout.preferredHeight: 252
+            Layout.minimumHeight: 214
+            spacing: Theme.spacingLarge
+
+            PositionOutlookPanel {
+                controller: window.ctrl
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+            }
+            DecisionValuePanel {
+                controller: window.ctrl
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+            }
+            MovePreferencePanel {
+                controller: window.ctrl
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+            }
         }
     }
 

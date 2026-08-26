@@ -58,6 +58,25 @@ tools/native_training.sh cmake --preset native-package
 tools/native_training.sh cmake --build --preset native-package --parallel 1
 ```
 
+A Windows native build needs both halves of the runtime environment: the MSVC
+developer environment from `VsDevCmd.bat` and the conda environment's DLL
+directories. `tools/native_training.sh` discovers and loads MSVC; keep the
+LibTorch/Qt directories ahead of inherited PATH entries:
+
+```bash
+export DIAMOND_TORCH_RUNTIME_DIR=/c/ProgramData/miniforge3/envs/alphadiamond/Library/bin
+export PATH=/c/ProgramData/miniforge3/envs/alphadiamond/Library/bin:\
+/c/ProgramData/miniforge3/envs/alphadiamond/Scripts:\
+/c/ProgramData/miniforge3/envs/alphadiamond:$PATH
+```
+
+Do not infer that CMake, MSVC, or Qt is absent from `where` alone. Recover the
+resolved paths from the existing `CMakeCache.txt` first. A supported cache must
+resolve `Torch_DIR` and `Caffe2_DIR` under the same conda `Library` tree, never
+mix a Python wheel's `site-packages/torch` into the native link graph. A CUDA
+request on a CPU-only LibTorch/runtime fails before run-directory mutation; it
+never silently falls back to CPU.
+
 `artifacts/soo-spike` must be a validated native deployment artifact produced by
 the trainer/release flow. Package it with all Qt and LibTorch dependencies:
 
@@ -181,17 +200,25 @@ topology file actually consumed by the GUI runtime.
 
 ## Tests and final checks
 
-```powershell
-$env:QT_QPA_PLATFORM = 'offscreen'
-ctest --test-dir build-qt-clean --output-on-failure
-ctest --test-dir build-qt-soo-clean --output-on-failure
-python -m pytest
+```bash
+QT_QPA_PLATFORM=offscreen tools/native_training.sh ctest \
+  --preset native-training --output-on-failure
+QT_QPA_PLATFORM=offscreen tools/native_training.sh ctest \
+  --preset native-package --output-on-failure
 ```
 
 Package smokes can also be run manually with `--smoke`, `--game-smoke`,
 `--worker-smoke`, `--failure-smoke`, `--sound-smoke`, and `--soo-smoke`. The
 final desktop pass is performed on the exact packaged executable, not the
 build-tree binary.
+
+Before distribution, inspect the packaged executable's dependencies and prove
+that `c10.dll`, `torch.dll`, `torch_cpu.dll`, Qt DLLs, and the MSVC runtimes are
+present in the package. CUDA training packages additionally require
+`c10_cuda.dll`, `torch_cuda.dll`, and the matching CUDA runtime DLLs from the
+selected LibTorch tree. `tools/deploy_native_qt.sh` byte-compares copied Torch
+DLLs against that selected runtime and runs its smokes with development PATHs
+removed, so a developer-machine DLL cannot hide an incomplete bundle.
 
 ## Compatibility notes
 

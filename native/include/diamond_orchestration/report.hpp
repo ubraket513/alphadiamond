@@ -33,13 +33,26 @@ class CommandInterruptedError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+enum class CommandInitialization {
+    none,
+    scratch,
+    native_checkpoint,
+    warm_start,
+};
+
 struct CommandRequest final {
     std::string command;
+    std::filesystem::path run_dir;
     std::filesystem::path runtime_dir;
     std::string model_name;
     std::string run_id;
     std::filesystem::path config_path;
     std::filesystem::path checkpoint_path;
+    std::filesystem::path warm_start_path;
+    std::filesystem::path candidate_path;
+    std::filesystem::path champion_path;
+    std::string opening_suite_id;
+    CommandInitialization initialization = CommandInitialization::none;
 };
 
 // Production services own all side effects.  The command boundary validates

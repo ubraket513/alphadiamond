@@ -78,26 +78,63 @@ case "$(uname -s)" in
         fi
         sed -i 's/\r$//' "$environment_dump"
 
+        developer_path=''
+        fallback_path=''
         while IFS='=' read -r name value; do
             case "$name" in
                 ''|[0-9]*|*[!A-Za-z0-9_]*) continue ;;
                 PATH|Path)
-                    PATH=$(cygpath -p "$value")
-                    export PATH
+                    converted_path=$(cygpath -p "$value")
+                    case "$value" in
+                        *\\VC\\Tools\\MSVC\\*) developer_path=$converted_path ;;
+                        *)
+                            if [ -z "$fallback_path" ]; then fallback_path=$converted_path; fi
+                            ;;
+                    esac
                     ;;
                 *) export "$name=$value" ;;
             esac
         done <"$environment_dump"
 
+        PATH=${developer_path:-$fallback_path}
+        export PATH
+
+        runtime_path=''
+        append_runtime_dir() {
+            runtime_dir=$1
+            if [ -d "$runtime_dir" ]; then
+                if [ -n "$runtime_path" ]; then
+                    runtime_path=$runtime_path:$runtime_dir
+                else
+                    runtime_path=$runtime_dir
+                fi
+            fi
+        }
+
+        explicit_torch_runtime=${DIAMOND_TORCH_RUNTIME_DIR:-}
+        case "$explicit_torch_runtime" in
+            [A-Za-z]:\\*|[A-Za-z]:/*) explicit_torch_runtime=$(cygpath -u "$explicit_torch_runtime") ;;
+        esac
+        if [ -n "$explicit_torch_runtime" ]; then
+            if [ ! -d "$explicit_torch_runtime" ]; then
+                echo "DIAMOND_TORCH_RUNTIME_DIR does not exist: $explicit_torch_runtime" >&2
+                exit 1
+            fi
+            append_runtime_dir "$explicit_torch_runtime"
+        fi
+
         if [ -n "$environment_root" ]; then
             for runtime_dir in \
-                "$environment_root/Library/lib/qt6/bin" \
                 "$environment_root/Library/bin" \
-                "$environment_root/Lib/site-packages/torch/lib"
+                "$environment_root/Scripts" \
+                "$environment_root" \
+                "$environment_root/Lib/site-packages/torch/lib" \
+                "$environment_root/Library/lib/qt6/bin"
             do
-                if [ -d "$runtime_dir" ]; then PATH=$PATH:$runtime_dir; fi
+                append_runtime_dir "$runtime_dir"
             done
         fi
+        if [ -n "$runtime_path" ]; then PATH=$runtime_path:$PATH; fi
         PATH=$PATH:$inherited_path
         export PATH
 

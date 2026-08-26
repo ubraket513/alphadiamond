@@ -14,18 +14,22 @@ endif()
 
 string(REPLACE "\r\n" "\n" tracked "${tracked}")
 string(REPLACE "\n" ";" tracked_files "${tracked}")
-set(allowed_weight "runtime/runs/soo/cpu8h-soo-20260819/latest.pt")
+set(allowed_weights
+    "runtime/runs/soo/cpu8h-soo-20260819/latest.pt"
+    "tests/golden/training-v1/min/checkpoint-v1.pt"
+    "tests/golden/training-v1/soo/checkpoint-v1.pt")
 foreach(path IN LISTS tracked_files)
     if(path MATCHES "(^|/)(build[^/]*|dist|__pycache__)/" OR
        path MATCHES "\\.py[co]$")
         message(FATAL_ERROR "tracked build/runtime output is forbidden: ${path}")
     endif()
-    if(path MATCHES "\\.(pt|pth)$" AND NOT path STREQUAL allowed_weight)
+    list(FIND allowed_weights "${path}" allowed_weight_index)
+    if(path MATCHES "\\.(pt|pth)$" AND allowed_weight_index EQUAL -1)
         message(FATAL_ERROR "unapproved tracked weight: ${path}")
     endif()
     if(EXISTS "${SOURCE_DIR}/${path}" AND NOT IS_DIRECTORY "${SOURCE_DIR}/${path}")
         file(SIZE "${SOURCE_DIR}/${path}" size)
-        if(size GREATER 26214400 AND NOT path STREQUAL allowed_weight)
+        if(size GREATER 26214400 AND allowed_weight_index EQUAL -1)
             message(FATAL_ERROR "tracked file exceeds 25 MiB policy: ${path}")
         endif()
     endif()

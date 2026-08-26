@@ -401,6 +401,7 @@ struct EpisodeLane {
     State state;
     int move_count = 0;
     uint64_t game_seed = 0;
+    std::optional<Clock::time_point> deadline;
     bool done = false;
     EvalOutcome outcome;
     // Which job this lane is currently playing.  A lane outlives its game.
@@ -469,6 +470,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             lane.state = job.initial_state;
             lane.game_seed = job.seed;
             lane.move_count = 0;
+            if (config.max_game_duration && *config.max_game_duration > Clock::duration::zero()) {
+                lane.deadline = Clock::now() + *config.max_game_duration;
+            } else {
+                lane.deadline.reset();
+            }
             if (lane.state.status == kFinished) {
                 // A job handed a terminal position produces no moves rather
                 // than throwing out of a worker thread.  Take the next one.
@@ -548,7 +554,28 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 const auto work_start = Clock::now();
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
 
+                const auto abort_for_deadline = [&] {
+                    Episode& episode = episodes[lane.job_index];
+                    episode.move_count = lane.move_count;
+                    episode.max_game_seconds_exceeded = true;
+                    if (!seat(lane)) {
+                        busy[static_cast<size_t>(w)] += seconds_since(work_start);
+                        retire(lane);
+                    } else {
+                        busy[static_cast<size_t>(w)] += seconds_since(work_start);
+                        ready.push(lane_id);
+                    }
+                };
+                if (lane.deadline && Clock::now() >= *lane.deadline) {
+                    abort_for_deadline();
+                    continue;
+                }
+
                 const EpisodeSearch::Status status = lane.session.advance();
+                if (lane.deadline && Clock::now() >= *lane.deadline) {
+                    abort_for_deadline();
+                    continue;
+                }
                 if (status == EpisodeSearch::Status::NeedsEvaluation) {
                     BatchItem item{&lane.session.pending_state(),
                                    &lane.session.pending_features(),

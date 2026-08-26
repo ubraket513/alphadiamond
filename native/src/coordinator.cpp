@@ -56,6 +56,18 @@ const Json& field(const Object& object, std::string_view name) {
     return found->second;
 }
 
+StageOutcome decode_outcome(const Json& value) {
+    const auto* object = std::get_if<Object>(&value.value);
+    if (!object || object->size() != 2 || !object->contains("result") ||
+        !object->contains("progress")) {
+        throw CoordinatorError("durable stage outcome is malformed");
+    }
+    const auto* progress = std::get_if<Object>(&object->at("progress").value);
+    if (!progress)
+        throw CoordinatorError("durable stage progress is malformed");
+    return {.result = object->at("result"), .progress = *progress};
+}
+
 void require_authoritative(RunStateStore& store, const RunState& state) {
     const auto authoritative = store.load(state.model_name(), state.run_id());
     if (diamond_support::canonical_json(Json{authoritative.payload()}) !=
@@ -80,8 +92,34 @@ RunState Coordinator::run(const RunState& state) {
     while (current.stage() != RunStage::complete) {
         const auto payload = describe_stage_(current.stage(), current);
         const auto id = operation_id(current, payload);
-        execute_stage_(current.stage(), current, id);
-        current = store_.transition(current, next_stage(current.stage()), id);
+        const auto durable = store_.load_operation_result(current, id);
+        StageOutcome outcome;
+        if (durable) {
+            outcome = decode_outcome(*durable);
+            store_.commit_operation_result(current, id, *durable);
+        } else {
+            outcome = execute_stage_(current.stage(), current, id);
+            store_.commit_operation_result(current, id, durable_result(outcome));
+        }
+        current = store_.transition(current, next_stage(current.stage()), id,
+                                    std::move(outcome.progress));
+    }
+    return current;
+}
+
+RunState Coordinator::run_bounded(const RunState& state, std::optional<uint64_t> max_iterations,
+                                  std::optional<std::chrono::steady_clock::time_point> deadline) {
+    if ((!max_iterations && !deadline) || (max_iterations && *max_iterations == 0))
+        throw CoordinatorError("bounded run requires a positive iteration or wall-clock budget");
+
+    auto current = state;
+    if (current.stage() != RunStage::complete)
+        current = run(current);
+    while ((!max_iterations ||
+            static_cast<uint64_t>(integer_field(current.payload(), "iteration")) + 1 <
+                *max_iterations) &&
+           (!deadline || std::chrono::steady_clock::now() < *deadline)) {
+        current = run(store_.start_next_iteration(current));
     }
     return current;
 }
@@ -103,6 +141,10 @@ std::string Coordinator::operation_id(const RunState& state, const Json& stage_p
         {"stage_payload", stage_payload},
     };
     return "sha256:" + diamond_support::sha256(diamond_support::canonical_json(Json{std::move(identity)}));
+}
+
+Json Coordinator::durable_result(const StageOutcome& outcome) {
+    return Json{Object{{"progress", Json{outcome.progress}}, {"result", outcome.result}}};
 }
 
 }  // namespace diamond_orchestration

@@ -26,7 +26,10 @@
       "inherits": "native-ci",
       "displayName": "Native LibTorch training",
       "binaryDir": "${sourceDir}/build/native-training",
-      "cacheVariables": { "DIAMOND_BUILD_LIBTORCH": "ON" }
+      "cacheVariables": {
+        "DIAMOND_BUILD_LIBTORCH": "ON",
+        "DIAMOND_BUILD_BENCHMARKS": "ON"
+      }
     },
     {
       "name": "native-asan",
