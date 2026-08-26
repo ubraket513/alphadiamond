@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -61,8 +62,17 @@ class RunStateStore final {
                         diamond_support::JsonValue::Object progress = {});
     RunState start_next_iteration(const RunState& state);
 
+    // Operation results are immutable. A matching result is reused after a
+    // crash between durable work completion and the state transition.
+    std::optional<diamond_support::JsonValue>
+    load_operation_result(const RunState& state, const std::string& operation_id) const;
+    void commit_operation_result(const RunState& state, const std::string& operation_id,
+                                 diamond_support::JsonValue result);
+
   private:
     std::filesystem::path state_path(const std::string& model_name, const std::string& run_id) const;
+    std::filesystem::path operation_result_path(const RunState& state,
+                                                const std::string& operation_id) const;
     std::filesystem::path root_;
 };
 

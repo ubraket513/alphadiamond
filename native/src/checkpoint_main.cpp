@@ -9,17 +9,24 @@ namespace {
 
 constexpr char kUsage[] =
     "usage:\n"
-    "  alphadiamond-checkpoint inspect <checkpoint-v2-root>\n"
-    "  alphadiamond-checkpoint validate <checkpoint-v2-root>\n"
+    "  alphadiamond-checkpoint inspect <checkpoint-root>\n"
+    "  alphadiamond-checkpoint validate <checkpoint-root>\n"
     "  alphadiamond-checkpoint migrate <checkpoint-v2-root> --out <new-v2-root>\n"
     "\n"
-    "Only transactional native checkpoint-v2 roots are accepted. Raw Python-v1\n"
+    "Only transactional native checkpoint-v2/v3 roots are accepted. Raw Python-v1\n"
     ".pt checkpoints must be pre-converted by their owning Python tooling.\n";
 
 void print_info(const diamond_training::CheckpointInfo& info) {
-    std::cout << "format_version=2\n"
+    std::cout << "format_version=" << info.format_version << '\n'
               << "generation=" << info.generation.string() << '\n'
               << "training_step=" << info.training_step << '\n';
+    if (!info.lineage)
+        return;
+    const auto& lineage = *info.lineage;
+    std::cout << "run_id=" << lineage.run_id << '\n'
+              << "iteration=" << lineage.iteration << '\n'
+              << "model_step=" << lineage.model_step << '\n'
+              << "optimizer_restored=" << (lineage.optimizer_restored ? "true" : "false") << '\n';
 }
 
 [[noreturn]] void unsupported_morph(const std::string& command,

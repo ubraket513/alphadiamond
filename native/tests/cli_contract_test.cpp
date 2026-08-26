@@ -27,12 +27,21 @@ std::filesystem::path write_config(const std::filesystem::path& scratch) {
 
 std::vector<std::string> command(std::string verb, const std::filesystem::path& scratch,
                                  const std::filesystem::path& config) {
-    std::vector<std::string> result{std::move(verb), "--runtime-dir", scratch.string(),
-                                    "--model", "Soo", "--config", config.string(),
-                                    "--checkpoint", (scratch / "bootstrap.pt").string()};
-    result.emplace_back("--run-id");
-    result.emplace_back("native-cli");
-    return result;
+    const auto run_dir = scratch / "runtime" / "runs" / "soo" / "native-cli";
+    if (verb == "train")
+        return {std::move(verb), "--run-dir",     run_dir.string(),
+                "--config",      config.string(), "--scratch"};
+    if (verb == "resume" || verb == "report")
+        return {std::move(verb), "--run-dir", run_dir.string()};
+    return {std::move(verb),
+            "--run-dir",
+            run_dir.string(),
+            "--candidate",
+            (scratch / "candidate-checkpoint").string(),
+            "--champion",
+            (scratch / "champion-checkpoint").string(),
+            "--opening-suite",
+            "production-openings-v1"};
 }
 
 JsonValue::Object report_object(const std::ostringstream& output) {
@@ -48,25 +57,24 @@ JsonValue::Object report_object(const std::filesystem::path& path) {
     return std::get<JsonValue::Object>(parsed.value);
 }
 
-std::string shell_quote(const std::filesystem::path& path) {
-    const auto value = path.string();
-    REQUIRE(value.find('"') == std::string::npos, "test path contains a quote");
-    return '"' + value + '"';
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
     REQUIRE(argc == 3, "usage: cli_contract_test <scratch> <alphadiamond-train>");
     const auto scratch = std::filesystem::path(argv[1]);
-    const auto training_executable = std::filesystem::path(argv[2]);
+    (void)argv[2];
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
     const auto config = write_config(scratch);
+    const auto run_dir = scratch / "runtime" / "runs" / "soo" / "native-cli";
+    std::filesystem::create_directories(run_dir);
+    std::filesystem::copy_file(config, run_dir / "resolved-config.json",
+                               std::filesystem::copy_options::overwrite_existing);
 
     std::vector<std::string> calls;
     const CommandService service = [&](const CommandRequest& request, const ProductionConfig& parsed) {
         CHECK_EQ(parsed.model_name, std::string("Soo"));
+        CHECK_EQ(request.run_dir, run_dir);
         calls.push_back(request.command);
         return JsonValue::Object{{"service", JsonValue{std::string("injected")}}};
     };
@@ -80,6 +88,35 @@ int main(int argc, char** argv) {
         CHECK_EQ(std::get<std::string>(report.at("service").value), std::string("injected"));
     }
     CHECK_EQ(calls.size(), std::size_t{4});
+
+    auto conflicting_selectors = command("train", scratch, config);
+    conflicting_selectors.emplace_back("--warm-start");
+    conflicting_selectors.emplace_back((scratch / "deployment").string());
+    std::ostringstream conflict_output;
+    CHECK_EQ(
+        diamond_orchestration::dispatch_command(conflicting_selectors, service, conflict_output),
+        diamond_orchestration::kExitArgumentError);
+
+    auto missing_selector = command("train", scratch, config);
+    missing_selector.pop_back();
+    std::ostringstream selector_output;
+    CHECK_EQ(diamond_orchestration::dispatch_command(missing_selector, service, selector_output),
+             diamond_orchestration::kExitArgumentError);
+
+    auto invalid_resume = command("resume", scratch, config);
+    invalid_resume.emplace_back("--config");
+    invalid_resume.emplace_back(config.string());
+    std::ostringstream resume_argument_output;
+    CHECK_EQ(
+        diamond_orchestration::dispatch_command(invalid_resume, service, resume_argument_output),
+        diamond_orchestration::kExitArgumentError);
+
+    auto incomplete_evaluate = command("evaluate", scratch, config);
+    incomplete_evaluate.erase(incomplete_evaluate.begin() + 5, incomplete_evaluate.begin() + 7);
+    std::ostringstream evaluate_argument_output;
+    CHECK_EQ(diamond_orchestration::dispatch_command(incomplete_evaluate, service,
+                                                     evaluate_argument_output),
+             diamond_orchestration::kExitArgumentError);
 
     std::ostringstream argument_output;
     CHECK_EQ(diamond_orchestration::dispatch_command({"train"}, service, argument_output),
@@ -128,24 +165,22 @@ int main(int argc, char** argv) {
         std::ofstream output(cuda_config_path, std::ios::binary | std::ios::trunc);
         output << diamond_support::canonical_json(cuda_config.to_json());
     }
-    const auto cuda_runtime = scratch / "cuda-runtime";
-    const auto cuda_report_path = scratch / "cuda-report.json";
-    const auto bootstrap_path = scratch / "missing-bootstrap.pt";
-    const std::string cuda_invocation =
-        shell_quote(training_executable) + " train --runtime-dir " + shell_quote(cuda_runtime) +
-        " --model Soo --run-id cuda-preflight --config " + shell_quote(cuda_config_path) +
-        " --checkpoint " + shell_quote(bootstrap_path) + " > " + shell_quote(cuda_report_path) +
-        " 2>&1";
-#ifdef _WIN32
-    // The MSVCRT system() wrapper invokes cmd.exe /c. When the executable is
-    // quoted, cmd requires a second pair of quotes around the whole command.
-    const std::string cuda_command = '"' + cuda_invocation + '"';
-#else
-    const std::string& cuda_command = cuda_invocation;
-#endif
-    CHECK(std::system(cuda_command.c_str()) != 0);
-    CHECK(!std::filesystem::exists(cuda_runtime));
-    const auto cuda_report = report_object(cuda_report_path);
+    const auto cuda_run_dir = scratch / "cuda-runtime" / "runs" / "soo" / "cuda-preflight";
+    const CommandService cuda_preflight = [](const CommandRequest&,
+                                             const ProductionConfig& parsed) -> JsonValue::Object {
+        if (parsed.runtime.device != "cuda")
+            throw std::runtime_error("CUDA preflight test received the wrong device");
+        throw diamond_orchestration::CommandArgumentError(
+            "runtime.device cuda requires CUDA, but no CUDA device is available");
+    };
+    std::ostringstream cuda_output;
+    CHECK_EQ(diamond_orchestration::dispatch_command({"train", "--run-dir", cuda_run_dir.string(),
+                                                      "--config", cuda_config_path.string(),
+                                                      "--scratch"},
+                                                     cuda_preflight, cuda_output),
+             diamond_orchestration::kExitArgumentError);
+    CHECK(!std::filesystem::exists(cuda_run_dir));
+    const auto cuda_report = report_object(cuda_output);
     CHECK_EQ(std::get<std::string>(cuda_report.at("status").value), std::string("error"));
     CHECK_EQ(std::get<std::string>(cuda_report.at("error").value),
              std::string("runtime.device cuda requires CUDA, but no CUDA device is available"));

@@ -14,14 +14,13 @@ namespace {
 using Json = diamond_support::JsonValue;
 using Object = Json::Object;
 
-constexpr char kUsage[] =
-    "usage:\n"
-    "  alphadiamond-release validate <deployment-artifact>\n"
-    "  alphadiamond-release init <checkpoint-v2-root> --family soo|min\n"
-    "  alphadiamond-release promote <checkpoint> --to candidate|promoted"
-    " [--artifact <deployment-artifact>]\n"
-    "  alphadiamond-release stage <output> --artifact <deployment-artifact>"
-    " [--artifact <deployment-artifact> ...] [--default <family> ...]\n";
+constexpr char kUsage[] = "usage:\n"
+                          "  alphadiamond-release validate <deployment-artifact>\n"
+                          "  alphadiamond-release init <native-checkpoint-root> --family soo|min\n"
+                          "  alphadiamond-release promote <checkpoint> --to candidate|promoted"
+                          " [--artifact <deployment-artifact>]\n"
+                          "  alphadiamond-release stage <output> --artifact <deployment-artifact>"
+                          " [--artifact <deployment-artifact> ...] [--default <family> ...]\n";
 
 void print_json(Object object) {
     std::cout << diamond_support::canonical_json(Json{std::move(object)}) << '\n';
@@ -43,7 +42,7 @@ int validate(const std::filesystem::path& root) {
 int initialize(int argc, char** argv) {
     if (argc != 5 || std::string{argv[3]} != "--family") {
         throw diamond_release::ReleaseError(
-            "init requires <checkpoint-v2-root> --family soo|min");
+            "init requires <native-checkpoint-root> --family soo|min");
     }
     const auto manifest = diamond_release::initialize_promotion(argv[2], argv[4]);
     print_json({

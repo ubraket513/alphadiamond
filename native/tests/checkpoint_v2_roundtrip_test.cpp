@@ -1,6 +1,8 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,6 +37,15 @@ diamond_training::TrainingSample sample_for(
     sample.sparse_policy.emplace_back(0, 1.0F);
     sample.value_target = {0.125F};
     return sample;
+}
+
+template <typename Operation> bool rejects(Operation&& operation) {
+    try {
+        operation();
+        return false;
+    } catch (const diamond_training::CheckpointError&) {
+        return true;
+    }
 }
 
 void check_tensor_equal(const torch::Tensor& actual, const torch::Tensor& expected,
@@ -200,6 +211,131 @@ int main(int argc, char** argv) {
     CHECK_EQ(diamond_training::canonical_model_digest(restored.model()), saved_digest);
     check_adamw_equal(restored.optimizer(), saved.optimizer());
     check_trainer_device_state(restored, device);
+
+    const diamond_training::CheckpointProvenance provenance{
+        .source_git_commit = "0123456789abcdef0123456789abcdef01234567",
+        .resolved_config_bytes = "{}",
+        .replay_manifest_sha256 =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        .protocol_ids_json = "{}",
+        .creation_timestamp = "2026-08-26T00:00:00Z",
+        .environment_json = "{}",
+    };
+
+    // v3 makes a warm start explicit: source weights transfer, but neither
+    // source optimizer state nor source training step can become a resume.
+    diamond_training::Trainer warm_seed(diamond_model::DiamondModel(8, 1, 4, 1),
+                                        checkpoint_compatibility, kConfig, device);
+    (void)diamond_training::load_checkpoint_v2_weights(scratch, warm_seed.model(), device);
+    const diamond_training::CheckpointLineage warm_lineage{
+        .initialization_mode = diamond_training::CheckpointInitializationMode::warm_start,
+        .run_id = "warm-start-run",
+        .iteration = 0,
+        .model_step = 0,
+        .source_digest = saved_digest,
+        .source_training_step = saved.training_step(),
+        .optimizer_restored = false,
+        .optimizer_reset = true,
+        .optimizer_reset_reason = "warm_start",
+    };
+    const auto warm_root = scratch / "warm-start";
+    const auto warm_info =
+        diamond_training::save_checkpoint_v3(warm_root, warm_seed, warm_lineage, provenance);
+    CHECK_EQ(warm_info.format_version, uint64_t{3});
+    CHECK(warm_info.lineage.has_value());
+    CHECK_EQ(warm_info.lineage->run_id, std::string("warm-start-run"));
+    CHECK_EQ(warm_info.lineage->model_step, uint64_t{0});
+    CHECK(warm_info.lineage->optimizer_reset);
+    CHECK(!warm_info.lineage->optimizer_restored);
+    const auto inspected_warm = diamond_training::inspect_checkpoint_v2(warm_root);
+    CHECK_EQ(inspected_warm.format_version, uint64_t{3});
+    CHECK(inspected_warm.lineage.has_value());
+    CHECK(inspected_warm.provenance.has_value());
+    CHECK_EQ(inspected_warm.provenance->source_git_commit, provenance.source_git_commit);
+    CHECK_EQ(inspected_warm.provenance->resolved_config_bytes, provenance.resolved_config_bytes);
+    // Exact resume restores the native step-zero snapshot written after the
+    // warm start; it never reads the external source optimizer or source step.
+    diamond_training::Trainer warm_exact(diamond_model::DiamondModel(8, 1, 4, 1),
+                                         checkpoint_compatibility, kConfig, device);
+    (void)diamond_training::load_checkpoint_v3(
+        warm_root, warm_exact, device, diamond_training::CheckpointLoadIntent::exact_resume);
+    CHECK_EQ(warm_exact.training_step(), uint64_t{0});
+    CHECK(warm_exact.optimizer().state().empty());
+    CHECK_EQ(diamond_training::canonical_model_digest(warm_exact.model()), saved_digest);
+
+    diamond_training::Trainer warm_destination(diamond_model::DiamondModel(8, 1, 4, 1),
+                                               checkpoint_compatibility, kConfig, device);
+    CHECK_EQ(warm_destination.train(samples).training_step, uint64_t{1});
+    (void)diamond_training::load_checkpoint_v3(warm_root, warm_destination, device,
+                                               diamond_training::CheckpointLoadIntent::warm_start);
+    CHECK_EQ(warm_destination.training_step(), uint64_t{0});
+    CHECK(warm_destination.optimizer().state().empty());
+    CHECK_EQ(diamond_training::canonical_model_digest(warm_destination.model()), saved_digest);
+
+    CHECK_EQ(warm_destination.train(samples).training_step, uint64_t{1});
+    const diamond_training::CheckpointLineage resume_lineage{
+        .initialization_mode = diamond_training::CheckpointInitializationMode::resume,
+        .run_id = "warm-start-run",
+        .iteration = 1,
+        .model_step = warm_destination.training_step(),
+        .parent_digest = warm_info.model_digest,
+        .source_digest = warm_info.model_digest,
+        .source_training_step = warm_info.training_step,
+        .optimizer_restored = true,
+        .optimizer_reset = false,
+    };
+    const auto resume_root = scratch / "resume";
+    const auto resume_info = diamond_training::save_checkpoint_v3(resume_root, warm_destination,
+                                                                  resume_lineage, provenance);
+    diamond_training::Trainer exact_destination(diamond_model::DiamondModel(8, 1, 4, 1),
+                                                checkpoint_compatibility, kConfig, device);
+    const auto destination_before_tamper =
+        diamond_training::canonical_model_digest(exact_destination.model());
+    const auto provenance_manifest = resume_info.generation / "manifest.json";
+    const std::string original_manifest = [&] {
+        std::ifstream input(provenance_manifest, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }();
+    {
+        std::string tampered = original_manifest;
+        const auto position = tampered.find(provenance.source_git_commit);
+        REQUIRE(position != std::string::npos, "v3 provenance git commit");
+        tampered.replace(position, provenance.source_git_commit.size(), "tampered");
+        std::ofstream output(provenance_manifest, std::ios::binary | std::ios::trunc);
+        output << tampered;
+        REQUIRE(static_cast<bool>(output), "cannot tamper v3 provenance");
+    }
+    CHECK(rejects([&] {
+        (void)diamond_training::load_checkpoint_v3(
+            resume_root, exact_destination, device,
+            diamond_training::CheckpointLoadIntent::exact_resume);
+    }));
+    CHECK_EQ(diamond_training::canonical_model_digest(exact_destination.model()),
+             destination_before_tamper);
+    {
+        std::ofstream output(provenance_manifest, std::ios::binary | std::ios::trunc);
+        output << original_manifest;
+        REQUIRE(static_cast<bool>(output), "cannot restore v3 provenance");
+    }
+    (void)diamond_training::load_checkpoint_v3(
+        resume_root, exact_destination, device,
+        diamond_training::CheckpointLoadIntent::exact_resume);
+    CHECK_EQ(exact_destination.training_step(), resume_info.training_step);
+    check_adamw_equal(exact_destination.optimizer(), warm_destination.optimizer());
+    {
+        const auto manifest_path = resume_info.generation / "manifest.json";
+        std::ifstream input(manifest_path, std::ios::binary);
+        const std::string manifest{std::istreambuf_iterator<char>(input),
+                                   std::istreambuf_iterator<char>()};
+        const auto position = manifest.find(resume_info.model_digest);
+        REQUIRE(position != std::string::npos, "v3 manifest model digest");
+        std::string corrupt = manifest;
+        corrupt.replace(position, resume_info.model_digest.size(), 64, '0');
+        std::ofstream output(manifest_path, std::ios::binary | std::ios::trunc);
+        output << corrupt;
+        REQUIRE(static_cast<bool>(output), "cannot corrupt v3 manifest");
+    }
+    CHECK(rejects([&] { (void)diamond_training::inspect_checkpoint_v2(resume_root); }));
 
     // Identical model and optimizer state must yield an identical next update.
     const auto saved_next = saved.train(samples);

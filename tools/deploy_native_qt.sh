@@ -144,11 +144,30 @@ fi
 
 if [ "$with_soo" -eq 1 ]; then
     torch_lib=''
+    torch_cmake_dir=$(
+        sed -n 's/^Torch_DIR:PATH=//p' "$build_dir/CMakeCache.txt" | tr -d '\r' | tail -n 1
+    )
+    case "$torch_cmake_dir" in
+        [A-Za-z]:\\*|[A-Za-z]:/*) torch_cmake_dir=$(cygpath -u "$torch_cmake_dir") ;;
+    esac
+    if [ -n "$torch_cmake_dir" ] && [ -d "$torch_cmake_dir" ]; then
+        torch_prefix=$(CDPATH= cd -- "$torch_cmake_dir/../../.." && pwd -P)
+        for candidate in "$torch_prefix/bin" "$torch_prefix/lib"; do
+            if [ -f "$candidate/c10.dll" ] && [ -f "$candidate/torch_cpu.dll" ]; then
+                torch_lib=$candidate
+                break
+            fi
+        done
+    fi
     for candidate in \
+        "$environment_root/Library/bin" \
         "$environment_root/Lib/site-packages/torch/lib" \
         "$environment_root/lib/site-packages/torch/lib"
     do
-        if [ -d "$candidate" ]; then torch_lib=$candidate; break; fi
+        if [ -z "$torch_lib" ] && [ -f "$candidate/c10.dll" ] && [ -f "$candidate/torch_cpu.dll" ]; then
+            torch_lib=$candidate
+            break
+        fi
     done
     if [ -z "$torch_lib" ]; then
         for candidate in "$environment_root"/lib/python*/site-packages/torch/lib; do
@@ -161,15 +180,34 @@ if [ "$with_soo" -eq 1 ]; then
         "$env_bin"/libiomp*.dll "$env_bin"/vcomp*.dll "$env_bin"/tbb*.dll \
         "$env_bin"/sleef*.dll "$env_bin"/uv*.dll "$env_bin"/libomp*.dll \
         "$env_bin"/libprotobuf*.dll "$env_bin"/utf8_validity*.dll "$env_bin"/abseil_dll*.dll
-    for file in "$torch_lib"/*.dll; do
-        [ -f "$file" ] || continue
-        case "$(basename -- "$file")" in
-            python*.dll|torch_python*.dll) continue ;;
-        esac
-        cp -f -- "$file" "$destination/"
+    for pattern in \
+        "$torch_lib"/c10*.dll "$torch_lib"/torch*.dll "$torch_lib"/shm.dll \
+        "$torch_lib"/caffe2_nvrtc.dll "$torch_lib"/cudart64*.dll \
+        "$torch_lib"/cublas64*.dll "$torch_lib"/cublasLt64*.dll \
+        "$torch_lib"/cudnn*.dll "$torch_lib"/nvrtc64*.dll \
+        "$torch_lib"/nvrtc-builtins*.dll "$torch_lib"/nvJitLink*.dll \
+        "$torch_lib"/cusparse*.dll "$torch_lib"/curand*.dll \
+        "$torch_lib"/cufft*.dll "$torch_lib"/cusolver*.dll \
+        "$torch_lib"/nvToolsExt*.dll
+    do
+        for file in $pattern; do
+            [ -f "$file" ] || continue
+            case "$(basename -- "$file")" in
+                python*.dll|torch_python*.dll) continue ;;
+            esac
+            cp -f -- "$file" "$destination/"
+        done
     done
     [ -f "$destination/c10.dll" ] || { echo "c10.dll was not bundled" >&2; exit 1; }
     [ -f "$destination/torch_cpu.dll" ] || { echo "torch_cpu.dll was not bundled" >&2; exit 1; }
+    cmp -s -- "$torch_lib/c10.dll" "$destination/c10.dll" || {
+        echo "bundled c10.dll does not match the CMake-selected LibTorch runtime" >&2
+        exit 1
+    }
+    cmp -s -- "$torch_lib/torch_cpu.dll" "$destination/torch_cpu.dll" || {
+        echo "bundled torch_cpu.dll does not match the CMake-selected LibTorch runtime" >&2
+        exit 1
+    }
 fi
 
 forbidden=$(find "$destination" -type f \( \

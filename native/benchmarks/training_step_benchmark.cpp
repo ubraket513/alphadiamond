@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -11,6 +12,7 @@
 
 #include "diamond_model/deployment_artifact.hpp"
 #include "diamond_model/soo_model.hpp"
+#include "diamond_support/build_provenance.hpp"
 #include "diamond_training/trainer.hpp"
 
 namespace {
@@ -78,20 +80,34 @@ int run(int argc, char** argv) {
     const std::vector<diamond_training::TrainingSample> samples(
         static_cast<std::size_t>(args.batch_size), sample(compatibility, artifact.input_features));
     for (std::uint64_t i = 0; i < args.warmups; ++i) (void)trainer.train(samples);
-    const auto start = std::chrono::steady_clock::now();
     diamond_training::TrainingMetrics metrics{};
-    for (std::uint64_t i = 0; i < args.repetitions; ++i) metrics = trainer.train(samples);
-    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    std::cout << "{\"name\":\"training_step\",\"repetitions\":" << args.repetitions
-              << ",\"batch_size\":" << args.batch_size
-              << ",\"warmups\":" << args.warmups
-              << ",\"requested_device\":\"" << device.requested_name << "\""
-              << ",\"canonical_device\":\"" << device.canonical_name << "\""
-              << ",\"width\":" << artifact.width
+    std::vector<double> seconds;
+    seconds.reserve(args.repetitions);
+    for (std::uint64_t i = 0; i < args.repetitions; ++i) {
+        const auto start = std::chrono::steady_clock::now();
+        metrics = trainer.train(samples);
+        seconds.push_back(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    }
+    auto sorted = seconds;
+    std::sort(sorted.begin(), sorted.end());
+    std::cout
+        << "{\"schema_version\":1,\"benchmark\":\"training_step\",\"workload\":{\"repetitions\":"
+        << args.repetitions << ",\"warmups\":" << args.warmups
+        << ",\"batch_size\":" << args.batch_size << ",\"threads\":" << torch::get_num_threads()
+        << "},\"environment\":{\"requested_device\":\"" << device.requested_name
+        << "\",\"canonical_device\":\"" << device.canonical_name
+        << "\",\"precision\":\"float32\"},\"provenance\":"
+        << diamond_support::build_provenance_json() << ",\"samples_seconds\":[";
+    for (std::size_t i = 0; i < seconds.size(); ++i)
+        std::cout << (i ? "," : "") << seconds[i];
+    std::cout << "],\"summary_seconds\":{\"min\":" << sorted.front()
+              << ",\"median\":" << sorted[sorted.size() / 2] << ",\"max\":" << sorted.back()
+              << ",\"range\":" << sorted.back() - sorted.front()
+              << "},\"domain\":{\"model_version\":\"" << artifact.model_version
+              << "\",\"model_sha256\":\"" << artifact.model_sha256 << "\",\"runtime_sha256\":\""
+              << artifact.runtime_sha256 << "\",\"width\":" << artifact.width
               << ",\"residual_blocks\":" << artifact.residual_blocks
-              << ",\"torch_threads\":" << torch::get_num_threads()
-              << ",\"elapsed_seconds\":" << elapsed
-              << ",\"seconds_per_repetition\":" << elapsed / args.repetitions
               << ",\"total_loss\":" << metrics.total_loss
               << ",\"policy_loss\":" << metrics.policy_loss
               << ",\"value_loss\":" << metrics.value_loss
@@ -106,7 +122,7 @@ int run(int argc, char** argv) {
               << (metrics.peak_cuda_memory_available ? "true" : "false")
               << ",\"peak_cuda_allocated_bytes\":" << metrics.peak_cuda_allocated_bytes
               << ",\"peak_cuda_reserved_bytes\":" << metrics.peak_cuda_reserved_bytes
-              << ",\"training_step\":" << metrics.training_step << "}\n";
+              << ",\"training_step\":" << metrics.training_step << "}}\n";
     return 0;
 }
 

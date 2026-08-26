@@ -50,6 +50,21 @@ std::size_t chunk_file_count(const std::filesystem::path& root) {
     if (error) throw std::runtime_error("cannot inspect replay chunks");
     return count;
 }
+
+void remove_tree(const std::filesystem::path& path, std::error_code& error) {
+#ifdef _WIN32
+    std::wstring native = std::filesystem::absolute(path).wstring();
+    if (native.rfind(L"\\\\?\\", 0) != 0) {
+        if (native.rfind(L"\\\\", 0) == 0)
+            native = L"\\\\?\\UNC\\" + native.substr(2);
+        else
+            native = L"\\\\?\\" + native;
+    }
+    std::filesystem::remove_all(std::filesystem::path(native), error);
+#else
+    std::filesystem::remove_all(path, error);
+#endif
+}
 }
 
 int main(int argc, char** argv) {
@@ -59,7 +74,7 @@ int main(int argc, char** argv) {
     const auto fixtures = std::filesystem::path(argv[1]);
     const auto scratch = std::filesystem::path(argv[2]);
     std::error_code cleanup_error;
-    std::filesystem::remove_all(scratch, cleanup_error);
+    remove_tree(scratch, cleanup_error);
     REQUIRE(!cleanup_error, "remove scratch before replay test");
     std::filesystem::create_directories(scratch);
     CHECK_EQ(diamond_support::sha256(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -78,6 +93,24 @@ int main(int argc, char** argv) {
         REQUIRE(rows.size() == 1, "reopened sample count");
         CHECK_EQ(rows[0].canonical_player_ids[0], 1);
     }
+
+#ifdef _WIN32
+    auto long_root = scratch / "windows-long-path";
+    while ((std::filesystem::absolute(long_root) / "persistent-replay-v2" / "soo" /
+            std::string(64, 'a') / "chunks" / (std::string(64, 'b') + ".json"))
+               .native()
+               .size() <= 270) {
+        long_root /= "long-segment-0123456789abcdef";
+    }
+    {
+        diamond_pipeline::ReplayStore store(long_root, compatibility, 8, 3);
+        CHECK_EQ(store.ingest(std::span<const diamond_pipeline::Episode>(&fresh, 1)), 1U);
+    }
+    {
+        diamond_pipeline::ReplayStore reopened(long_root, compatibility, 8, 3);
+        REQUIRE(reopened.sample(1).size() == 1, "Windows extended-path replay reopen");
+    }
+#endif
 
     std::vector<diamond_pipeline::Episode> pool;
     for (int id = 10; id < 74; ++id) pool.push_back(episode(compatibility, id));
@@ -150,7 +183,7 @@ int main(int argc, char** argv) {
         rollback.restore_manifest(scratch / "rollback" / "persistent-replay-v1" / "Soo" / "3f3372c174dba4b7bfa9288e2c7e0a33e284dfdc3313f1d073210de8e47df229" / "before.json");
         CHECK_EQ(rollback.sample(1).size(), 1U);
     }
-    std::filesystem::remove_all(scratch, cleanup_error);
+    remove_tree(scratch, cleanup_error);
     CHECK(!cleanup_error);
     return soo_test::report("replay_store_test");
 }

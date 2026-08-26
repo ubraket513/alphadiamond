@@ -54,7 +54,7 @@
     "id": "production-openings-v1",
     "version": 1,
     "seed": 7,
-    "count": 4,
+    "count": 10,
     "max_depth": 6
   },
   "promotion_statistics": {

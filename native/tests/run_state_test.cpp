@@ -1,5 +1,7 @@
 #include <filesystem>
 #include <array>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #include "check.hpp"
@@ -31,6 +33,43 @@ int main(int argc, char** argv) {
     CHECK_EQ(state.generation(), uint64_t{1});
     CHECK_EQ(state.stage(), diamond_orchestration::RunStage::self_play);
     CHECK_EQ(store.load("Soo", "native-resume").generation(), uint64_t{1});
+
+    const std::string operation_id =
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const diamond_support::JsonValue operation_result{
+        diamond_support::JsonValue::Object{{"accepted", diamond_support::JsonValue{int64_t{7}}}}};
+    CHECK(!store.load_operation_result(state, operation_id));
+    store.commit_operation_result(state, operation_id, operation_result);
+    CHECK_EQ(diamond_support::canonical_json(*store.load_operation_result(state, operation_id)),
+             diamond_support::canonical_json(operation_result));
+    store.commit_operation_result(state, operation_id, operation_result);
+    std::ifstream ledger(scratch / "soo" / "native-resume" / "ledger.jsonl");
+    std::string ledger_event;
+    CHECK(static_cast<bool>(std::getline(ledger, ledger_event)));
+    CHECK(!std::getline(ledger, ledger_event));
+    ledger.close();
+    {
+        std::ofstream torn(scratch / "soo" / "native-resume" / "ledger.jsonl",
+                           std::ios::binary | std::ios::app);
+        torn << "{\"torn\"";
+    }
+    store.commit_operation_result(state, operation_id, operation_result);
+    {
+        std::ifstream repaired(scratch / "soo" / "native-resume" / "ledger.jsonl",
+                               std::ios::binary);
+        const std::string contents((std::istreambuf_iterator<char>(repaired)), {});
+        CHECK(contents.ends_with('\n'));
+        CHECK(contents.find("torn") == std::string::npos);
+    }
+    bool saw_conflict = false;
+    try {
+        store.commit_operation_result(state, operation_id,
+                                      diamond_support::JsonValue{diamond_support::JsonValue::Object{
+                                          {"accepted", diamond_support::JsonValue{int64_t{8}}}}});
+    } catch (const diamond_orchestration::RunStateError&) {
+        saw_conflict = true;
+    }
+    CHECK(saw_conflict);
 
     const auto seed = state.derive_seed({diamond_support::JsonValue{std::string("self-play")},
                                          diamond_support::JsonValue{int64_t{3}}});

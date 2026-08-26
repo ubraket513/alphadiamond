@@ -24,7 +24,7 @@ tools/sync_ratings.sh \
   --bucket namespace/ratings-bucket \
   --outbox path/to/rating-outbox \
   --protocol protocol-v2.json \
-  --binary build/native-training/alphadiamond-rating-sync
+  --binary build/native-training/native/alphadiamond-rating-sync
 ```
 
 It lists the complete remote event set, downloads it, rebuilds locally, re-lists before and after publishing `ratings/ratings.json`, and retries when that set changed. Local outbox receipts are atomically written only after a stable successful `ratings.json` upload. Authentication uses the existing `hf` login or `HF_TOKEN`; neither tokens nor command output are persisted by this script.

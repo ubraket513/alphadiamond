@@ -126,24 +126,32 @@ depend on the cadence.
 
 ## 4. Operating it
 
-A production run consumes a validated checkpoint-v2 root and the native JSON
-configuration:
+A production run consumes the native JSON configuration and exactly one
+initialization mode. The official Soo v2.0.0 deployment artifact is a warm
+start: model weights are imported, while optimizer and run state start clean.
 
 ```bash
 build/native-training/native/alphadiamond-train train \
-  --runtime-dir runtime --model Soo --run-id soo-production \
+  --run-dir runtime/runs/soo/soo-production \
   --config configs/alphazero/soo-production.json \
-  --checkpoint <checkpoint-v2-root>
+  --warm-start models/soo/2.0.0
+
+build/native-training/native/alphadiamond-train resume \
+  --run-dir runtime/runs/soo/soo-production
 ```
 
 Use the focused CPU smoke before a long run:
 
 ```bash
-build/native-training/native/training_step_benchmark --repetitions 1
+build/native-training/native/training_step_benchmark \
+  --artifact models/soo/2.0.0 --device cpu \
+  --batch-size 256 --warmups 1 --repetitions 5
 ```
 
 Both commands execute LibTorch training directly; no bridge or interpreter is
-in the runtime path.
+in the runtime path. `--checkpoint <native-v3-root>` is reserved for exact
+continuation with matching run/config/lineage; an incompatible checkpoint or
+unavailable requested device fails instead of falling back.
 
 ## 5. Results
 

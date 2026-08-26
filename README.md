@@ -829,9 +829,9 @@ Undo works normally after a load.
 
 ## Training and deployment boundary
 
-The bundled default Soo model is the promoted step-44250 checkpoint, identified
-by its release SHA-256 in `models/index.json`. `alphadiamond-train` owns native
-CPU training and checkpoint-v2 resume.
+The default indexed Soo model is the promoted step-44250 Soo v2.0.0 artifact,
+identified by its release SHA-256 in `models/index.json`. `alphadiamond-train`
+owns native CPU/CUDA training, transactional checkpoint-v3, and exact resume.
 `alphadiamond-checkpoint` validates versioned checkpoints, while
 `alphadiamond-release` validates and stages runtime-only model artifacts. The
 Qt application loads the staged artifact directly through LibTorch; no bridge,

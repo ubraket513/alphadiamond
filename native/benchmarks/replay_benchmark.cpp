@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "diamond_pipeline/replay_store.hpp"
+#include "diamond_support/build_provenance.hpp"
 
 namespace {
 struct Args {
@@ -56,16 +58,28 @@ int run(int argc, char** argv) {
     pool.reserve(args.pool_size);
     for (std::uint64_t id = 0; id < args.pool_size; ++id) pool.push_back(episode(compatibility, id));
     (void)store.ingest(pool);
-    const auto start = std::chrono::steady_clock::now();
-    for (std::uint64_t i = 0; i < args.repetitions; ++i) (void)store.sample(args.batch_size);
-    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    std::vector<double> seconds;
+    for (std::uint64_t i = 0; i < args.repetitions; ++i) {
+        const auto start = std::chrono::steady_clock::now();
+        (void)store.sample(args.batch_size);
+        seconds.push_back(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    }
+    auto sorted = seconds;
+    std::sort(sorted.begin(), sorted.end());
     const auto stats = store.last_sampling_stats();
-    std::cout << "{\"name\":\"replay\",\"batch_size\":" << args.batch_size
+    std::cout << "{\"schema_version\":1,\"benchmark\":\"replay\",\"workload\":{\"repetitions\":"
+              << args.repetitions << ",\"warmups\":0,\"batch_size\":" << args.batch_size
               << ",\"pool_size\":" << args.pool_size
-              << ",\"repetitions\":" << args.repetitions
-              << ",\"selection_slots\":" << stats.selection_slots
-              << ",\"elapsed_seconds\":" << elapsed
-              << ",\"seconds_per_repetition\":" << elapsed / args.repetitions << "}\n";
+              << "},\"environment\":{\"requested_device\":\"cpu\",\"canonical_device\":\"cpu\","
+                 "\"precision\":\"float32\"},\"provenance\":"
+              << diamond_support::build_provenance_json() << ",\"samples_seconds\":[";
+    for (std::size_t i = 0; i < seconds.size(); ++i)
+        std::cout << (i ? "," : "") << seconds[i];
+    std::cout << "],\"summary_seconds\":{\"min\":" << sorted.front()
+              << ",\"median\":" << sorted[sorted.size() / 2] << ",\"max\":" << sorted.back()
+              << ",\"range\":" << sorted.back() - sorted.front()
+              << "},\"domain\":{\"selection_slots\":" << stats.selection_slots << "}}\n";
     return 0;
 }
 } // namespace

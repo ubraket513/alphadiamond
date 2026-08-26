@@ -49,6 +49,14 @@ bool safe_id(std::string_view value) {
     return true;
 }
 
+bool operation_id_is_valid(std::string_view value) {
+    constexpr std::string_view prefix = "sha256:";
+    if (!value.starts_with(prefix) || value.size() != prefix.size() + 64)
+        return false;
+    return std::all_of(value.begin() + static_cast<std::ptrdiff_t>(prefix.size()), value.end(),
+                       [](unsigned char c) { return std::isxdigit(c) != 0; });
+}
+
 const std::string& string_field(const Object& object, std::string_view field) {
     const auto it = object.find(std::string(field));
     if (it == object.end()) throw RunStateError("run state missing " + std::string(field));
@@ -158,6 +166,7 @@ RunState::RunState(Object payload) : payload_(std::move(payload)) {
     (void)uint_field(payload_, "iteration");
     (void)uint_field(payload_, "training_step");
     optional_string_field(payload_, "champion_checkpoint");
+    optional_string_field(payload_, "champion_model_key");
     optional_string_field(payload_, "candidate_checkpoint");
     optional_string_field(payload_, "replay_manifest");
     (void)array_field(payload_, "completed_game_ids");
@@ -268,6 +277,127 @@ std::filesystem::path RunStateStore::state_path(const std::string& model_name, c
     std::string lower = model_name;
     for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return root_ / lower / run_id / "state.json";
+}
+
+void append_unique_event(const std::filesystem::path& path, const std::string& operation_id,
+                         const Json& event) {
+    const auto canonical = diamond_support::canonical_json(event);
+    bool matched = false;
+    if (std::filesystem::exists(path)) {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+            throw RunStateError("cannot read operation ledger");
+        const std::string contents((std::istreambuf_iterator<char>(input)), {});
+        input.close();
+        std::size_t cursor = 0;
+        while (cursor < contents.size()) {
+            const auto newline = contents.find('\n', cursor);
+            if (newline == std::string::npos) {
+                // A committed event always ends in a newline. Preserve every
+                // complete record and discard only a torn final append.
+                atomic_write(path, contents.substr(0, cursor));
+                break;
+            }
+            const auto line = contents.substr(cursor, newline - cursor);
+            cursor = newline + 1;
+            if (line.empty())
+                throw RunStateError("operation ledger contains an empty event");
+            try {
+                const auto parsed = diamond_support::parse_json(line);
+                const auto* object = std::get_if<Object>(&parsed.value);
+                if (!object)
+                    throw RunStateError("operation ledger event must be an object");
+                const auto found = object->find("operation_id");
+                const auto* stored_id = found != object->end()
+                                            ? std::get_if<std::string>(&found->second.value)
+                                            : nullptr;
+                if (stored_id && *stored_id == operation_id) {
+                    if (diamond_support::canonical_json(parsed) != canonical)
+                        throw RunStateError("conflicting immutable operation ledger event");
+                    matched = true;
+                }
+            } catch (const RunStateError&) {
+                throw;
+            } catch (const std::exception& error) {
+                throw RunStateError("corrupt operation ledger: " + std::string(error.what()));
+            }
+        }
+    }
+    if (matched)
+        return;
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::app);
+    if (!output)
+        throw RunStateError("cannot append operation ledger event");
+    output << canonical << '\n';
+    if (!output)
+        throw RunStateError("cannot append operation ledger event");
+}
+
+std::filesystem::path RunStateStore::operation_result_path(const RunState& state,
+                                                           const std::string& operation_id) const {
+    if (!operation_id_is_valid(operation_id))
+        throw RunStateError("invalid operation result identity");
+    return state_path(state.model_name(), state.run_id()).parent_path() / "operations" /
+           (operation_id.substr(7) + ".json");
+}
+
+std::optional<Json> RunStateStore::load_operation_result(const RunState& state,
+                                                         const std::string& operation_id) const {
+    const auto path = operation_result_path(state, operation_id);
+    if (!std::filesystem::exists(path))
+        return std::nullopt;
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw RunStateError("cannot read operation result");
+    const std::string text((std::istreambuf_iterator<char>(input)), {});
+    try {
+        auto envelope = diamond_support::parse_json(text);
+        const auto* object = std::get_if<Object>(&envelope.value);
+        if (!object || object->size() != 4 || !object->contains("schema_version") ||
+            !object->contains("operation_id") || !object->contains("result") ||
+            !object->contains("result_sha256")) {
+            throw RunStateError("operation result envelope is invalid");
+        }
+        const auto* schema = std::get_if<int64_t>(&object->at("schema_version").value);
+        const auto* stored_id = std::get_if<std::string>(&object->at("operation_id").value);
+        const auto* stored_digest = std::get_if<std::string>(&object->at("result_sha256").value);
+        const auto canonical = diamond_support::canonical_json(object->at("result"));
+        if (!schema || *schema != 1 || !stored_id || *stored_id != operation_id || !stored_digest ||
+            *stored_digest != diamond_support::sha256(canonical)) {
+            throw RunStateError("operation result checksum or identity mismatch");
+        }
+        return object->at("result");
+    } catch (const RunStateError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw RunStateError("corrupt operation result: " + std::string(error.what()));
+    }
+}
+
+void RunStateStore::commit_operation_result(const RunState& state, const std::string& operation_id,
+                                            Json result) {
+    const auto authoritative = load(state.model_name(), state.run_id());
+    if (authoritative.generation() != state.generation() ||
+        authoritative.stage() != state.stage()) {
+        throw RunStateError("stale operation result state");
+    }
+    const auto canonical = diamond_support::canonical_json(result);
+    if (const auto existing = load_operation_result(state, operation_id)) {
+        if (diamond_support::canonical_json(*existing) != canonical)
+            throw RunStateError("conflicting immutable operation result");
+    }
+    const Json envelope{Object{
+        {"operation_id", Json{operation_id}},
+        {"result", std::move(result)},
+        {"result_sha256", Json{diamond_support::sha256(canonical)}},
+        {"schema_version", Json{int64_t{1}}},
+    }};
+    const auto result_path = operation_result_path(state, operation_id);
+    if (!std::filesystem::exists(result_path))
+        atomic_write(result_path, diamond_support::canonical_json(envelope));
+    append_unique_event(result_path.parent_path().parent_path() / "ledger.jsonl", operation_id,
+                        envelope);
 }
 
 RunState RunStateStore::initialize(const RunState& state) {

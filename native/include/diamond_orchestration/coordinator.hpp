@@ -2,10 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
-#include <chrono>
-#include <cstdint>
 #include <functional>
-#include <optional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -19,10 +16,16 @@ class CoordinatorError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-// The callback must make the supplied operation durable before returning.  Its
-// operation ID is stable across retries of the same unfinished stage.
-using StageCallback = std::function<void(RunStage stage, const RunState& state,
-                                         const std::string& operation_id)>;
+struct StageOutcome final {
+    diamond_support::JsonValue result;
+    diamond_support::JsonValue::Object progress;
+};
+
+// The callback must make every file referenced by the result durable before
+// returning. Its operation ID is stable across retries of the same unfinished
+// stage. The coordinator then commits the checksummed result and run progress.
+using StageCallback = std::function<StageOutcome(RunStage stage, const RunState& state,
+                                                 const std::string& operation_id)>;
 using StagePayload = std::function<diamond_support::JsonValue(
     RunStage stage, const RunState& state)>;
 
@@ -48,6 +51,7 @@ class Coordinator final {
     // Returns the durable operation identity for state.stage().
     static std::string operation_id(const RunState& state,
                                     const diamond_support::JsonValue& stage_payload);
+    static diamond_support::JsonValue durable_result(const StageOutcome& outcome);
 
   private:
     RunStateStore& store_;

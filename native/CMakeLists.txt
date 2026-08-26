@@ -117,6 +117,11 @@ endif()
 
 if(DIAMOND_BUILD_LIBTORCH)
     find_package(Torch REQUIRED)
+    separate_arguments(DIAMOND_TORCH_CXX_FLAGS NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+    if(WIN32)
+        set(DIAMOND_TEST_PATH "$<TARGET_FILE_DIR:torch>;$ENV{PATH}")
+        string(REPLACE ";" "\\;" DIAMOND_TEST_PATH "${DIAMOND_TEST_PATH}")
+    endif()
     add_library(diamond_model STATIC
         src/deployment_artifact.cpp
         src/json.cpp
@@ -131,6 +136,7 @@ if(DIAMOND_BUILD_LIBTORCH)
             ${TORCH_INCLUDE_DIRS}
     )
     target_compile_features(diamond_model PUBLIC cxx_std_20)
+    target_compile_options(diamond_model PUBLIC ${DIAMOND_TORCH_CXX_FLAGS})
     target_compile_definitions(diamond_model PUBLIC _DISABLE_EXTENDED_ALIGNED_STORAGE)
     if(MSVC)
         target_compile_options(diamond_model PRIVATE /bigobj)
@@ -226,7 +232,8 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_link_libraries(replay_benchmark PRIVATE alphadiamond::diamond_pipeline)
 
         add_executable(selfplay_benchmark benchmarks/selfplay_benchmark.cpp)
-        target_link_libraries(selfplay_benchmark PRIVATE alphadiamond::soo_search)
+        target_link_libraries(selfplay_benchmark PRIVATE
+            alphadiamond::diamond_native_pipeline)
 
         add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
         target_link_libraries(end_to_end_benchmark PRIVATE
@@ -240,10 +247,46 @@ if(DIAMOND_BUILD_LIBTORCH)
     endif()
 
     add_executable(alphadiamond-train src/train_main.cpp)
+    find_package(Git QUIET)
+    set(DIAMOND_SOURCE_GIT_COMMIT "unavailable")
+    set(DIAMOND_SOURCE_DIRTY 1)
+    if(Git_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            OUTPUT_VARIABLE DIAMOND_SOURCE_GIT_COMMIT
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE DIAMOND_GIT_REV_PARSE_RESULT)
+        if(NOT DIAMOND_GIT_REV_PARSE_RESULT EQUAL 0)
+            set(DIAMOND_SOURCE_GIT_COMMIT "unavailable")
+        endif()
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=normal
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            OUTPUT_VARIABLE DIAMOND_GIT_STATUS
+            RESULT_VARIABLE DIAMOND_GIT_STATUS_RESULT)
+        if(DIAMOND_GIT_STATUS_RESULT EQUAL 0 AND DIAMOND_GIT_STATUS STREQUAL "")
+            set(DIAMOND_SOURCE_DIRTY 0)
+        else()
+            set(DIAMOND_SOURCE_DIRTY 1)
+        endif()
+    endif()
+    if(DIAMOND_BUILD_BENCHMARKS)
+        foreach(benchmark IN ITEMS
+                training_step_benchmark checkpoint_benchmark replay_benchmark
+                selfplay_benchmark end_to_end_benchmark)
+            target_compile_definitions(${benchmark} PRIVATE
+                DIAMOND_SOURCE_GIT_COMMIT="${DIAMOND_SOURCE_GIT_COMMIT}"
+                DIAMOND_SOURCE_DIRTY=${DIAMOND_SOURCE_DIRTY})
+        endforeach()
+    endif()
     target_link_libraries(alphadiamond-train PRIVATE
         alphadiamond::diamond_orchestration
         alphadiamond::diamond_native_pipeline)
     target_compile_features(alphadiamond-train PRIVATE cxx_std_20)
+    target_compile_definitions(alphadiamond-train PRIVATE
+        DIAMOND_SOURCE_GIT_COMMIT="${DIAMOND_SOURCE_GIT_COMMIT}"
+        DIAMOND_SOURCE_DIRTY=${DIAMOND_SOURCE_DIRTY})
     install(TARGETS alphadiamond-train
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
@@ -348,14 +391,11 @@ if(DIAMOND_BUILD_LIBTORCH)
                          COMMAND model_parity_test soo "${DIAMOND_SOO_ARTIFACT}")
             endif()
             if(WIN32)
-                list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
-                get_filename_component(DIAMOND_TORCH_PREFIX
-                    "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
                 set_tests_properties(model_parity_test PROPERTIES
-                    ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                    ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
                 if(TEST final_pipeline_smoke_test)
                     set_tests_properties(final_pipeline_smoke_test PROPERTIES
-                        ENVIRONMENT "PATH=${DIAMOND_TORCH_PREFIX}/torch/lib;$ENV{PATH}")
+                        ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
                 endif()
             endif()
         endif()
@@ -367,7 +407,7 @@ if(DIAMOND_BUILD_LIBTORCH)
                  COMMAND training_vector_manifest_test
                          "${PROJECT_SOURCE_DIR}/tests/golden/training-v1")
 
-    add_executable(training_step_parity_test tests/training_step_parity_test.cpp)
+        add_executable(training_step_parity_test tests/training_step_parity_test.cpp)
         target_link_libraries(training_step_parity_test PRIVATE alphadiamond::diamond_training)
         target_include_directories(training_step_parity_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
         target_compile_features(training_step_parity_test PRIVATE cxx_std_20)
@@ -537,15 +577,20 @@ if(DIAMOND_BUILD_LIBTORCH)
             set_tests_properties(training_step_parity_test_cuda PROPERTIES
                 LABELS "cuda;training")
         endif()
+        if(DIAMOND_BUILD_BENCHMARKS)
+            add_test(NAME benchmark_schema_test
+                COMMAND ${CMAKE_COMMAND}
+                    -DTRAINING_BENCHMARK=$<TARGET_FILE:training_step_benchmark>
+                    -DCHECKPOINT_BENCHMARK=$<TARGET_FILE:checkpoint_benchmark>
+                    -DREPLAY_BENCHMARK=$<TARGET_FILE:replay_benchmark>
+                    -DSELFPLAY_BENCHMARK=$<TARGET_FILE:selfplay_benchmark>
+                    -DEND_TO_END_BENCHMARK=$<TARGET_FILE:end_to_end_benchmark>
+                    -DMODEL_ARTIFACT=${PROJECT_SOURCE_DIR}/models/soo/2.0.0
+                    -DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/benchmark-schema-scratch
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_schema_test.cmake)
+            set_tests_properties(benchmark_schema_test PROPERTIES LABELS benchmark)
+        endif()
         if(WIN32)
-            list(GET TORCH_INCLUDE_DIRS 0 DIAMOND_TORCH_INCLUDE_DIR)
-            get_filename_component(DIAMOND_TORCH_PREFIX
-                "${DIAMOND_TORCH_INCLUDE_DIR}/../.." ABSOLUTE)
-            get_filename_component(DIAMOND_RUNTIME_ROOT
-                "${DIAMOND_TORCH_PREFIX}/../.." ABSOLUTE)
-            set(DIAMOND_TEST_PATH
-                "${DIAMOND_TORCH_PREFIX}/torch/lib;${DIAMOND_RUNTIME_ROOT}/Library/bin;${DIAMOND_RUNTIME_ROOT}/Scripts;${DIAMOND_RUNTIME_ROOT};$ENV{PATH}")
-            string(REPLACE ";" "\\;" DIAMOND_TEST_PATH "${DIAMOND_TEST_PATH}")
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
                                  checkpoint_v2_transaction_test inference_coordinator_test
                                  native_pipeline_smoke_test promotion_test device_test
@@ -564,6 +609,10 @@ if(DIAMOND_BUILD_LIBTORCH)
             endif()
             if(TEST training_step_parity_test_cuda)
                 set_tests_properties(training_step_parity_test_cuda PROPERTIES
+                    ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
+            endif()
+            if(TEST benchmark_schema_test)
+                set_tests_properties(benchmark_schema_test PROPERTIES
                     ENVIRONMENT "PATH=${DIAMOND_TEST_PATH}")
             endif()
         endif()

@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.hpp"
@@ -22,6 +23,12 @@ diamond_support::JsonValue stage_payload(
         {"stage", diamond_support::JsonValue{static_cast<int64_t>(stage)}},
         {"training_step", state.payload().at("training_step")},
     }};
+}
+
+diamond_orchestration::StageOutcome
+stage_outcome(diamond_orchestration::RunStage stage, const diamond_orchestration::RunState& state,
+              diamond_support::JsonValue::Object progress = {}) {
+    return {.result = stage_payload(stage, state), .progress = std::move(progress)};
 }
 
 }  // namespace
@@ -49,6 +56,7 @@ int main(int argc, char** argv) {
                 interrupted_operation = operation_id;
                 throw Interrupted{};
             }
+            return stage_outcome(stage, state);
         });
 
     bool saw_interruption = false;
@@ -66,12 +74,13 @@ int main(int argc, char** argv) {
     std::vector<diamond_orchestration::RunStage> resumed_stages;
     std::string resumed_train_operation;
     diamond_orchestration::Coordinator resumed(
-        store, stage_payload, [&](diamond_orchestration::RunStage stage,
-                   const diamond_orchestration::RunState&,
-                   const std::string& operation_id) {
+        store, stage_payload,
+        [&](diamond_orchestration::RunStage stage, const diamond_orchestration::RunState& state,
+            const std::string& operation_id) {
             resumed_stages.push_back(stage);
             if (stage == diamond_orchestration::RunStage::train)
                 resumed_train_operation = operation_id;
+            return stage_outcome(stage, state);
         });
     const auto complete = resumed.resume("Soo", "native-coordinator");
 
@@ -85,17 +94,59 @@ int main(int argc, char** argv) {
     CHECK_EQ(completions.size(), std::size_t{9});
     CHECK_EQ(std::get<std::string>(completions.at("TRAIN").value), interrupted_operation);
 
+    diamond_orchestration::RunStateStore activated_store(scratch / "activated");
+    const auto activated_initial = activated_store.initialize(initial_state());
+    bool interrupted_after_result = false;
+    diamond_orchestration::Coordinator activated(
+        activated_store, stage_payload,
+        [&](diamond_orchestration::RunStage stage, const diamond_orchestration::RunState& state,
+            const std::string& operation_id) {
+            if (stage != diamond_orchestration::RunStage::train)
+                return stage_outcome(stage, state);
+            const auto outcome = stage_outcome(stage, state);
+            activated_store.commit_operation_result(
+                state, operation_id, diamond_orchestration::Coordinator::durable_result(outcome));
+            throw Interrupted{};
+        });
+    try {
+        (void)activated.run(activated_initial);
+    } catch (const Interrupted&) {
+        interrupted_after_result = true;
+    }
+    CHECK(interrupted_after_result);
+    std::vector<diamond_orchestration::RunStage> activated_resume_calls;
+    diamond_orchestration::Coordinator activated_resume(
+        activated_store, stage_payload,
+        [&](diamond_orchestration::RunStage stage, const diamond_orchestration::RunState& state,
+            const std::string&) {
+            activated_resume_calls.push_back(stage);
+            return stage_outcome(stage, state);
+        });
+    const auto activated_complete = activated_resume.resume("Soo", "native-coordinator");
+    CHECK_EQ(activated_complete.stage(), diamond_orchestration::RunStage::complete);
+    CHECK_EQ(activated_resume_calls.size(), std::size_t{5});
+    CHECK_EQ(activated_resume_calls.front(), diamond_orchestration::RunStage::save_candidate);
+
     diamond_orchestration::RunStateStore bounded_store(scratch / "bounded");
     const auto bounded_initial = bounded_store.initialize(initial_state());
     std::vector<std::string> bounded_operations;
     diamond_orchestration::Coordinator bounded(
         bounded_store, stage_payload,
-        [&](diamond_orchestration::RunStage, const diamond_orchestration::RunState&,
-            const std::string& operation_id) { bounded_operations.push_back(operation_id); });
+        [&](diamond_orchestration::RunStage stage, const diamond_orchestration::RunState& state,
+            const std::string& operation_id) {
+            bounded_operations.push_back(operation_id);
+            diamond_support::JsonValue::Object progress;
+            if (stage == diamond_orchestration::RunStage::train) {
+                const auto iteration = std::get<int64_t>(state.payload().at("iteration").value);
+                progress.emplace("training_step", diamond_support::JsonValue{iteration + 1});
+            }
+            return stage_outcome(stage, state, std::move(progress));
+        });
     const auto two_iterations = bounded.run_bounded(bounded_initial, 2, std::nullopt);
     CHECK_EQ(two_iterations.stage(), diamond_orchestration::RunStage::complete);
     CHECK_EQ(std::get<int64_t>(two_iterations.payload().at("iteration").value), int64_t{1});
     CHECK_EQ(two_iterations.generation(), uint64_t{19});
+    CHECK_EQ(std::get<int64_t>(two_iterations.payload().at("training_step").value), int64_t{2});
     CHECK_EQ(bounded_operations.size(), std::size_t{18});
     CHECK_EQ(std::set<std::string>(bounded_operations.begin(), bounded_operations.end()).size(),
              bounded_operations.size());

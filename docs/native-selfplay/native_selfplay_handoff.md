@@ -375,6 +375,10 @@ change anything in that area.
 
 ## 5. How to run the benchmarks
 
+The Python commands in the first two blocks are an archived record of the
+pre-zero-Python A/B methodology. They are not supported current operations.
+Use the native commands in the third block for new evidence.
+
 ```bash
 # C.1 native single-search cost vs Python, same machine, full-game corpus
 python az-bench/profiles/bench_native_single_search.py --repeats 3
@@ -400,12 +404,17 @@ python az-bench/profiles/bench_native_callback.py --seconds 5 --device cuda:0
 
 ```bash
 build/native-training/native/alphadiamond-train train \
-  --runtime-dir runtime --model Soo --run-id <run-id> \
+  --run-dir runtime/runs/soo/<run-id> \
   --config configs/alphazero/soo-production.json \
-  --checkpoint <checkpoint-v2-root>
+  --warm-start models/soo/2.0.0
 
-build/native-training/native/selfplay_benchmark --repetitions 5
-build/native-training/native/end_to_end_benchmark --repetitions 5 \
+build/native-training/native/selfplay_benchmark \
+  --artifact models/soo/2.0.0 --device cpu --lanes 8 --threads 4 \
+  --max-batch 256 --max-wait-us 200 --simulations 128 \
+  --warmups 1 --repetitions 5
+build/native-training/native/end_to_end_benchmark \
+  --device cpu --games 64 --lanes 8 --threads 4 --batch-size 256 \
+  --training-steps 2 --warmups 1 --repetitions 5 \
   --scratch build/native-training/benchmark-e2e
 
 build/native-training/native/alphadiamond-release stage dist/models \

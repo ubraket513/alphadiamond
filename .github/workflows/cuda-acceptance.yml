@@ -1,0 +1,378 @@
+name: CUDA acceptance (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      libtorch_root:
+        description: Existing CUDA-enabled LibTorch root on the Windows runner
+        required: true
+        type: string
+      conda_prefix:
+        description: Existing alphadiamond conda environment root on the Windows runner
+        required: true
+        default: 'C:\ProgramData\miniforge3\envs\alphadiamond'
+        type: string
+      warm_start_root:
+        description: Verified Soo v2.0.0 deployment artifact root
+        required: true
+        type: string
+
+concurrency:
+  group: cuda-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-acceptance:
+    name: CUDA acceptance (self-hosted)
+    runs-on: [self-hosted, windows, x64, cuda]
+    timeout-minutes: 1440
+    env:
+      LIBTORCH_ROOT: ${{ inputs.libtorch_root }}
+      CONDA_PREFIX_INPUT: ${{ inputs.conda_prefix }}
+      WARM_START_ROOT: ${{ inputs.warm_start_root }}
+      ACCEPTANCE_CONFIG: configs/alphazero/soo-cuda-acceptance.json
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Prepare LibTorch DLL search path and validate inputs
+        run: |
+          set -euo pipefail
+          torch_root="$(cygpath -u "$LIBTORCH_ROOT")"
+          conda_root="$(cygpath -u "$CONDA_PREFIX_INPUT")"
+          warm_start_root="$(cygpath -u "$WARM_START_ROOT")"
+          test -d "$torch_root"
+          test -d "$torch_root/lib"
+          test -d "$conda_root/Library/bin"
+          test -d "$conda_root/Scripts"
+          test -x "$conda_root/Library/bin/cmake.exe"
+          test -x "$conda_root/Library/bin/ninja.exe"
+          test -f "$torch_root/share/cmake/Torch/TorchConfig.cmake"
+          test -f "$torch_root/share/cmake/Caffe2/Caffe2Config.cmake"
+          test -f "$warm_start_root/metadata.json"
+          test -d "$warm_start_root/weights"
+          test -f "$ACCEPTANCE_CONFIG"
+          echo "LIBTORCH_ROOT_POSIX=$torch_root" >> "$GITHUB_ENV"
+          echo "CONDA_PREFIX=$conda_root" >> "$GITHUB_ENV"
+          echo "DIAMOND_CMAKE_BIN=$conda_root/Library/bin" >> "$GITHUB_ENV"
+          echo "DIAMOND_TORCH_RUNTIME_DIR=$torch_root/lib" >> "$GITHUB_ENV"
+          echo "WARM_START_ROOT_POSIX=$warm_start_root" >> "$GITHUB_ENV"
+          for runtime_dir in \
+            "$torch_root/lib" \
+            "$conda_root/Library/bin" \
+            "$conda_root/Scripts" \
+            "$conda_root"
+          do
+            cygpath -w "$runtime_dir" >> "$GITHUB_PATH"
+          done
+
+      - name: Verify NVIDIA host and capture environment
+        run: |
+          set -euo pipefail
+          initial_status="$(git status --short)"
+          test -z "$initial_status"
+          printf '/acceptance/\n' >> .git/info/exclude
+          mkdir -p acceptance
+          test "$(nvidia-smi -L | sed -n '/^GPU [0-9]/p' | wc -l)" -gt 0
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "status<<EOF"
+            printf '%s\n' "$initial_status"
+            echo "EOF"
+            cmd.exe //d //c ver
+            powershell.exe -NoProfile -Command \
+              '$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1; $os = Get-CimInstance Win32_OperatingSystem; [pscustomobject]@{cpu=$cpu.Name; physical_cores=$cpu.NumberOfCores; logical_processors=$cpu.NumberOfLogicalProcessors; total_memory_bytes=[int64]$os.TotalVisibleMemorySize*1024; free_memory_bytes=[int64]$os.FreePhysicalMemory*1024} | ConvertTo-Json -Compress'
+            nvidia-smi
+            nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total,compute_cap \
+              --format=csv,noheader
+            tools/native_training.sh cmake --version
+            tools/native_training.sh ctest --version
+          } | tee acceptance/host.txt
+          grep -Eq 'RTX 5090|GeForce RTX 5090' acceptance/host.txt
+          grep -Eq '(^|,)[[:space:]]*12\.0([[:space:]]*,|$)' acceptance/host.txt
+
+      - name: Configure CUDA LibTorch training
+        run: |
+          set -euo pipefail
+          tools/native_training.sh cmake --preset native-training -G Ninja \
+            -DCMAKE_PREFIX_PATH="$LIBTORCH_ROOT_POSIX" \
+            -DTorch_DIR="$LIBTORCH_ROOT_POSIX/share/cmake/Torch" \
+            -DCaffe2_DIR="$LIBTORCH_ROOT_POSIX/share/cmake/Caffe2" \
+            -DDIAMOND_ENABLE_CUDA_TESTS=ON \
+            -DDIAMOND_BUILD_BENCHMARKS=ON \
+            2>&1 | tee acceptance/configure.txt
+
+      - name: Verify selected LibTorch CMake package
+        run: |
+          set -euo pipefail
+          cache=build/native-training/CMakeCache.txt
+          test -f "$cache"
+          torch_dir_raw="$(sed -n 's/^Torch_DIR:[^=]*=//p' "$cache" | head -n 1)"
+          caffe2_dir_raw="$(sed -n 's/^Caffe2_DIR:[^=]*=//p' "$cache" | head -n 1)"
+          test -n "$torch_dir_raw"
+          test -n "$caffe2_dir_raw"
+          torch_dir="$(cd "$(cygpath -u "$torch_dir_raw")" && pwd -P)"
+          caffe2_dir="$(cd "$(cygpath -u "$caffe2_dir_raw")" && pwd -P)"
+          expected_torch_dir="$(cd "$LIBTORCH_ROOT_POSIX/share/cmake/Torch" && pwd -P)"
+          expected_caffe2_dir="$(cd "$LIBTORCH_ROOT_POSIX/share/cmake/Caffe2" && pwd -P)"
+          torch_version="$(
+            sed -n 's/^set(PACKAGE_VERSION "\([^"]*\)").*/\1/p' \
+              "$expected_torch_dir/TorchConfigVersion.cmake" | head -n 1
+          )"
+          test "$torch_dir" = "$expected_torch_dir"
+          test "$caffe2_dir" = "$expected_caffe2_dir"
+          test -n "$torch_version"
+          if printf '%s\n%s\n' "$torch_dir_raw" "$caffe2_dir_raw" \
+              | grep -Eiq '[/\\]site-packages[/\\]torch'; then
+            echo "Python wheel LibTorch path leaked into the native CUDA cache" >&2
+            exit 1
+          fi
+          if grep -Eiq '[/\\]site-packages[/\\]torch' build/native-training/build.ninja; then
+            echo "Python wheel LibTorch path leaked into the native CUDA build graph" >&2
+            exit 1
+          fi
+          printf 'Torch_VERSION=%s\nTorch_DIR=%s\nCaffe2_DIR=%s\n' \
+            "$torch_version" "$torch_dir" "$caffe2_dir" \
+              | tee acceptance/libtorch-cmake-package.txt
+
+      - name: Build CUDA acceptance targets
+        run: >-
+          tools/native_training.sh cmake --build --preset native-training
+          --target device_test inference_coordinator_test training_step_parity_test
+          checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
+          checkpoint_v2_transaction_test alphadiamond-checkpoint alphadiamond-train
+          training_step_benchmark --parallel 1
+
+      - name: Verify LibTorch and CUDA DLL resolution
+        run: |
+          set -euo pipefail
+          {
+            where.exe c10.dll
+            where.exe torch.dll
+            where.exe torch_cpu.dll
+            where.exe c10_cuda.dll
+            where.exe torch_cuda.dll
+            where.exe cudart64*.dll
+            where.exe cublas64*.dll
+            where.exe cudnn*.dll
+            where.exe nvrtc64*.dll
+            where.exe vcruntime140.dll
+            where.exe vcruntime140_1.dll
+            where.exe msvcp140.dll
+          } | tr -d '\r' | tee acceptance/dll-resolution.txt
+          while IFS= read -r dll; do
+            dll_posix="$(cygpath -u "$dll")"
+            test -f "$dll_posix"
+            sha256sum "$dll_posix"
+          done < <(sed -n '/^[A-Za-z]:\\/p' acceptance/dll-resolution.txt) \
+            > acceptance/dll-sha256.txt
+          : > acceptance/libtorch-dll-identity.txt
+          for name in c10.dll torch.dll torch_cpu.dll c10_cuda.dll torch_cuda.dll; do
+            reference_digest=
+            first_path=
+            while IFS= read -r resolved; do
+              resolved_posix="$(cygpath -u "$resolved")"
+              digest="$(sha256sum "$resolved_posix" | awk '{print $1}')"
+              if test -z "$first_path"; then first_path="$resolved_posix"; fi
+              if test -n "$reference_digest"; then test "$digest" = "$reference_digest"; fi
+              reference_digest="$digest"
+              printf '%s\t%s\t%s\n' "$name" "$digest" "$resolved" \
+                >> acceptance/libtorch-dll-identity.txt
+            done < <(where.exe "$name" | tr -d '\r')
+            case "$first_path" in
+              "$LIBTORCH_ROOT_POSIX"/lib/*) ;;
+              *) echo "$name resolved outside the selected LibTorch root: $first_path" >&2; exit 1 ;;
+            esac
+          done
+          linker="$(sed -n 's/^CMAKE_LINKER:FILEPATH=//p' build/native-training/CMakeCache.txt | head -n 1)"
+          test -n "$linker"
+          dumpbin="$(dirname "$(cygpath -u "$linker")")/dumpbin.exe"
+          test -x "$dumpbin"
+          "$dumpbin" /DEPENDENTS build/native-training/native/alphadiamond-train.exe \
+            > acceptance/train-dependents.txt
+          "$dumpbin" /DEPENDENTS build/native-training/native/training_step_benchmark.exe \
+            > acceptance/benchmark-dependents.txt
+          grep -qi 'c10.dll' acceptance/train-dependents.txt
+          grep -qi 'torch_cpu.dll' acceptance/train-dependents.txt
+
+      - name: Require and run exactly four CUDA tests
+        run: |
+          set -euo pipefail
+          tools/native_training.sh ctest --preset native-training -N -L '^cuda$' \
+            | tee acceptance/tests-list.txt
+          sed -n 's/^ *Test #[0-9][0-9]*: //p' acceptance/tests-list.txt \
+            | sort > acceptance/tests-actual.txt
+          printf '%s\n' \
+            checkpoint_v2_roundtrip_test_cuda \
+            device_test_cuda \
+            inference_coordinator_test_cuda \
+            training_step_parity_test_cuda \
+            > acceptance/tests-expected.txt
+          diff -u acceptance/tests-expected.txt acceptance/tests-actual.txt
+          test "$(wc -l < acceptance/tests-actual.txt)" -eq 4
+          tools/native_training.sh ctest --preset native-training \
+            --output-on-failure --no-tests=error -L '^cuda$' \
+            -R '^(checkpoint_v2_roundtrip_test_cuda|device_test_cuda|inference_coordinator_test_cuda|training_step_parity_test_cuda)$' \
+            --output-junit acceptance/cuda-ctest.xml \
+            2>&1 | tee acceptance/cuda-tests.txt
+
+      - name: Run focused CPU regressions on the CUDA host
+        run: |
+          set -euo pipefail
+          tools/native_training.sh ctest --preset native-training \
+            -R '^(device_test|inference_coordinator_test|training_step_parity_test|checkpoint_v2_roundtrip_test|checkpoint_v2_reject_test|checkpoint_v2_transaction_test)$' \
+            --output-on-failure --no-tests=error \
+            --output-junit acceptance/cpu-regression-ctest.xml \
+            2>&1 | tee acceptance/cpu-regressions.txt
+
+      - name: Record production-shaped CUDA training benchmark
+        run: |
+          set -euo pipefail
+          warm_start_win="$(cygpath -w "$WARM_START_ROOT_POSIX")"
+          MSYS2_ARG_CONV_EXCL='*' build/native-training/native/training_step_benchmark.exe \
+            --artifact "$warm_start_win" --device cuda:0 --batch-size 256 \
+            --warmups 1 --repetitions 3 --threads 4 \
+            > acceptance/training-step-benchmark.json
+          grep -q '"canonical_device":"cuda:0"' acceptance/training-step-benchmark.json
+          grep -q '"dirty":false' acceptance/training-step-benchmark.json
+          grep -q '"peak_cuda_memory_available":true' acceptance/training-step-benchmark.json
+
+      - name: Force interruption after iteration zero and resume
+        run: |
+          set -euo pipefail
+          workspace="$(cygpath -u "$GITHUB_WORKSPACE")"
+          temp_root="$(cygpath -u "$RUNNER_TEMP")/alphadiamond-cuda-${GITHUB_RUN_ID}"
+          run_dir="$temp_root/runs/soo/cuda-acceptance"
+          run_dir_win="$(cygpath -w "$run_dir")"
+          config_win="$(cygpath -w "$workspace/$ACCEPTANCE_CONFIG")"
+          warm_start_win="$(cygpath -w "$WARM_START_ROOT_POSIX")"
+          executable="$workspace/build/native-training/native/alphadiamond-train.exe"
+          mkdir -p "$(dirname "$run_dir")"
+          echo "RUN_DIR_POSIX=$run_dir" >> "$GITHUB_ENV"
+          echo "RUN_DIR_WINDOWS=$run_dir_win" >> "$GITHUB_ENV"
+
+          nvidia-smi \
+            --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
+            --format=csv -l 1 > acceptance/gpu-samples.csv &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+
+          set +e
+          MSYS2_ARG_CONV_EXCL='*' "$executable" train \
+            --run-dir "$run_dir_win" --config "$config_win" \
+            --warm-start "$warm_start_win" \
+            > acceptance/train-before-interruption.json \
+            2> acceptance/train-before-interruption.stderr &
+          trainer_pid=$!
+          set -e
+
+          persisted=
+          for _ in $(seq 1 43200); do
+            if test -f "$run_dir/iterations/0/persist.json"; then
+              persisted=1
+              break
+            fi
+            if ! kill -0 "$trainer_pid" 2>/dev/null; then
+              wait "$trainer_pid" || true
+              echo "trainer exited before the forced interruption boundary" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$persisted" = 1
+          test -f "$run_dir/iterations/0/candidate-checkpoint/CURRENT"
+          cp "$run_dir/state.json" acceptance/state-before-resume.json
+          cp "$run_dir/ledger.jsonl" acceptance/ledger-before-resume.jsonl
+          taskkill.exe //PID "$trainer_pid" //T //F \
+            > acceptance/taskkill.txt 2>&1
+          set +e
+          wait "$trainer_pid"
+          interrupted_rc=$?
+          set -e
+          test "$interrupted_rc" -ne 0
+
+          MSYS2_ARG_CONV_EXCL='*' "$executable" resume --run-dir "$run_dir_win" \
+            > acceptance/resume.json
+          MSYS2_ARG_CONV_EXCL='*' "$executable" report --run-dir "$run_dir_win" \
+            > acceptance/report.json
+          kill "$monitor_pid" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Verify exact durable work and paired-opening evidence
+        run: |
+          set -euo pipefail
+          test -f "$RUN_DIR_POSIX/iterations/1/candidate-checkpoint/CURRENT"
+          grep -q '"stage":"COMPLETE"' "$RUN_DIR_POSIX/state.json"
+          grep -q '"iteration":1' "$RUN_DIR_POSIX/state.json"
+          grep -q '"training_step":4' "$RUN_DIR_POSIX/state.json"
+          test "$(wc -l < "$RUN_DIR_POSIX/ledger.jsonl")" -eq 18
+          duplicate_operations="$(
+            sed -n 's/^{"operation_id":"\([^"]*\)".*/\1/p' \
+              "$RUN_DIR_POSIX/ledger.jsonl" | sort | uniq -d
+          )"
+          test -z "$duplicate_operations"
+
+          for iteration in 0 1; do
+            stage_root="$RUN_DIR_POSIX/iterations/$iteration"
+            grep -q '"completed_games":16' "$stage_root/self-play.json"
+            grep -q '"duplicate_games":0' "$stage_root/replay-ingest.json"
+            grep -q '"completed_training_steps":2' "$stage_root/train.json"
+            grep -q '"training_batch_sizes":\[256,256\]' "$stage_root/train.json"
+            grep -q '"complete_blocks":4' "$stage_root/promotion-arena.json"
+            grep -q '"incomplete_blocks":0' "$stage_root/promotion-arena.json"
+            grep -q '"decision":"reject"' "$stage_root/promote-or-reject.json"
+          done
+          duplicate_rating_events="$(
+            grep -o '"event_id":"[^"]*"' "$RUN_DIR_POSIX/rating-registry.json" \
+              | sort | uniq -d
+          )"
+          test -z "$duplicate_rating_events"
+
+      - name: Collect checksummed run evidence
+        if: ${{ !cancelled() && env.RUN_DIR_POSIX != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p acceptance/run-evidence
+          cp "$RUN_DIR_POSIX/state.json" acceptance/run-evidence/
+          cp "$RUN_DIR_POSIX/ledger.jsonl" acceptance/run-evidence/
+          cp "$RUN_DIR_POSIX/resolved-config.json" acceptance/run-evidence/
+          cp "$RUN_DIR_POSIX/initialization.json" acceptance/run-evidence/
+          cp "$RUN_DIR_POSIX/arena.json" acceptance/run-evidence/
+          cp "$RUN_DIR_POSIX/rating-registry.json" acceptance/run-evidence/
+          for iteration in 0 1; do
+            mkdir -p "acceptance/run-evidence/iteration-$iteration"
+            cp "$RUN_DIR_POSIX/iterations/$iteration/"*.json \
+              "acceptance/run-evidence/iteration-$iteration/"
+            for checkpoint in trained-checkpoint candidate-checkpoint; do
+              checkpoint_root="$RUN_DIR_POSIX/iterations/$iteration/$checkpoint"
+              generation="$(tr -d '\r\n' < "$checkpoint_root/CURRENT")"
+              generation_root="$checkpoint_root/generations/$generation"
+              cp "$generation_root/manifest.json" \
+                "acceptance/run-evidence/iteration-$iteration-$checkpoint-manifest.json"
+              sha256sum "$generation_root/manifest.json" "$generation_root/state.pt" \
+                "$generation_root/optimizer.pt" \
+                >> acceptance/run-evidence/checkpoint-files.sha256
+            done
+          done
+          printf '%s\n' \
+            '{"cuda_host_executed":true,"candidate_uploaded":false,"expected_cuda_tests":4,"iterations":2,"status":"passed"}' \
+            > acceptance/summary.json
+          git status --short > acceptance/final-status.txt
+          test ! -s acceptance/final-status.txt
+          find acceptance -type f ! -name evidence.sha256 -print0 \
+            | sort -z | xargs -0 sha256sum > acceptance/evidence.sha256
+
+      - name: Upload CUDA evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuda-acceptance-evidence-${{ github.run_id }}
+          path: acceptance/
+          if-no-files-found: error
