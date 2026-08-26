@@ -175,7 +175,7 @@ soo::Match game_match(const ProductionConfig& config) {
     soo::ensure_topology_configured();
     soo::Match match;
     if (config.model_name == "Soo") {
-        match.count = 2; match.players[0] = {1, 0, 3}; match.players[1] = {2, 3, 0};
+        match.count = 2; match.players[0] = {1, 2, 5}; match.players[1] = {2, 0, 3};
     } else {
         match.count = 3; match.players[0] = {1, 0, 3}; match.players[1] = {2, 2, 5}; match.players[2] = {3, 4, 1};
     }
