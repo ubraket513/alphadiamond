@@ -1,17 +1,56 @@
 # The repetition trigger is implemented but unreachable
 
-**Status:** wiring fixed in this change; the operating point is not yet chosen.
-**Applies to:** every training run configured from JSON, on every device.
+**Status:** wiring fixed; **the trigger must stay off in production.**
+
+## Conclusion first
+
+**Production A0 is flat 128 simulations. Do not enable this trigger in
+`soo-production.json` or `min-production.json`.**
+
+The repetition trigger is the best *generator* on record -- 98.0 % completion,
+9.6 % censoring, 392 samples/s, 5 % of moves boosted, beating flat-128 on all
+four axes. It is also the wrong thing to train on.
+[`soo_scratch_training.md`](soo_scratch_training.md) §6.8 measured the learner
+each generator produces, and only flat-128 holds its actor's level:
+
+| generator | targets from 128-sim search | actor | learner | |
+|---|---|---|---|---|
+| flat 128 | **100 %** | 97.8 % | **97.9 %** | **holds** |
+| repetition trigger | 5 % | 98.0 % | 91.5 % | degrades 6.5 pt |
+| flat 64 | 0 % | 93.2 % | 86.3 % | degrades 6.9 pt |
+
+What tracks the outcome is the fraction of training targets produced by a
+128-simulation search, not the censoring rate: the trigger censors the *least*
+of the three and its learner degrades anyway, which overturned the earlier
+"censoring is the operative variable" reading in §6.5. At 64 simulations the
+root search does not reliably improve on the network's own prior, so its visit
+distribution is not a policy-improvement target. **A cheap generator does not
+make a cheap teacher** -- the extra search has to be in the targets the network
+learns from, not only in the moves that were going wrong.
+
+So this trigger is an instrument for generator-side experiments and for
+diagnosing the aborted tail. It is not a production setting, and the wiring
+below exists to make it *available*, not to make it *default*.
+
+### Correction to an earlier draft of this document
+
+An earlier version of this file, and the commit message of `13fc6b3`, described
+the trigger as a measured improvement that every run had silently lost. That
+overstated it: it read §6.6 (the generator result) without §6.8 and §6.9 (the
+learner result that supersedes it). The wiring gap below is real and worth
+fixing, but it was **not** costing production anything, because production
+should be running flat-128 regardless.
 
 ## The gap
 
 [`soo_scratch_training.md`](soo_scratch_training.md) §6.2 audited the aborted
 self-play tail and found it is not slow progress but a **short-cycle attractor**:
 median 31.6 % unique positions per move, one position revisited 61 times, 68.4 %
-of moves returning within 8 ply. §6.6 then measured the fix -- boost the search
+of moves returning within 8 ply. §6.6 then measured a mitigation -- boost the search
 budget only on a move whose position already occurred within the last few plies,
-keyed on the physical `dynamics_key` -- and found it dominates a flat budget on
-every axis:
+keyed on the physical `dynamics_key` -- and found it dominates a flat budget as a
+*generator* (see the conclusion above for why that does not make it a training
+configuration):
 
 | configuration | completion | discarded | terminal samples/s | moves boosted |
 |---|---|---|---|---|
@@ -30,9 +69,10 @@ the live logic -- `lane.seen_recently(key)` selecting the boosted budget, and
 parsed no such key, so no JSON config could reach them; `training_wiring.cpp`
 did not forward them; `arena_episode_config` in `train_main.cpp` left them at
 their defaults. Both default to `0`, which disables the trigger. Every
-production, bootstrap and acceptance run therefore executed a flat budget with
-the mitigation switched off, and the measured benefit of §6.6 was never
-available to any run the pipeline actually performed.
+production, bootstrap and acceptance run therefore executed a flat budget, and
+the knob was unavailable for experiments. For production runs that is the
+correct budget anyway (§6.8); the cost of the gap is that the generator-side
+experiment could not be run at all, not that production regressed.
 
 This is a migration gap, not a design decision. The engine kept the capability
 across the Python retirement; the configuration surface did not.
@@ -107,11 +147,14 @@ wiring itself is asserted in `cli_contract_test`.
 
 ## What is still open
 
-1. **The operating point is not chosen.** §6.6 measured base 64 boosting to 128
-   on an 8-ply window, against a different checkpoint. The right values for the
-   promoted step-44250 model are an empirical question, and the defaults remain
-   disabled until they are measured. Do not enable this in a production config
-   on the strength of §6.6 alone.
+1. **Reproduce the historical baseline before anything else.** §7.1 recorded
+   rolling A0 at flat 128 holding 750-755 of 768 games (97.7-98.3 %) over twenty
+   iterations, with median game length 64-65. That is the number to reproduce
+   against step 44250 before any trigger experiment is worth running: at 768
+   games, `max_moves` 500, prior none, training off. If it reproduces at 97-98 %
+   the pipeline is healthy and the next step is systems tuning. If it comes back
+   at 70-80 %, there is a regression to find, and every abort-rate observation
+   in this document is measuring that regression rather than A0.
 
 2. **Sixteen games cannot answer it.** Iteration-0 abort counts for one
    unchanged configuration on one RTX 5090 were 7, 3 and 1 out of 16 across
