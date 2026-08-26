@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
     }
     {
         diamond_pipeline::ReplayStore store(durable_root, compatibility, 8, 3);
-        const auto rows = store.sample(1);
+        const auto rows = store.sample(1, 3);
         REQUIRE(rows.size() == 1, "reopened sample count");
         CHECK_EQ(rows[0].canonical_player_ids[0], 1);
     }
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
     }
     {
         diamond_pipeline::ReplayStore reopened(long_root, compatibility, 8, 3);
-        REQUIRE(reopened.sample(1).size() == 1, "Windows extended-path replay reopen");
+        REQUIRE(reopened.sample(1, 3).size() == 1, "Windows extended-path replay reopen");
     }
 #endif
 
@@ -128,28 +128,40 @@ int main(int argc, char** argv) {
         CHECK_EQ(report.accepted_games, 64U);
         CHECK_EQ(report.accepted_samples, 64U);
         CHECK_EQ(store.ingest_iteration(pool).duplicate_games, 64U);
-        expected_first = ids(store.sample(4));
+        const auto step_seed = diamond_pipeline::replay_sampling_seed(17, 5, 0);
+        expected_first = ids(store.sample(4, step_seed));
         std::unordered_set<int> unique(expected_first.begin(), expected_first.end());
         CHECK_EQ(unique.size(), 4U);
         const auto stats = store.last_sampling_stats();
         CHECK(stats.selection_slots <= 8U);
         CHECK_EQ(stats.copied_samples, 4U);
-        (void)store.sample(4);
+        // Stateless: the same seed reselects the same rows, a different local
+        // step selects different ones, and neither writes anything.
+        const auto manifest_before = store.manifest_digest();
+        CHECK(ids(store.sample(4, step_seed)) == expected_first);
+        CHECK(ids(store.sample(4, diamond_pipeline::replay_sampling_seed(17, 5, 1))) !=
+              expected_first);
+        CHECK_EQ(store.manifest_digest(), manifest_before);
+    }
+    {
+        // A reopened store with the same contents replays the same sequence.
+        diamond_pipeline::ReplayStore reopened(selection_root, compatibility, 128, 17);
+        CHECK(ids(reopened.sample(4, diamond_pipeline::replay_sampling_seed(17, 5, 0))) ==
+              expected_first);
     }
     const auto pre_activation_root = scratch / "pre-activation";
     {
+        // Sampling touches no file, so an activation failure injected around it
+        // cannot be reached at all: the draw succeeds and the manifest written
+        // by ingest is untouched.
         diamond_pipeline::ReplayStore store(pre_activation_root, compatibility, 128, 17);
         (void)store.ingest(pool);
+        const auto manifest_before = store.manifest_digest();
         set_environment("DIAMOND_REPLAY_FAIL_ACTIVATE", "1");
-        bool failed = false;
-        try {
-            (void)store.sample(4);
-        } catch (const std::runtime_error&) {
-            failed = true;
-        }
+        const auto drawn = ids(store.sample(4, diamond_pipeline::replay_sampling_seed(17, 5, 0)));
         set_environment("DIAMOND_REPLAY_FAIL_ACTIVATE", "");
-        CHECK(failed);
-        CHECK(ids(store.sample(4)) == expected_first);
+        CHECK(drawn == expected_first);
+        CHECK_EQ(store.manifest_digest(), manifest_before);
     }
     const auto orphan_root = scratch / "orphan-recovery";
     {
@@ -187,8 +199,11 @@ int main(int argc, char** argv) {
                 "v1\"}") /
             "manifest.json");
         const std::string contents{std::istreambuf_iterator<char>(manifest), {}};
-        CHECK(contents.find("selection_transaction") != std::string::npos);
-        CHECK(contents.find("\"state\":\"committed\"") != std::string::npos);
+        // Contents identity only: no sampler state, no transaction records.
+        CHECK(contents.find("\"schema_version\":4") != std::string::npos);
+        CHECK(contents.find("selection_transaction") == std::string::npos);
+        CHECK(contents.find("ingest_transaction") == std::string::npos);
+        CHECK(contents.find("\"rng\"") == std::string::npos);
     }
 
     bool corrupt = false;
@@ -200,7 +215,7 @@ int main(int argc, char** argv) {
         std::filesystem::copy(fixtures / "capacity-prune", scratch / "capacity-prune",
                               std::filesystem::copy_options::recursive);
         diamond_pipeline::ReplayStore capacity(scratch / "capacity-prune", compatibility, 3, 3);
-        REQUIRE(capacity.sample(3).size() == 3, "capacity fixture retains only reachable rows");
+        REQUIRE(capacity.sample(3, 3).size() == 3, "capacity fixture retains only reachable rows");
     }
     {
         std::filesystem::copy(fixtures / "rollback", scratch / "rollback",
@@ -209,7 +224,7 @@ int main(int argc, char** argv) {
         rollback.restore_manifest(
             scratch / "rollback" / "persistent-replay-v1" / "Soo" /
             "3f3372c174dba4b7bfa9288e2c7e0a33e284dfdc3313f1d073210de8e47df229" / "before.json");
-        CHECK_EQ(rollback.sample(1).size(), 1U);
+        CHECK_EQ(rollback.sample(1, 3).size(), 1U);
     }
     remove_tree(scratch, cleanup_error);
     CHECK(!cleanup_error);

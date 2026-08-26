@@ -377,6 +377,7 @@ diamond_pipeline::IterationRequest iteration_job(const ProductionConfig& config,
     }
     job.training_batch_size = wiring.training_batch_size;
     job.training_steps = wiring.training_steps;
+    job.iteration = static_cast<uint64_t>(iteration);
     return job;
 }
 
@@ -958,6 +959,8 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                 {"training_batch_sizes", Json{std::move(batch_sizes)}},
                 {"training_metrics", Json{training_metrics_json(trained.training_metrics)}},
                 {"replay_size", Json{static_cast<int64_t>(trained.replay_size)}},
+                {"replay_sample_seconds", Json{trained.replay_sample_seconds}},
+                {"replay_sample_max_seconds", Json{trained.replay_sample_max_seconds}},
                 {"training_step", Json{static_cast<int64_t>(trained.training_step)}},
                 {"trained_checkpoint", Json{staged.string()}},
             },

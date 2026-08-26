@@ -349,9 +349,21 @@ TrainingResult train_replay(const IterationRequest& request, ReplayStore& replay
                             std::to_string(request.training_batch_size) + ", available " +
                             std::to_string(result.replay_size));
     }
+    // Sampling is stateless: the seed is a pure function of the replay seed,
+    // the iteration and the local step, so a TRAIN stage killed part-way and
+    // re-run from step 0 draws exactly the same minibatch sequence, and the
+    // replay store is never written during training.
     for (std::size_t step = 0; step < request.training_steps; ++step) {
         if (stop.stop_requested()) throw CancelledError("native pipeline cancelled during training");
-        auto samples = replay.sample(request.training_batch_size);
+        const auto drawn = std::chrono::steady_clock::now();
+        auto samples = replay.sample(
+            request.training_batch_size,
+            replay_sampling_seed(replay.replay_seed(), request.iteration, step));
+        const auto sample_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - drawn).count();
+        result.replay_sample_seconds += sample_seconds;
+        result.replay_sample_max_seconds =
+            std::max(result.replay_sample_max_seconds, sample_seconds);
         result.training_metrics.push_back(trainer.train(samples));
         ++result.completed_training_steps;
         result.training_batch_sizes.push_back(samples.size());

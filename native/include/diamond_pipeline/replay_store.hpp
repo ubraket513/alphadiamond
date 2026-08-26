@@ -24,6 +24,13 @@ struct ReplaySamplingStats {
     std::size_t copied_samples = 0;
 };
 
+// The training seed for one minibatch.  Sampling is a pure function of the
+// replay contents and this seed, so the same replay contents replayed at the
+// same iteration and local step always yield the same minibatch -- which is
+// what makes a killed TRAIN stage restartable from its beginning without any
+// durable sampler state.
+uint64_t replay_sampling_seed(uint64_t replay_seed, uint64_t iteration, uint64_t training_step);
+
 class ReplayStore {
   public:
     ReplayStore(std::filesystem::path root, Compatibility compatibility,
@@ -33,7 +40,10 @@ class ReplayStore {
     std::size_t size() const noexcept;
     std::filesystem::path manifest_path() const;
     std::string manifest_digest() const;
-    std::vector<TrainingSample> sample(std::size_t count);
+    uint64_t replay_seed() const noexcept;
+    // Pure: reads memory and copies rows.  It touches no file and mutates no
+    // sampler state, so it may be called any number of times in any order.
+    std::vector<TrainingSample> sample(std::size_t count, uint64_t seed) const;
     ReplaySamplingStats last_sampling_stats() const noexcept;
     void prune();
     void restore_manifest(const std::filesystem::path& snapshot);

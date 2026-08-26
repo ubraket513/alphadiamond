@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -25,6 +26,9 @@ struct IterationRequest {
     soo::EpisodeConfig selfplay;
     std::size_t training_batch_size = 1;
     std::size_t training_steps = 0;
+    // Iteration index, which together with the store's replay seed and the
+    // local step fixes every minibatch this iteration will draw.
+    uint64_t iteration = 0;
     std::optional<std::filesystem::path> checkpoint_root;
 };
 
@@ -110,6 +114,12 @@ struct TrainingResult {
     std::vector<diamond_training::TrainingMetrics> training_metrics;
     std::size_t replay_size = 0;
     uint64_t training_step = 0;
+    // Time spent inside ReplayStore::sample() across the stage, and the worst
+    // single draw. Sampling is pure memory work now, so this is the number that
+    // says whether it has stayed that way as the pool grows -- a replay whose
+    // sampling cost rose with capacity would show up here first.
+    double replay_sample_seconds = 0.0;
+    double replay_sample_max_seconds = 0.0;
 };
 
 // Durable self-play hand-off used between the coordinator's SELF_PLAY and

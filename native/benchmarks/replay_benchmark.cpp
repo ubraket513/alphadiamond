@@ -72,7 +72,8 @@ int run(int argc, char** argv) {
     std::vector<double> seconds;
     for (std::uint64_t i = 0; i < args.repetitions; ++i) {
         const auto start = std::chrono::steady_clock::now();
-        (void)store.sample(args.batch_size);
+        (void)store.sample(args.batch_size,
+                           diamond_pipeline::replay_sampling_seed(17, 0, i));
         seconds.push_back(
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
     }

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -27,11 +28,16 @@ int main(int argc, char** argv) {
     std::filesystem::remove_all(scratch);
     copy_fixture(fixture_dir / "completed", scratch / "completed");
     diamond_pipeline::ReplayStore completed(scratch / "completed", compatibility, 8, 3);
-    const auto rows = completed.sample(2);
+    const auto rows = completed.sample(2, 3);
     REQUIRE(rows.size() == 2, "completed fixture sample count");
+    // Drawing the whole pool must yield exactly the fixture's rows.  Their
+    // order is a property of the sampling seed, not of the stored contents,
+    // so the contract is on the set of actions, not on the permutation.
     CHECK_EQ(rows[0].canonical_player_ids[0], 1);
-    CHECK_EQ(rows[0].sparse_policy[0].first, 4);
-    CHECK_EQ(rows[1].sparse_policy[0].first, 8);
+    CHECK_EQ(rows[1].canonical_player_ids[0], 1);
+    const auto first = rows[0].sparse_policy[0].first;
+    const auto second = rows[1].sparse_policy[0].first;
+    CHECK(std::min(first, second) == 4 && std::max(first, second) == 8);
     return soo_test::report("replay_schema_test");
     } catch (const std::exception& error) { soo_test::fail(__FILE__, __LINE__, error.what()); return soo_test::report("replay_schema_test"); }
 }
