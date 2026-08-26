@@ -28,11 +28,7 @@ training_sample(const diamond_training::Compatibility& compatibility) {
 
 soo::Match soo_match() {
     soo::ensure_topology_configured();
-    soo::Match match;
-    match.count = 2;
-    match.players[0] = {1, 0, 3};
-    match.players[1] = {2, 3, 0};
-    return match;
+    return soo::standard_soo_match();
 }
 
 soo::State opening(const soo::Match& match) {

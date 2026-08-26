@@ -311,8 +311,7 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
             QTimer::singleShot(0, this, &NativeController::startAiTurn);
     });
     match_.count = 2;
-    match_.players[0] = soo::PlayerSpec{1, 2, 5};
-    match_.players[1] = soo::PlayerSpec{2, 0, 3};
+    match_ = soo::standard_soo_match();
     ai_seats_ = {2};
     ai_player_name_ = resolvedAiPlayerName();
     geometry_->setPlayerCount(match_.count);
