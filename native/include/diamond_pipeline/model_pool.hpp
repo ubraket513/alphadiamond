@@ -31,6 +31,22 @@ class ModelPool final : public soo::BatchEvaluator {
         std::size_t batch_size = 0;
         std::size_t max_legal_actions = 0;
 
+        // Where one batch actually goes. `evaluator_busy_fraction` counts all
+        // of this as "the evaluator", so a high value says nothing about
+        // whether the GPU is saturated: it may be CPU collation, three host to
+        // device copies, the forward pass, the softmax, the copy back, or the
+        // scatter into the waiting lanes. Splitting it is what makes the next
+        // optimisation decidable. GPU-side spans are measured with CUDA events
+        // because the work is enqueued asynchronously and a host clock would
+        // attribute all of it to whichever call happens to synchronise;
+        // on CPU the same fields fall back to a host clock.
+        double collation_seconds = 0.0;
+        double h2d_seconds = 0.0;
+        double forward_seconds = 0.0;
+        double policy_postprocess_seconds = 0.0;
+        double d2h_seconds = 0.0;
+        double scatter_seconds = 0.0;
+
         bool operator==(const EvaluationStats&) const = default;
     };
 
@@ -48,6 +64,17 @@ class ModelPool final : public soo::BatchEvaluator {
     void require_compatible(const Compatibility& expected) const;
     void require_ready(std::stop_token stop, std::chrono::steady_clock::time_point deadline) const;
     void evaluate(std::vector<soo::BatchItem>& batch) override;
+    // Summed over every batch since the last reset. last_evaluation_stats()
+    // describes one batch and is useless for a run-level breakdown.
+    EvaluationStats accumulated_evaluation_stats() const noexcept {
+        return accumulated_evaluation_stats_;
+    }
+    std::size_t evaluated_batches() const noexcept { return evaluated_batches_; }
+    void reset_evaluation_stats() noexcept {
+        accumulated_evaluation_stats_ = EvaluationStats{};
+        evaluated_batches_ = 0;
+    }
+
     EvaluationStats last_evaluation_stats() const noexcept {
         return last_evaluation_stats_;
     }
@@ -63,6 +90,8 @@ class ModelPool final : public soo::BatchEvaluator {
     std::map<ModelKey, ResidentModel> models_;
     std::optional<ModelKey> active_;
     EvaluationStats last_evaluation_stats_;
+    EvaluationStats accumulated_evaluation_stats_;
+    std::size_t evaluated_batches_ = 0;
 };
 
 }  // namespace diamond_pipeline

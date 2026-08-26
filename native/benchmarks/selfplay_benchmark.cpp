@@ -11,6 +11,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <cmath>
 #include <string_view>
 #include <vector>
 
@@ -36,6 +37,21 @@ struct Options {
     std::size_t simulations = 4;
     std::size_t max_moves = 8;
     uint64_t max_wait_us = 200;
+    // Games are deliberately separate from lanes. With one game per lane the
+    // job queue never engages: a lane cannot take fresh work when its game
+    // ends, so the run finishes at the pace of its slowest game while the rest
+    // idle, and the throughput that comes out is not the throughput production
+    // sees. The production config rejects that shape outright; this benchmark
+    // used to be built that way, which is why an earlier findings table had to
+    // have its throughput column retracted. Zero means "one per lane", the old
+    // behaviour, kept only so existing invocations do not silently change.
+    std::size_t games = 0;
+    uint64_t seed = 17;
+    // Production exploration. Without it lanes play near-identical games and
+    // the request stream is not the shape the batcher sees in a real run.
+    double temperature = 1.0;
+    std::size_t temperature_moves = 20;
+    double dirichlet_epsilon = 0.25;
     std::optional<std::filesystem::path> scratch;
 };
 
@@ -51,6 +67,19 @@ std::size_t parse_count(std::string_view value, std::string_view option, bool al
     return static_cast<std::size_t>(parsed);
 }
 
+double parse_number(std::string_view value, std::string_view option) {
+    const std::string text(value);
+    try {
+        std::size_t consumed = 0;
+        const double parsed = std::stod(text, &consumed);
+        if (consumed != text.size() || !std::isfinite(parsed))
+            throw std::invalid_argument("bad");
+        return parsed;
+    } catch (const std::exception&) {
+        throw std::invalid_argument(std::string(option) + " must be a finite number");
+    }
+}
+
 Options parse_options(int argc, char** argv) {
     Options options;
     for (int index = 1; index < argc; ++index) {
@@ -58,7 +87,9 @@ Options parse_options(int argc, char** argv) {
         if (option == "--help") {
             std::cout << "usage: selfplay_benchmark [--artifact DIR] [--device cpu|cuda|cuda:N] "
                          "[--lanes N] [--threads N] [--max-batch N] [--max-wait-us N] "
-                         "[--simulations N] [--max-moves N] [--warmups N] [--repetitions N] "
+                         "[--simulations N] [--max-moves N] [--games N] [--seed N] "
+                         "[--temperature F] [--temperature-moves N] "
+                         "[--dirichlet-epsilon F] [--warmups N] [--repetitions N] "
                          "[--scratch PATH]\n";
             std::exit(0);
         }
@@ -85,6 +116,16 @@ Options parse_options(int argc, char** argv) {
             options.warmups = parse_count(value, option, true);
         else if (option == "--repetitions")
             options.repetitions = parse_count(value, option);
+        else if (option == "--games")
+            options.games = parse_count(value, option);
+        else if (option == "--seed")
+            options.seed = parse_count(value, option, true);
+        else if (option == "--temperature")
+            options.temperature = parse_number(value, option);
+        else if (option == "--temperature-moves")
+            options.temperature_moves = parse_count(value, option, true);
+        else if (option == "--dirichlet-epsilon")
+            options.dirichlet_epsilon = parse_number(value, option);
         else if (option == "--scratch")
             options.scratch = value;
         else
@@ -92,6 +133,15 @@ Options parse_options(int argc, char** argv) {
     }
     if (options.threads > options.lanes)
         throw std::invalid_argument("threads must not exceed lanes");
+    if (options.games != 0 && options.games <= options.lanes) {
+        throw std::invalid_argument(
+            "--games must exceed --lanes, otherwise the job queue never engages");
+    }
+    if (!(options.temperature >= 0.0) || !(options.dirichlet_epsilon >= 0.0) ||
+        options.dirichlet_epsilon > 1.0) {
+        throw std::invalid_argument(
+            "--temperature must be non-negative and --dirichlet-epsilon in [0, 1]");
+    }
     const auto int_max = static_cast<std::size_t>(std::numeric_limits<int>::max());
     if (options.lanes > int_max || options.threads > int_max || options.max_batch > int_max ||
         options.max_wait_us > static_cast<uint64_t>(std::numeric_limits<int>::max()) ||
@@ -127,6 +177,12 @@ struct Totals {
     uint64_t moves = 0;
     double wall_seconds = 0.0;
     double evaluator_seconds = 0.0;
+    double collation_seconds = 0.0;
+    double h2d_seconds = 0.0;
+    double forward_seconds = 0.0;
+    double postprocess_seconds = 0.0;
+    double d2h_seconds = 0.0;
+    double scatter_seconds = 0.0;
     double worker_busy_seconds = 0.0;
     std::vector<uint32_t> batch_sizes;
     std::vector<uint32_t> move_counts;
@@ -141,18 +197,21 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
         .max_wait_us = static_cast<int>(options.max_wait_us),
         .simulations = static_cast<int>(options.simulations),
         .max_moves = static_cast<int>(options.max_moves),
-        .temperature = 0.0,
-        .temperature_moves = 0,
+        .temperature = options.temperature,
+        .temperature_moves = static_cast<int>(options.temperature_moves),
         .dirichlet_alpha = 0.3,
-        .dirichlet_epsilon = 0.0,
+        .dirichlet_epsilon = options.dirichlet_epsilon,
     };
+    const std::size_t job_count = options.games != 0 ? options.games : options.lanes;
     std::vector<soo::EpisodeJob> jobs;
-    jobs.reserve(options.lanes);
-    for (std::size_t lane = 0; lane < options.lanes; ++lane)
-        jobs.push_back({initial, static_cast<uint64_t>(17 + lane * 12)});
+    jobs.reserve(job_count);
+    for (std::size_t game = 0; game < job_count; ++game)
+        jobs.push_back({initial, options.seed + game * 12});
 
     soo::EpisodeMetrics metrics;
+    evaluator.reset_evaluation_stats();
     const auto episodes = soo::run_episodes(match, jobs, config, evaluator, metrics);
+    const auto stage = evaluator.accumulated_evaluation_stats();
 
     Totals totals;
     totals.attempted = episodes.size();
@@ -161,6 +220,12 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
     totals.moves = metrics.moves;
     totals.wall_seconds = metrics.wall_seconds;
     totals.evaluator_seconds = metrics.evaluator_seconds;
+    totals.collation_seconds = stage.collation_seconds;
+    totals.h2d_seconds = stage.h2d_seconds;
+    totals.forward_seconds = stage.forward_seconds;
+    totals.postprocess_seconds = stage.policy_postprocess_seconds;
+    totals.d2h_seconds = stage.d2h_seconds;
+    totals.scatter_seconds = stage.scatter_seconds;
     totals.worker_busy_seconds = metrics.worker_busy_seconds;
     totals.batch_sizes = std::move(metrics.batch_sizes);
     for (const soo::Episode& episode : episodes) {
@@ -193,6 +258,12 @@ void accumulate(Totals& destination, Totals source) {
     destination.moves += source.moves;
     destination.wall_seconds += source.wall_seconds;
     destination.evaluator_seconds += source.evaluator_seconds;
+    destination.collation_seconds += source.collation_seconds;
+    destination.h2d_seconds += source.h2d_seconds;
+    destination.forward_seconds += source.forward_seconds;
+    destination.postprocess_seconds += source.postprocess_seconds;
+    destination.d2h_seconds += source.d2h_seconds;
+    destination.scatter_seconds += source.scatter_seconds;
     destination.worker_busy_seconds += source.worker_busy_seconds;
     destination.batch_sizes.insert(destination.batch_sizes.end(), source.batch_sizes.begin(),
                                    source.batch_sizes.end());
@@ -265,6 +336,12 @@ int main(int argc, char** argv) {
         std::cout
             << "{\"schema_version\":1,\"benchmark\":\"selfplay\",\"workload\":{\"repetitions\":"
             << options.repetitions << ",\"warmups\":" << options.warmups
+            << ",\"games\":" << (options.games != 0 ? options.games : options.lanes)
+            << ",\"queued\":" << ((options.games != 0 && options.games > options.lanes) ? "true" : "false")
+            << ",\"temperature\":" << options.temperature
+            << ",\"temperature_moves\":" << options.temperature_moves
+            << ",\"dirichlet_epsilon\":" << options.dirichlet_epsilon
+            << ",\"seed\":" << options.seed
             << ",\"lanes\":" << options.lanes << ",\"threads\":" << options.threads
             << ",\"max_batch\":" << options.max_batch << ",\"max_wait_us\":" << options.max_wait_us
             << ",\"simulations\":" << options.simulations << ",\"max_moves\":" << options.max_moves
@@ -309,6 +386,16 @@ int main(int argc, char** argv) {
                            totals.wall_seconds * static_cast<double>(options.threads))
                   << ",\"samples_per_hour\":"
                   << ratio(static_cast<double>(totals.completed_samples) * 3600.0, measured_seconds)
+                  // Where the evaluator's time actually went. evaluator_busy
+                  // above is the sum of all six, so a high value does not by
+                  // itself mean the GPU is saturated.
+                  << ",\"evaluator_stage_seconds\":{"
+                  << "\"collation\":" << totals.collation_seconds
+                  << ",\"h2d\":" << totals.h2d_seconds
+                  << ",\"forward\":" << totals.forward_seconds
+                  << ",\"policy_postprocess\":" << totals.postprocess_seconds
+                  << ",\"d2h\":" << totals.d2h_seconds
+                  << ",\"scatter\":" << totals.scatter_seconds << "}"
                   << "}}\n";
         return 0;
     } catch (const std::exception& error) {

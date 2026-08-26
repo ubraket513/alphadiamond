@@ -1,6 +1,9 @@
 #include "diamond_pipeline/model_pool.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -125,6 +128,51 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         max_legal_actions = std::max(max_legal_actions, item.actions->size());
     }
 
+    using EvalClock = std::chrono::steady_clock;
+    const auto host_seconds = [](EvalClock::time_point a, EvalClock::time_point b) {
+        return std::chrono::duration<double>(b - a).count();
+    };
+    // One event pair per stage. Constructed only on CUDA; on CPU every stage
+    // falls back to the host clock, which is exact there because nothing is
+    // enqueued asynchronously.
+    struct StageEvents {
+        explicit StageEvents(const c10::Stream& s)
+            : stream(s),
+              h2d_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              h2d_end(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              forward_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              forward_end(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              post_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              post_end(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              d2h_start(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT),
+              d2h_end(c10::kCUDA, c10::EventFlag::BACKEND_DEFAULT) {}
+        c10::Stream stream;
+        c10::Event h2d_start, h2d_end;
+        c10::Event forward_start, forward_end;
+        c10::Event post_start, post_end;
+        c10::Event d2h_start, d2h_end;
+    };
+    // Opt-in. Reading a CUDA event requires synchronising on it, which blocks
+    // the evaluator thread until the GPU drains and serialises what is
+    // otherwise a pipelined stream of batches. Measured cost of leaving it on:
+    // evaluations/s fell from 77.7k to 49.9k, a third of throughput. A
+    // measurement that changes the thing it measures has to be something you
+    // ask for, so production runs pay nothing and the split is available when
+    // DIAMOND_EVAL_STAGE_TIMING is set.
+    static const bool stage_timing = [] {
+        const char* flag = std::getenv("DIAMOND_EVAL_STAGE_TIMING");
+        return flag != nullptr && *flag != '\0' && *flag != '0';
+    }();
+    const bool on_cuda = device_.torch_device.is_cuda() && stage_timing;
+    std::optional<StageEvents> events;
+    if (on_cuda)
+        events.emplace(c10::impl::getDeviceGuardImpl(c10::kCUDA)->getStream(device_.torch_device));
+    const auto event_seconds = [](const c10::Event& a, c10::Event& b) {
+        b.synchronize();
+        return a.elapsedTime(b) / 1000.0;
+    };
+    const auto collation_start = EvalClock::now();
+
     const auto batch_size = static_cast<int64_t>(batch.size());
     const auto max_legal = static_cast<int64_t>(max_legal_actions);
     const auto feature_row_size = static_cast<std::size_t>(kBoardNodes * features_per_node);
@@ -143,6 +191,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         }
     }
 
+    const auto collation_end = EvalClock::now();
+
     const auto cpu_options = torch::TensorOptions().device(torch::kCPU);
     const auto host_features =
         torch::from_blob(feature_buffer.data(), {batch_size, kBoardNodes, features_per_node},
@@ -156,18 +206,26 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     auto device_features = host_features;
     auto device_legal_indices = host_legal_indices;
     auto device_valid_mask = host_valid_mask;
+    const auto h2d_host_start = EvalClock::now();
     if (device_.torch_device.is_cuda()) {
+        if (on_cuda) events->h2d_start.record(events->stream);
         device_features = host_features.to(device_.torch_device);
         ++stats.h2d_transfers;
         device_legal_indices = host_legal_indices.to(device_.torch_device);
         ++stats.h2d_transfers;
         device_valid_mask = host_valid_mask.to(device_.torch_device);
         ++stats.h2d_transfers;
+        if (on_cuda) events->h2d_end.record(events->stream);
     }
+    const auto h2d_host_end = EvalClock::now();
 
     torch::NoGradGuard no_grad;
     ++stats.forward_calls;
+    const auto forward_host_start = EvalClock::now();
+    if (on_cuda) events->forward_start.record(events->stream);
     const auto [logits, values] = model->forward(device_features);
+    if (on_cuda) events->forward_end.record(events->stream);
+    const auto forward_host_end = EvalClock::now();
     if (logits.dim() != 2 || logits.size(0) != batch_size || logits.size(1) != kActionSpace ||
         values.dim() != 2 || values.size(0) != batch_size || values.size(1) != value_width ||
         logits.scalar_type() != torch::kFloat32 || values.scalar_type() != torch::kFloat32 ||
@@ -175,6 +233,8 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         throw PipelineError("active model produced an incompatible inference output");
     }
 
+    const auto post_host_start = EvalClock::now();
+    if (on_cuda) events->post_start.record(events->stream);
     const auto legal_logits = logits.gather(1, device_legal_indices);
     const auto padded_priors = torch::softmax(
         legal_logits.masked_fill(device_valid_mask.eq(0), -std::numeric_limits<float>::infinity()),
@@ -185,11 +245,18 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
         torch::cat({padded_priors, values, finite_rows.unsqueeze(1).to(torch::kFloat32)}, 1)
             .contiguous();
 
+    if (on_cuda) events->post_end.record(events->stream);
+    const auto post_host_end = EvalClock::now();
+
+    const auto d2h_host_start = EvalClock::now();
     auto compact_cpu = compact_device;
     if (device_.torch_device.is_cuda()) {
+        if (on_cuda) events->d2h_start.record(events->stream);
         compact_cpu = compact_device.to(torch::kCPU);
         ++stats.d2h_transfers;
+        if (on_cuda) events->d2h_end.record(events->stream);
     }
+    const auto d2h_host_end = EvalClock::now();
     if (!compact_cpu.is_contiguous() || compact_cpu.scalar_type() != torch::kFloat32 ||
         !compact_cpu.device().is_cpu()) {
         throw PipelineError("native inference compact output is not a contiguous CPU float tensor");
@@ -203,6 +270,7 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
             throw PipelineError("native model produced a non-finite inference row");
     }
 
+    const auto scatter_start = EvalClock::now();
     std::vector<soo::EvalOutcome> staged_outcomes;
     staged_outcomes.reserve(batch.size());
     for (std::size_t row = 0; row < batch.size(); ++row) {
@@ -229,7 +297,35 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
 
     for (std::size_t row = 0; row < batch.size(); ++row)
         *batch[row].outcome = std::move(staged_outcomes[row]);
+    const auto scatter_end = EvalClock::now();
+
+    stats.collation_seconds = host_seconds(collation_start, collation_end);
+    stats.scatter_seconds = host_seconds(scatter_start, scatter_end);
+    if (on_cuda) {
+        stats.h2d_seconds = event_seconds(events->h2d_start, events->h2d_end);
+        stats.forward_seconds = event_seconds(events->forward_start, events->forward_end);
+        stats.policy_postprocess_seconds = event_seconds(events->post_start, events->post_end);
+        stats.d2h_seconds = event_seconds(events->d2h_start, events->d2h_end);
+    } else {
+        stats.h2d_seconds = host_seconds(h2d_host_start, h2d_host_end);
+        stats.forward_seconds = host_seconds(forward_host_start, forward_host_end);
+        stats.policy_postprocess_seconds = host_seconds(post_host_start, post_host_end);
+        stats.d2h_seconds = host_seconds(d2h_host_start, d2h_host_end);
+    }
     last_evaluation_stats_ = stats;
+    auto& total = accumulated_evaluation_stats_;
+    total.forward_calls += stats.forward_calls;
+    total.h2d_transfers += stats.h2d_transfers;
+    total.d2h_transfers += stats.d2h_transfers;
+    total.batch_size += stats.batch_size;
+    total.max_legal_actions = std::max(total.max_legal_actions, stats.max_legal_actions);
+    total.collation_seconds += stats.collation_seconds;
+    total.h2d_seconds += stats.h2d_seconds;
+    total.forward_seconds += stats.forward_seconds;
+    total.policy_postprocess_seconds += stats.policy_postprocess_seconds;
+    total.d2h_seconds += stats.d2h_seconds;
+    total.scatter_seconds += stats.scatter_seconds;
+    ++evaluated_batches_;
 }
 
 }  // namespace diamond_pipeline
