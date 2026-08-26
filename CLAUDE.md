@@ -1,88 +1,123 @@
 # alphadiamond
 
-3-player Diamond (Chinese-checkers-family) engine, Qt console, and an AlphaZero
-training stack. The two-player configuration is called **Soo**.
+A 3-player Diamond (Chinese-checkers-family) engine, a Qt console, and an
+AlphaZero training stack. The two-player configuration is called **Soo**; the
+three-player one is **Min**.
 
-## Working on the native self-play backend
+**This is a C++ project.** There is no Python in it: no engine, no trainer, no
+bridge, no tests, no tooling. Rules, encoding, search, self-play, training,
+checkpointing, arena and release are all native. Anything you read elsewhere
+about a Python oracle, a `_diamond_native` pybind extension, `src/diamond/`, a
+`selfplay_backend` setting or a `make test-python` / `make test-parity` /
+`pytest` step describes a state this repository has left. See
+[docs/architecture/decisions.md](docs/architecture/decisions.md) and
+[docs/architecture/retiring_the_python_engine.md](docs/architecture/retiring_the_python_engine.md)
+for how and why.
 
-Active project. **Read [docs/native-selfplay/native_selfplay_handoff.md](docs/native-selfplay/native_selfplay_handoff.md) first** —
-it covers gate status, environment setup, how to run the benchmarks, the
-invariants that must not break, and the pitfalls already paid for.
+## Rules that are expensive to rediscover
 
-Two rules that are easy to get wrong and expensive to rediscover:
-
-- **The Python implementation is the oracle and must not be deleted.** The C++
-  in `native/` duplicates it on purpose; every gate is defined as equality
-  against the Python side and CI re-runs that comparison on every change.
-- **Do not micro-optimise before measuring.** The plan is explicit that a
-  simple native representation and exact parity come first.
+- **The frozen fixtures are the oracle.** `tests/golden/` and
+  `tests/native/fixtures/` are normative and **cannot be regenerated** — the
+  implementation that produced them is gone. Settle contract questions by
+  reading them, never by reasoning about what the C++ currently does.
+- **Game geometry has exactly one authority.** Seats come from
+  `soo::standard_soo_match()` and `soo::standard_min_match()` in
+  `native/src/board.cpp`, never from triples written at a call site. Five
+  hand-written copies drifted once: the trainer played a different game from the
+  Qt application, and Soo self-play completed 77 % of games instead of 98 % for
+  as long as it lasted. `match_geometry_test` pins the factory to
+  `tests/golden/rules-v1.txt`. See
+  [docs/model-training/baseline_768_completion_regression.md](docs/model-training/baseline_768_completion_regression.md).
+- **Do not micro-optimise before measuring.** A simple native representation and
+  exact fixture parity come first.
+- **Measure at a scale that can answer the question.** Self-play completion
+  varies enough run to run that sixteen games cannot distinguish two
+  configurations; 768 games is the harness the findings in `docs/model-training/`
+  use, and it costs about three minutes on one RTX 5090.
 
 ## Layout
 
 | path | what |
 |---|---|
-| `src/diamond/contract/` | what a position *is*: seats, camps, `GameState`, `Move` |
-| `src/diamond/alphazero/` | encoder, MCTS, evaluators, orchestration |
-| `src/diamond/alphazero/native/` | optional native backend: import guard, topology export, callback |
-| `native/` | the C++ extension (`_diamond_native`) |
-| `tests/native/` | parity gates A–D |
-| `az-bench/profiles/` | benchmarks, out of production code |
+| `native/include/soo/`, `native/src/` | the core: board, rules, encoder, MCTS, self-play, training, checkpoint, arena |
+| `native/qt/` | the Qt application |
+| `native/tests/` | the test suite, run by CTest |
+| `native/benchmarks/` | benchmarks, kept out of production code |
+| `tests/golden/` | frozen normative fixtures: rules, MCTS, topology |
+| `tests/native/fixtures/` | frozen normative fixtures from the retired parity gates |
+| `configs/alphazero/` | training configurations |
+| `models/` | shipped deployment artifacts (format v3) |
 | `docs/` | design records and measured findings |
-
-## Three products
-
-The native application, the Python trainer and the Python<->C++ bridge are
-separate products with separate build and test commands. Read
-[docs/architecture/products.md](docs/architecture/products.md) before moving
-code between them -- it defines what the golden fixtures are for and the rule
-for retiring a Python parity gate.
-
-**The C++ core is the only implementation** of rules, encoding, search,
-self-play and board geometry. The Python engine, the Python MCTS, the Python
-board and the oracle that generated `tests/golden/` are deleted (decision 3);
-`tests/golden/` and `tests/native/fixtures/` are frozen and normative, and
-cannot be regenerated from the tree. Training game execution requires the native
-extension -- `selfplay_backend` accepts `native` only. See
-[docs/architecture/decisions.md](docs/architecture/decisions.md),
-[docs/architecture/retiring_the_python_engine.md](docs/architecture/retiring_the_python_engine.md)
-and [docs/architecture/migration_progress.md](docs/architecture/migration_progress.md).
 
 ## Build and test
 
-CMake is the build system and CTest runs the native tests; the Makefile is only
-a command facade over the presets in `CMakePresets.json`.
+CMake is the build system and CTest runs the tests; the Makefile is a command
+facade over the presets in `CMakePresets.json` (`native-ci`, `native-training`,
+`native-release`, `native-qt`, `native-asan`, `native-package`).
 
 ```bash
-make test-native                 # C++ core + tests; needs NO Python at all
-make test-python                 # engine, AlphaZero, repository hygiene
-make test-parity                 # bridge: Python <-> C++ gates (needs pybind)
-make golden-freeze               # re-record tests/golden provenance (contract change)
+make test-native                 # core contract tests, no LibTorch needed
+make test-training               # LibTorch training tests
+make test-qt                     # Qt + LibTorch application tests
+make package                     # CPack ZIP, models bundled beside the binary
 ```
 
+The training preset needs LibTorch. Point CMake at it and build directly when
+you need a specific target:
+
 ```bash
-python tools/build_native.py     # optional extension; absence must stay harmless
-pytest                           # the trainer's Python; the game is CTest's
+tools/native_training.sh cmake --preset native-training -G Ninja \
+    -DCMAKE_PREFIX_PATH=<libtorch-root>
+tools/native_training.sh cmake --build --preset native-training --parallel
+tools/native_training.sh ctest --preset native-training --output-on-failure
 ```
+
+`tools/native_training.sh` wraps `cmake`/`ctest` so the Visual Studio
+environment is picked up on Windows; on Linux and macOS it is a passthrough.
+
+## Commands
+
+```bash
+alphadiamond-train train  --run-dir <dir> --config <config.json> \
+                          (--scratch | --checkpoint <dir> | --warm-start <artifact>)
+alphadiamond-train resume --run-dir <dir>
+alphadiamond-train report --run-dir <dir>
+alphadiamond-checkpoint   inspect|validate|migrate <checkpoint-root>
+alphadiamond-release      ...
+```
+
+A run directory is durable and idempotent: every stage is ledgered by operation
+id, `resume` replays exactly the work that was not completed, and re-running a
+finished stage is a no-op. `--run-dir` must sit under a `soo/` or `min/` parent.
+
+Each iteration also writes two diagnostic sidecars that nothing reads back and
+no gate depends on: `selfplay.metrics.json` (search budget actually in force,
+boosted-move count, throughput, batch distribution, abort reasons,
+completed-game move percentiles) and `aborted-games.json` (the final position of
+every aborted game, with target-camp occupancy and blocker mobility).
 
 ## Shipping a model
 
 ```bash
-python tools/export_deployment.py artifacts/soo-spike --family soo \
-    --checkpoint runtime/runs/soo/<run>/latest.pt
-python tools/build_model_index.py dist/models --artifact soo=artifacts/soo-spike
 make package                     # CPack ZIP, models bundled beside the binary
 ```
 
 Artifact format v3 declares the model family and architecture and is validated
 against the weights on both sides; see
 [docs/architecture/model_artifact_v3.md](docs/architecture/model_artifact_v3.md).
-A training checkpoint (optimizer, scheduler, RNG) is not a deployment artifact
-and is never bundled.
+A training checkpoint carries optimizer, scheduler and RNG state, is not a
+deployment artifact, and is never bundled.
+
+**There is currently no way in this tree to turn a training checkpoint into a
+deployment artifact.** That exporter was Python and went with the rest of it;
+`alphadiamond-checkpoint` accepts only native checkpoint-v2/v3 roots and refuses
+a raw `.pt`. Converting an archival `latest.pt` — such as the assets on the
+`soo-v2.0.0-rc.1` release — currently requires restoring the deleted exporter
+from history outside this tree. Rebuilding that path natively is open work.
 
 ## Training data
 
 Checkpoints, replay and logs live in the Hugging Face bucket, synchronised
-through the ignored `TrainAlphaDiamond/` root; only its README and manifests
-are tracked. See [TrainAlphaDiamond/README.md](TrainAlphaDiamond/README.md).
-Nothing generated -- build directories, checkpoints, run output -- belongs in
-Git; `tests/test_repo_hygiene.py` enforces that.
+through the ignored `TrainAlphaDiamond/` root; only its README and manifests are
+tracked. See [TrainAlphaDiamond/README.md](TrainAlphaDiamond/README.md). Nothing
+generated — build directories, checkpoints, run output — belongs in Git.

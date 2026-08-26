@@ -1,173 +1,107 @@
-# The 768-game baseline does not reproduce: 77 % against a recorded 98 %
+# Resolved: the 768-game completion regression was a match-construction bug
 
-**Status:** open. Reproduced twice at 768 games. Cause not identified.
-**Blocks:** systems tuning, and any generator experiment whose metric is completion.
+**Status:** closed. Root cause found and fixed in `standard_soo_match()`.
 
-## What was measured
+## Resolution
 
-The historical baseline in [`soo_scratch_training.md`](soo_scratch_training.md)
-§7.1 -- rolling A0 at flat 128 simulations -- recorded **750-755 of 768 games
-completing (97.7-98.3 %)** across twenty iterations, median game length 64-65.
+The previously reported completion regression and entombment pathology were
+caused by an **incorrect native match construction in the training and benchmark
+paths**. The native rules engine itself remained parity-correct; production
+orchestration supplied the wrong Soo seat/camp contract. Restoring the
+Python-era golden geometry recovered step-44250 completion to **97.5 %** over 768
+games with the fix applied inline, and **98.2 %** once every call site was routed
+through the shared factory.
 
-Reproducing it against the promoted **step 44250** actor, on the same operating
-point §6.7 prescribes (768 games / 256 lanes / 16 threads / cap 128 / 50 us),
-`max_moves` 500, `bootstrap_prior` none, production exploration, training off:
+`game_match()` built the Soo match as `{1, camp 0, target 3}` and
+`{2, camp 3, target 0}`, so each player's target camp *was the other player's
+starting camp*. The normative fixture `tests/golden/rules-v1.txt` specifies
+`1,2,5` and `2,0,3` — each targeting the camp opposite its own, starts 120°
+apart, neither target overlapping the other's start.
 
-| run | simulations | completion | aborted | p50 | p90 | p99 | max |
-|---|---|---|---|---|---|---|---|
-| A | 128 | **73.8 %** (567/768) | 201 | — | — | — | — |
-| B | 128 | **77.2 %** (593/768) | 175 | 61 | 71 | 127 | 265 |
-| C | 256 | **81.6 %** (627/768) | 141 | 63 | 73 | 139 | 345 |
-| §7.1 reference | 128 | **97.7-98.3 %** | ~14 | 65 | 89 | 173 | — |
+Under the broken geometry every game began with all ten of the opponent's pieces
+already occupying the camp that has to be filled to win, and `has_finished()`
+requires all ten cells to hold the owner's own piece. Games could only end after
+one side evacuated that camp entirely, and the last piece out was easily sealed
+in.
 
-Every abort is `max_moves`. The accounting identity
-`aborted * max_moves + new_samples == total_moves` holds exactly in all three.
+| configuration | completion | aborted |
+|---|---|---|
+| broken geometry, step 44,250 | 77.1 % (592/768) | 176 |
+| broken geometry, step 37,050 | 78.0 % (599/768) | 169 |
+| **golden geometry, step 44,250** | **98.2 % (754/768)** | **14** |
+| §7.1 historical reference | 97.7–98.3 % (750–755/768) | ~14 |
 
-## Why this is not the network degrading
+## What was wrong in the earlier analysis
 
-**The completed games are better than the reference.** p50 61 against 65, p90 71
-against 89, p99 127 against 173 -- shorter and tighter on every percentile.
-§6.5 reads exactly that shape as improvement: "median 71 -> 65, p90 131 -> 89,
-p99 307 -> 173. Shorter, more decisive."
+This document previously concluded that the winning player *entombs* a loser's
+piece, and that **a stronger network meets the rule more often** — offered as an
+explanation for step 44,250 scoring 77 % where §7.1 recorded 98 %.
 
-**The recorded collapse looks nothing like this.** In §5 completion and game
-length degraded *together* -- 90.5 % -> 84.9 % -> 64.5 % as median rose
-80 -> 77 -> 105. Here completion is at collapse levels while length is at
-best-recorded levels.
+That was wrong, and the measurement that killed it was the step-37,050
+comparison: converted from the `soo-v2.0.0-rc.1` release under an audited
+conversion, it scored **78.0 %**, statistically indistinguishable from step
+44,250's 77.1 % (Fisher exact p = 0.71). Two checkpoints seven thousand steps
+apart cannot both have independently "discovered" a pathology at the same rate;
+a fixed configuration fault can produce exactly that.
 
-**The distribution is bimodal with no middle.** Completed games top out at 265
-moves; every other game runs to exactly the 500 cap. Nothing sits between. A
-network playing slightly worse produces a continuum of longer games, not a
-cliff.
+The blocker census had the answer in it all along and was misread: all 186
+blocking pieces sat in camp 0 or camp 3 — the two *starting* camps, which under
+the broken configuration were also the two *target* camps. They were never
+wanderers that had to be sealed in over the course of a game. They were starting
+pieces that had not finished evacuating.
 
-**It is not under-searching.** Doubling to 256 simulations buys 4.4 points
-(77.2 -> 81.6) and plateaus 16 points short. §6.3 measured 128 -> 256 as adding
-*nothing* on the step-34,650 actor, because that actor was already at 97.7 %.
-Here the extra search cannot recover the deficit, so the deficit is not search
-budget.
+## What survives from it
 
-Together: the network plays *better* than the reference when it finishes, and a
-fixed ~20 % of games cannot finish at all.
+The entombment mechanism is real, just rare. With correct geometry the residual
+14 aborts in 768 games are still entombments — all 15 blocking pieces sat on
+non-corner cells, i.e. pieces that genuinely travelled into a target camp during
+play and were sealed there. The geometry fault amplified a ~1.8 % phenomenon by
+roughly thirteen times.
 
-## Confirmed: the winner entombs a loser's piece in its own target camp
+Adjacent camps deliberately share one corner hole (camp 0 with camp 5 at hole
+12, camp 2 with camp 3 at hole 60, and so on), so each player legitimately starts
+with one piece inside an opponent's target camp. That is by design and is part
+of why correct geometry still aborts a small fraction of games rather than none.
 
-All 176 aborted games of a 768-game run were inspected at the move cap
-(`iterations/N/aborted-games.json`, written by the self-play stage).
+The diagnostic tooling built during the investigation stays useful:
+`iterations/N/selfplay.metrics.json` and `iterations/N/aborted-games.json`, and
+the completed-game move percentiles that first showed the network was playing
+*better* than the reference while completing far less often — the dissociation
+that ruled out a degrading network and pointed at termination.
 
-```
-aborted games                                176   (all at the 500-move cap)
-target camp contains a foreign piece         176   (100.0 %)
-  exactly 1 blocker                          166   ( 94.3 %)
-  >= 2 blockers                               10   (  5.7 %)
-no foreign blocker                             0   (  0.0 %)
+## Consequences for other measurements
 
-blocker had zero legal moves                 176   (100.0 %)
-blocker pieces total 186: immobile 186, mobile 0
-short-cycle repetition in last 64 ply        176   (100.0 %)
-max revisits of one position   p50 46   p90 96   max 112
-unique positions / moves       p50 0.358   p10 0.252
-```
+**Everything measured before `1c57881` ran the wrong game.** In particular the
+repetition-trigger comparison recorded in
+[`repetition_trigger_config_gap.md`](repetition_trigger_config_gap.md) — trigger
+off 4/32 against trigger on 8/32 — was collected under the broken geometry and
+carries no information about the trigger. It was already too small to conclude
+from; it is now also measuring the wrong game.
 
-The last two lines reproduce §6.2's audit almost exactly (median 0.316 unique,
-one position revisited 61 times), so the repetition that audit found is this
-same phenomenon seen from the other end.
+The GPU throughput figures are unaffected in kind but were measured on a
+workload where roughly a fifth of games were pathological: ~98,000 evaluations/s
+at 0.96 evaluator busy, batch mean 112 against a cap of 128, at 768 games / 256
+lanes / 16 threads / cap 128 / 50 us. That operating point remains far better
+than the acceptance configuration's 22,300 eval/s and is worth adopting; the
+per-sample yield should be re-measured now that games complete.
 
-The composition of the blocked camps says what is happening:
+## Prevention
 
-| own | foreign | empty | camps |
-|---|---|---|---|
-| 8 | 1 | 1 | 149 |
-| 9 | 1 | 0 | **17** |
-| 7 | 2 | 1 | 10 |
+The geometry was written out by hand at five call sites and drifted. The Qt
+application held the correct triples while the trainer and both benchmarks held
+broken ones, so the application and the trainer played different games and only
+the trainer was wrong.
 
-**The blocked camp belongs to the player who is about to win.** It already holds
-eight or nine of that player's ten pieces. One enemy piece sits in a remaining
-cell, and in 17 games the camp is completely full -- nine own pieces plus one
-enemy, no empty cell at all.
+`soo::standard_soo_match()` and `soo::standard_min_match()` are now the single
+authority, and `match_geometry_test` pins them to the golden fixture on four
+independent properties: fixture equality, no seat targeting a camp another seat
+starts in, each seat targeting the camp opposite its own, and target camps
+occupied at move zero only through a shared corner. Reintroducing the original
+broken pair fails three of the four.
 
-**The blocker cannot leave.** Not once in 186 cases did it have a legal move. It
-is not being retained by a losing player choosing to hold ground; it is
-*entombed*, surrounded by the pieces of the player whose camp it is sitting in.
-Blockers cluster in eight cells of the board, with 58, 48 and 57 accounting for
-162 of 186 -- the deep corners of the target camps, filled last and sealed by
-the owner's own advance.
-
-So the mechanism is the exact opposite of a losing side stonewalling. The
-winning side advances its pieces home, seals an enemy piece that wandered in
-early into a corner it can no longer step or jump out of, and `has_finished`
-then requires all ten cells to hold the owner's own piece:
-
-```cpp
-for (int i = 0; i < kCampSize; ++i)
-    if (state.occupancy[target[i]] != spec.id) return false;
-```
-
-The winner cannot satisfy it, the loser cannot move the piece that would let
-them, and no other seat can finish either. The game has no reachable terminal
-state, and the remaining pieces shuffle until the cap -- which is what produces
-the short-cycle repetition in every one of these games.
-
-This also explains why search budget does not help. 128 -> 256 simulations
-recovered 4.4 points and plateaued because deeper search cannot reach a terminal
-state that does not exist. Whatever those 4.4 points are, they are games that
-avoided the trap, not games that escaped it.
-
-An earlier draft of this document, and the framing that prompted the
-investigation, both supposed a *strategic* block held by the losing side. The
-data rules that out: a retained block requires a mobile blocker, and there were
-none.
-
-## What this is, and what to do about it
-
-This is not a native-migration regression. The rules are frozen and parity-gated
-against the Python oracle, so the historical measurement ran the same
-`has_finished`. What changed is the actor: step 44250 finishes its games -- p50
-61 moves against the reference's 65 -- and driving that many pieces home that
-fast is precisely what seals an enemy piece into the camp. **A stronger network
-meets this rule more often.** That is consistent with 97.7-98.3 % at step
-~34,650-38,250 and 77 % at step 44,250 with no code change between them.
-
-Three readings, and they need separating before anything is changed:
-
-1. **Intended Diamond strategy.** If leaving a piece in an opponent's camp is a
-   legitimate spoiling tactic in this game, then the rules are right and the
-   training configuration has to tolerate it.
-2. **A long-standing design flaw.** Standard Chinese-checkers rule sets
-   generally do address this -- a camp counts as complete when full if at least
-   one piece is the owner's, or a piece may not remain in a foreign camp. This
-   rule set has no such provision, and the failure is invisible until a player
-   is strong enough to cause it.
-3. **A missing termination/draw definition.** Even if the position is legal, a
-   game with no reachable terminal state needs an adjudicated outcome rather
-   than a move cap, because a capped game contributes zero training samples and
-   is deleted from the replay.
-
-Reading 3 is the one that bites training regardless of how 1 and 2 are decided:
-23 % of games currently produce no data at all, and they are systematically the
-games where one side had nearly won.
-
-**Do not change the rules from this evidence alone.** Changing `has_finished`
-changes game semantics, invalidates `tests/golden/`, and breaks parity with the
-oracle those fixtures came from. The decision belongs to whoever owns the game
-definition.
-
-## What must happen before tuning resumes
-
-1. **Decide which of the three readings above applies.** That is a game-design
-   decision, not an engineering one.
-2. **Measure an earlier checkpoint** on this identical harness. If step ~38,250
-   reproduces 97-98 % where 44,250 gives 77 %, it confirms the rule was always
-   there and strength is what exposes it.
-3. Only then size `max_moves`, or add adjudication, or change the rule.
-
-Do not tune scheduler parameters against this workload in the meantime. Roughly
-a fifth of its games are pathological, and any samples/hour figure measured on
-it is measuring the pathology as much as the pipeline.
-
-## Incidental: the operating point is far better than acceptance
-
-The §6.7 operating point is worth adopting regardless: 768 games / 256 lanes /
-cap 128 / 50 us sustains **~98,000 evaluations/s at 0.96 evaluator busy**, with
-batch mean 112 against a cap of 128. The acceptance configuration
-(16 lanes, cap 16) reaches 22,300 eval/s. That is a 4.4x difference and it costs
-nothing but configuration.
+Min was also corrected — it was `{1,0,3} {2,2,5} {3,4,1}` against the fixture's
+`{1,2,5} {2,1,4} {3,0,3}`. Min had no target/start overlap so it was not broken
+the way Soo was, but it was a different game from the one the fixture defines.
+Min self-play has been exercised on CUDA through the corrected factory;
+behavioural certification still needs a trained Min checkpoint, which does not
+exist in this tree.

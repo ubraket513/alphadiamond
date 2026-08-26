@@ -104,25 +104,20 @@ changes the search and a boosted budget with no window can never fire, so a
 half-set pair is inert while looking enabled -- the failure mode this whole
 document is about.
 
-## What the first measurement showed
+## What the first measurement showed, and why it is void
 
-One two-iteration run per arm against step 44250 on an RTX 5090, identical in
-every other respect (128 simulations, 16 games/iteration, `max_moves` 2000,
-production exploration, `run_seed` 7):
+One two-iteration run per arm against step 44250 gave trigger off 4/32 aborted
+(12.5 %) against trigger on 8/32 (25.0 %), Fisher exact p = 0.34.
 
-| arm | iter 0 | iter 1 | pooled aborted |
-|---|---|---|---|
-| trigger off | 1/16 | 3/16 | 4/32 = 12.5 % |
-| trigger on (`simulations_late` 256, `repeat_window` 8) | 4/16 | 4/16 | 8/32 = 25.0 % |
+**Discard it.** It was already too small to conclude from — iteration-0 abort
+counts for one *unchanged* configuration ranged 7, 3, 1 and 4 out of 16 across
+four runs — and it has since been invalidated outright: every measurement taken
+before `1c57881` ran with a broken Soo match construction in which each player's
+target camp was the other player's starting camp. See
+[`baseline_768_completion_regression.md`](baseline_768_completion_regression.md).
+Those runs were not measuring this trigger on this game.
 
-Fisher exact p = 0.34. **This measures nothing.** The direction is opposite to
-the hypothesis and the result is not significant, but more importantly the
-sample cannot support either reading: iteration-0 abort counts for one
-*unchanged* configuration have been 7, 3, 1 and 4 out of 16 across four runs on
-this host. The between-run spread is larger than the difference being tested.
-
-Recorded here so the next person does not repeat it at this scale, and does not
-mistake it for evidence that the trigger does not work.
+Recorded so the numbers are not mistaken for evidence, in either direction.
 
 ## An observability gap this exposed
 
@@ -147,7 +142,15 @@ wiring itself is asserted in `cli_contract_test`.
 
 ## What is still open
 
-1. **Reproduce the historical baseline before anything else.** §7.1 recorded
+1. **The baseline now reproduces.** It did not when this was written: the
+   768-game run scored 73-78 % against §7.1's 97.7-98.3 %, which turned out to
+   be a match-construction bug rather than anything about search budget. With
+   `standard_soo_match()` step 44,250 scores 98.2 % (754/768), so trigger
+   experiments are finally being run on the right game. The original text of
+   this item is kept below because its reasoning still applies to any future
+   discrepancy.
+
+   **Reproduce the historical baseline before anything else.** §7.1 recorded
    rolling A0 at flat 128 holding 750-755 of 768 games (97.7-98.3 %) over twenty
    iterations, with median game length 64-65. That is the number to reproduce
    against step 44250 before any trigger experiment is worth running: at 768
@@ -157,9 +160,11 @@ wiring itself is asserted in `cli_contract_test`.
    in this document is measuring that regression rather than A0.
 
 2. **Sixteen games cannot answer it.** Iteration-0 abort counts for one
-   unchanged configuration on one RTX 5090 were 7, 3 and 1 out of 16 across
-   three runs. Any comparison at this sample size measures noise; §6.6 used 768
-   games per arm, and a decision here needs a comparable scale.
+   unchanged configuration on one RTX 5090 were 7, 3, 1 and 4 out of 16 across
+   four runs. Any comparison at this sample size measures noise; §6.6 used 768
+   games per arm, and a decision here needs a comparable scale. The 768-game
+   harness now exists and completes in about three minutes on an RTX 5090, so
+   there is no reason to run this small again.
 
 3. **The arena is untouched.** `arena_episode_config` still leaves the trigger
    disabled, and arena games abort by the same mechanism -- an aborted arena
