@@ -177,11 +177,11 @@ if [ "$with_soo" -eq 1 ]; then
     [ -n "$torch_lib" ] || { echo "LibTorch runtime directory not found under $environment_root" >&2; exit 1; }
     copy_glob "$destination" \
         "$env_bin"/fbgemm*.dll "$env_bin"/asmjit*.dll "$env_bin"/mkl*.dll \
-        "$env_bin"/libiomp*.dll "$env_bin"/vcomp*.dll "$env_bin"/tbb*.dll \
+        "$env_bin"/vcomp*.dll "$env_bin"/tbb*.dll \
         "$env_bin"/sleef*.dll "$env_bin"/uv*.dll "$env_bin"/libomp*.dll \
         "$env_bin"/libprotobuf*.dll "$env_bin"/utf8_validity*.dll "$env_bin"/abseil_dll*.dll
     for pattern in \
-        "$torch_lib"/c10*.dll "$torch_lib"/torch*.dll "$torch_lib"/shm.dll \
+        "$torch_lib"/c10*.dll "$torch_lib"/torch*.dll "$torch_lib"/libiomp*.dll "$torch_lib"/shm.dll \
         "$torch_lib"/caffe2_nvrtc.dll "$torch_lib"/cudart64*.dll \
         "$torch_lib"/cublas64*.dll "$torch_lib"/cublasLt64*.dll \
         "$torch_lib"/cudnn*.dll "$torch_lib"/nvrtc64*.dll \
@@ -200,12 +200,21 @@ if [ "$with_soo" -eq 1 ]; then
     done
     [ -f "$destination/c10.dll" ] || { echo "c10.dll was not bundled" >&2; exit 1; }
     [ -f "$destination/torch_cpu.dll" ] || { echo "torch_cpu.dll was not bundled" >&2; exit 1; }
+    [ -f "$torch_lib/libiomp5md.dll" ] || {
+        echo "CMake-selected LibTorch runtime does not contain libiomp5md.dll" >&2
+        exit 1
+    }
+    [ -f "$destination/libiomp5md.dll" ] || { echo "libiomp5md.dll was not bundled" >&2; exit 1; }
     cmp -s -- "$torch_lib/c10.dll" "$destination/c10.dll" || {
         echo "bundled c10.dll does not match the CMake-selected LibTorch runtime" >&2
         exit 1
     }
     cmp -s -- "$torch_lib/torch_cpu.dll" "$destination/torch_cpu.dll" || {
         echo "bundled torch_cpu.dll does not match the CMake-selected LibTorch runtime" >&2
+        exit 1
+    }
+    cmp -s -- "$torch_lib/libiomp5md.dll" "$destination/libiomp5md.dll" || {
+        echo "bundled libiomp5md.dll does not match the CMake-selected LibTorch runtime" >&2
         exit 1
     }
 fi
