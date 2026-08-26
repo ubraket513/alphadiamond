@@ -20,7 +20,7 @@
     "seed": 7
   },
   "self_play": {
-    "max_moves": 2000,
+    "max_moves": 500,
     "max_game_seconds": null,
     "temperature": 1.0,
     "temperature_moves": 20,
@@ -28,7 +28,7 @@
     "seed": 7
   },
   "workers": {
-    "logical_lanes": 16,
+    "logical_lanes": 8,
     "search_threads": 8,
     "games_per_iteration": 16,
     "retry_id": "cuda-acceptance-attempt-0"
@@ -57,7 +57,7 @@
   },
   "arena": {
     "games": 16,
-    "max_moves": 2000,
+    "max_moves": 500,
     "promotion_threshold": 1.0,
     "seed": 7
   },

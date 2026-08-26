@@ -311,8 +311,17 @@ void WorkerConfig::validate() const {
                           "workers.games_per_iteration must be positive");
     if (!non_blank(retry_id))
         throw ConfigError("workers.retry_id must be a non-empty string");
-    if (logical_lanes > games_per_iteration)
-        throw ConfigError("workers.logical_lanes must not exceed workers.games_per_iteration");
+    // Games must *exceed* lanes, not merely equal them. With one game per lane
+    // the job queue never engages: a lane cannot pick up fresh work when its
+    // game ends, so the run finishes at the pace of its slowest game while the
+    // rest idle. Batch occupancy collapses toward 1 over the second half of the
+    // run and throughput is misread as a batching problem. This project has
+    // paid for that twice -- once in the Python pool, once in a measurement
+    // harness whose throughput column had to be retracted -- so it is a
+    // configuration error rather than a note in a document.
+    if (logical_lanes >= games_per_iteration)
+        throw ConfigError("workers.games_per_iteration must exceed workers.logical_lanes, "
+                          "otherwise the job queue never engages");
 }
 
 Json WorkerConfig::to_json() const {

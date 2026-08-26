@@ -83,7 +83,9 @@ struct SelfPlayConfig final {
 struct WorkerConfig final {
     int64_t logical_lanes = 1;
     int64_t search_threads = 1;
-    int64_t games_per_iteration = 1;
+    // Two, not one: games must exceed lanes or the job queue never engages, and
+    // a default configuration has to be a valid one.
+    int64_t games_per_iteration = 2;
     std::string retry_id = "attempt-0";
 
     void validate() const;

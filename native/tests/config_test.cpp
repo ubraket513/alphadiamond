@@ -90,9 +90,14 @@ int main(int argc, char** argv) {
                 "training defaults changed");
         require(WorkerConfig{} == WorkerConfig{.logical_lanes = 1,
                                                .search_threads = 1,
-                                               .games_per_iteration = 1,
+                                               .games_per_iteration = 2,
                                                .retry_id = "attempt-0"},
                 "worker defaults changed");
+        // A default configuration must itself be valid.
+        WorkerConfig{}.validate();
+        rejects([] { WorkerConfig{.logical_lanes = 4, .search_threads = 1,
+                                  .games_per_iteration = 4, .retry_id = "a"}.validate(); },
+                "games equal to lanes must be rejected: the job queue never engages");
         require(InferenceConfig{} == InferenceConfig{.max_batch_size = 1,
                                                      .max_wait_us = 1,
                                                      .request_queue_capacity = 1,
@@ -217,7 +222,7 @@ int main(int argc, char** argv) {
                                         .bootstrap_prior = "none"},
             .workers = WorkerConfig{.logical_lanes = 2,
                                     .search_threads = 3,
-                                    .games_per_iteration = 2,
+                                    .games_per_iteration = 4,
                                     .retry_id = "attempt-0"},
             .inference = InferenceConfig{.max_batch_size = 8,
                                          .max_wait_us = 50,

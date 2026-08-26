@@ -20,7 +20,7 @@
     "seed": 7
   },
   "self_play": {
-    "max_moves": 2000,
+    "max_moves": 500,
     "max_game_seconds": null,
     "temperature": 1.0,
     "temperature_moves": 20,
@@ -28,14 +28,14 @@
     "seed": 7
   },
   "workers": {
-    "logical_lanes": 8,
-    "search_threads": 4,
-    "games_per_iteration": 64,
+    "logical_lanes": 512,
+    "search_threads": 16,
+    "games_per_iteration": 768,
     "retry_id": "attempt-0"
   },
   "inference": {
     "max_batch_size": 256,
-    "max_wait_us": 5000,
+    "max_wait_us": 50,
     "request_queue_capacity": 1024,
     "response_timeout_s": 600.0
   },
@@ -57,7 +57,7 @@
   },
   "arena": {
     "games": 40,
-    "max_moves": 2000,
+    "max_moves": 500,
     "promotion_threshold": 0.55,
     "seed": 7
   },

@@ -35,7 +35,7 @@
   },
   "inference": {
     "max_batch_size": 64,
-    "max_wait_us": 5000,
+    "max_wait_us": 50,
     "request_queue_capacity": 1024,
     "response_timeout_s": 600.0
   },
