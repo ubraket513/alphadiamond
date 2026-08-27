@@ -9,6 +9,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #ifdef _WIN32
+// windows.h defines min/max as macros, which mangles std::min at its call site.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
