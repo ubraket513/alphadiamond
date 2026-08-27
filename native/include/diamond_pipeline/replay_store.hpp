@@ -40,9 +40,8 @@ enum class ReplayContents { full, metadata_only };
 
 class ReplayStore {
   public:
-    ReplayStore(std::filesystem::path root, Compatibility compatibility,
-                std::size_t capacity, uint64_t seed,
-                ReplayContents contents = ReplayContents::full);
+    ReplayStore(std::filesystem::path root, Compatibility compatibility, std::size_t capacity,
+                uint64_t seed, ReplayContents contents = ReplayContents::full);
     std::size_t ingest(std::span<const Episode> episodes);
     ReplayIngestReport ingest_iteration(std::span<const Episode> episodes);
     std::size_t size() const noexcept;

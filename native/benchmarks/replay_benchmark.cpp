@@ -25,7 +25,10 @@ Args parse_args(int argc, char** argv) {
     Args args;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
-        if (option == "--reopen-only") { args.reopen_only = true; continue; }
+        if (option == "--reopen-only") {
+            args.reopen_only = true;
+            continue;
+        }
         if ((option != "--repetitions" && option != "--pool-size" && option != "--batch-size" &&
              option != "--scratch") ||
             i + 1 >= argc)
@@ -81,18 +84,18 @@ int reopen(const std::filesystem::path& root, const diamond_pipeline::Compatibil
     const auto [full_s, full_n] = measure(diamond_pipeline::ReplayContents::full);
     std::cout << "{\"schema_version\":1,\"benchmark\":\"replay-reopen\",\"metadata_only_seconds\":"
               << meta_s << ",\"full_seconds\":" << full_s << ",\"metadata_only_size\":" << meta_n
-              << ",\"full_size\":" << full_n << ",\"speedup\":" << (meta_s > 0 ? full_s / meta_s : 0)
-              << "}\n";
+              << ",\"full_size\":" << full_n
+              << ",\"speedup\":" << (meta_s > 0 ? full_s / meta_s : 0) << "}\n";
     return 0;
 }
 
 int run(int argc, char** argv) {
     const auto args = parse_args(argc, argv);
     if (args.reopen_only) {
-        return reopen(args.scratch,
-                      diamond_pipeline::Compatibility::soo("2.0.0",
-                                                           {.residual_blocks = 6, .width = 128}),
-                      args.pool_size);
+        return reopen(
+            args.scratch,
+            diamond_pipeline::Compatibility::soo("2.0.0", {.residual_blocks = 6, .width = 128}),
+            args.pool_size);
     }
     std::filesystem::remove_all(args.scratch);
     const auto compatibility = diamond_pipeline::Compatibility::soo("benchmark-1", {.residual_blocks = 1, .width = 8});

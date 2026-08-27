@@ -615,10 +615,10 @@ thread_local std::chrono::steady_clock::time_point g_stage_started{};
 StageOutcome stage_report(const CommandRequest& request, int64_t iteration, RunStage stage,
                           const std::string& operation, Object details = {}, Object progress = {}) {
     if (g_stage_started != std::chrono::steady_clock::time_point{})
-        details.emplace("stage_seconds",
-                        Json{std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                           g_stage_started)
-                                 .count()});
+        details.emplace(
+            "stage_seconds",
+            Json{std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stage_started)
+                     .count()});
     details.emplace("operation_id", Json{operation});
     details.emplace("iteration", Json{iteration});
     details.emplace("stage", Json{stage_label(stage)});
@@ -1003,10 +1003,10 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
         try {
             // Provenance validation reads the manifest digest and nothing else.
             const auto open_started = std::chrono::steady_clock::now();
-            diamond_pipeline::ReplayStore replay(
-                root(request) / "replay", compatibility,
-                static_cast<std::size_t>(config.replay.capacity), config.replay.seed,
-                diamond_pipeline::ReplayContents::metadata_only);
+            diamond_pipeline::ReplayStore replay(root(request) / "replay", compatibility,
+                                                 static_cast<std::size_t>(config.replay.capacity),
+                                                 config.replay.seed,
+                                                 diamond_pipeline::ReplayContents::metadata_only);
             validate_checkpoint_context(diamond_training::inspect_checkpoint_v2(staged), request,
                                         config, static_cast<uint64_t>(iteration),
                                         replay.manifest_digest());

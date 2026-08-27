@@ -24,7 +24,7 @@ diamond_pipeline::Episode episode(const diamond_pipeline::Compatibility& compati
     sample.value_target = {1.0F};
     return value;
 }
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     try {

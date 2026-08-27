@@ -328,7 +328,8 @@ ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility
     if (chunks.size() != ids.size())
         throw std::runtime_error("manifest game_ids do not match ordered chunks");
     const auto persisted_capacity = integer(field(manifest, "capacity"), "capacity");
-    if (persisted_capacity <= 0) throw std::runtime_error("invalid replay capacity");
+    if (persisted_capacity <= 0)
+        throw std::runtime_error("invalid replay capacity");
     impl_->capacity = static_cast<size_t>(persisted_capacity);
     impl_->authoritative_compatibility = field(manifest, "compatibility");
     if (const auto found = manifest.find("aborted"); found != manifest.end())
@@ -353,16 +354,18 @@ ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility
             static_cast<size_t>(integer(field(descriptor, "sample_count"), "sample count"));
         impl_->episodes.push_back(std::move(episode));
         impl_->chunk_digests.push_back(digest);
-        if (contents == ReplayContents::metadata_only) continue;
+        if (contents == ReplayContents::metadata_only)
+            continue;
 
         // Full open: read and verify each chunk exactly once, materialising its
         // samples straight into the pool.  This used to parse every chunk
         // twice -- once to count, then again after clearing -- which at a 1M
         // capacity meant parsing ~2 GB of JSON per store construction, and a
         // training iteration constructs a store in three separate stages.
-        std::ifstream chunk_file(
-            stream_path(impl_->namespace_path / "chunks" / (digest + ".json")), std::ios::binary);
-        if (!chunk_file) throw std::runtime_error("missing replay chunk");
+        std::ifstream chunk_file(stream_path(impl_->namespace_path / "chunks" / (digest + ".json")),
+                                 std::ios::binary);
+        if (!chunk_file)
+            throw std::runtime_error("missing replay chunk");
         const std::string chunk_text{std::istreambuf_iterator<char>(chunk_file),
                                      std::istreambuf_iterator<char>()};
         auto payload = object(diamond_support::parse_json(chunk_text), "chunk");
@@ -377,8 +380,7 @@ ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility
     }
     if (impl_->samples.size() > impl_->capacity)
         impl_->samples.erase(impl_->samples.begin(),
-                             impl_->samples.end() -
-                                 static_cast<std::ptrdiff_t>(impl_->capacity));
+                             impl_->samples.end() - static_cast<std::ptrdiff_t>(impl_->capacity));
     impl_->cleanup_unreachable_chunks();
 }
 ReplayStore::~ReplayStore() = default;
@@ -467,13 +469,15 @@ size_t ReplayStore::ingest(std::span<const Episode> episodes) {
     return ingest_iteration(episodes).accepted_games;
 }
 size_t ReplayStore::size() const noexcept {
-    if (!impl_) return 0;
+    if (!impl_)
+        return 0;
     // Metadata-only holds no samples, so the pool size comes from the episode
     // records the manifest carried -- the same number a full open would report.
     if (impl_->contents == ReplayContents::metadata_only) {
         size_t total = 0;
         for (const auto& episode : impl_->episodes)
-            if (episode.completed) total += episode.sample_count;
+            if (episode.completed)
+                total += episode.sample_count;
         return std::min(total, impl_->capacity);
     }
     return impl_->samples.size();
