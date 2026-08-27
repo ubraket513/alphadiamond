@@ -16,10 +16,14 @@ for how and why.
 
 ## Rules that are expensive to rediscover
 
-- **The frozen fixtures are the oracle.** `tests/golden/` and
-  `tests/native/fixtures/` are normative and **cannot be regenerated** — the
-  implementation that produced them is gone. Settle contract questions by
-  reading them, never by reasoning about what the C++ currently does.
+- **The frozen fixtures are the oracle, except for replay.** `tests/golden/`
+  and `tests/native/fixtures/` are normative and **cannot be regenerated** —
+  the implementation that produced them is gone. Settle contract questions by
+  reading them, never by reasoning about what the C++ currently does. The one
+  exception is `tests/golden/replay-v1/`: `ReplayStore` is schema-4-only and no
+  longer reads schema 1/2/3 at all, so that corpus is unreadable by this tree
+  and the replay tests build their stores natively instead. It is kept only as
+  a historical record.
 - **Game geometry has exactly one authority.** Seats come from
   `soo::standard_soo_match()` and `soo::standard_min_match()` in
   `native/src/board.cpp`, never from triples written at a call site. Five

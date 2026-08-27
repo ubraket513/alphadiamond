@@ -31,10 +31,17 @@ struct ReplaySamplingStats {
 // durable sampler state.
 uint64_t replay_sampling_seed(uint64_t replay_seed, uint64_t iteration, uint64_t training_step);
 
+// How much of the store a caller needs.  `metadata_only` reads the manifest and
+// nothing else -- no chunk file is opened and no sample is materialised -- which
+// is all a stage needs when it only wants the manifest digest or the episode
+// index. Reading 1M samples back out of JSON to hash one file was costing ~100 s
+// per stage, three times per training iteration.
+enum class ReplayContents { full, metadata_only };
+
 class ReplayStore {
   public:
-    ReplayStore(std::filesystem::path root, Compatibility compatibility,
-                std::size_t capacity, uint64_t seed);
+    ReplayStore(std::filesystem::path root, Compatibility compatibility, std::size_t capacity,
+                uint64_t seed, ReplayContents contents = ReplayContents::full);
     std::size_t ingest(std::span<const Episode> episodes);
     ReplayIngestReport ingest_iteration(std::span<const Episode> episodes);
     std::size_t size() const noexcept;
@@ -46,7 +53,6 @@ class ReplayStore {
     std::vector<TrainingSample> sample(std::size_t count, uint64_t seed) const;
     ReplaySamplingStats last_sampling_stats() const noexcept;
     void prune();
-    void restore_manifest(const std::filesystem::path& snapshot);
 
     ~ReplayStore();
     ReplayStore(ReplayStore&&) noexcept;
