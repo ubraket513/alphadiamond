@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include <utility>
+
 #include "diamond_pipeline/replay_store.hpp"
 #include "diamond_support/build_provenance.hpp"
 
@@ -17,11 +19,13 @@ struct Args {
     std::uint64_t pool_size = 128;
     std::uint64_t batch_size = 4;
     std::filesystem::path scratch;
+    bool reopen_only = false;
 };
 Args parse_args(int argc, char** argv) {
     Args args;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
+        if (option == "--reopen-only") { args.reopen_only = true; continue; }
         if ((option != "--repetitions" && option != "--pool-size" && option != "--batch-size" &&
              option != "--scratch") ||
             i + 1 >= argc)
@@ -43,6 +47,8 @@ Args parse_args(int argc, char** argv) {
             }
         }
     }
+    if (args.reopen_only)
+        return args.scratch.empty() ? throw std::invalid_argument("--scratch is required") : args;
     if (args.scratch.empty() || args.repetitions == 0 || args.pool_size == 0 ||
         args.batch_size == 0 || args.batch_size > args.pool_size)
         throw std::invalid_argument(
@@ -59,8 +65,35 @@ diamond_pipeline::Episode episode(const diamond_pipeline::Compatibility& compati
     value.samples.push_back(std::move(sample));
     return value;
 }
+// Time opening an existing store, full versus metadata-only.  This is the cost
+// a training iteration pays three times over, and at a 1M capacity it dominated
+// everything else the iteration did.
+int reopen(const std::filesystem::path& root, const diamond_pipeline::Compatibility& compatibility,
+           std::uint64_t capacity) {
+    const auto measure = [&](diamond_pipeline::ReplayContents contents) {
+        const auto start = std::chrono::steady_clock::now();
+        diamond_pipeline::ReplayStore store(root, compatibility, capacity, 17, contents);
+        const auto seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        return std::pair{seconds, store.size()};
+    };
+    const auto [meta_s, meta_n] = measure(diamond_pipeline::ReplayContents::metadata_only);
+    const auto [full_s, full_n] = measure(diamond_pipeline::ReplayContents::full);
+    std::cout << "{\"schema_version\":1,\"benchmark\":\"replay-reopen\",\"metadata_only_seconds\":"
+              << meta_s << ",\"full_seconds\":" << full_s << ",\"metadata_only_size\":" << meta_n
+              << ",\"full_size\":" << full_n << ",\"speedup\":" << (meta_s > 0 ? full_s / meta_s : 0)
+              << "}\n";
+    return 0;
+}
+
 int run(int argc, char** argv) {
     const auto args = parse_args(argc, argv);
+    if (args.reopen_only) {
+        return reopen(args.scratch,
+                      diamond_pipeline::Compatibility::soo("2.0.0",
+                                                           {.residual_blocks = 6, .width = 128}),
+                      args.pool_size);
+    }
     std::filesystem::remove_all(args.scratch);
     const auto compatibility = diamond_pipeline::Compatibility::soo("benchmark-1", {.residual_blocks = 1, .width = 8});
     diamond_pipeline::ReplayStore store(args.scratch, compatibility, args.pool_size, 17);

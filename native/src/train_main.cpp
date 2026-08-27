@@ -605,8 +605,20 @@ load_actor_checkpoint(const CommandRequest& request, const ProductionConfig& con
     }
 }
 
+// Wall time of the stage currently executing on this thread.  Stamped at
+// execute_stage entry and read back by stage_report, so every stage report
+// carries its own duration without each stage having to time itself. Without
+// this, the only way to attribute an iteration's wall clock was to diff the
+// mtimes of the report files after the fact.
+thread_local std::chrono::steady_clock::time_point g_stage_started{};
+
 StageOutcome stage_report(const CommandRequest& request, int64_t iteration, RunStage stage,
                           const std::string& operation, Object details = {}, Object progress = {}) {
+    if (g_stage_started != std::chrono::steady_clock::time_point{})
+        details.emplace("stage_seconds",
+                        Json{std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                           g_stage_started)
+                                 .count()});
     details.emplace("operation_id", Json{operation});
     details.emplace("iteration", Json{iteration});
     details.emplace("stage", Json{stage_label(stage)});
@@ -656,6 +668,7 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
     const auto report_path = stage_report_path(request, iteration, stage);
     if (std::filesystem::exists(report_path))
         return load_stage_report(request, iteration, stage, operation);
+    g_stage_started = std::chrono::steady_clock::now();
 
     const auto compatibility = wire(config);
     torch::manual_seed(static_cast<int64_t>(config.training.seed));
@@ -869,9 +882,15 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             std::get<std::string>(self_play_report.at("operation_id").value);
         const auto episodes = diamond_pipeline::load_episode_artifact(
             episodes_path, self_play_operation, compatibility);
+        // Ingest appends new episodes and rewrites the manifest; it never reads
+        // an existing sample back, so it does not need the pool rehydrated.
+        const auto open_started = std::chrono::steady_clock::now();
         diamond_pipeline::ReplayStore replay(root(request) / "replay", compatibility,
                                              static_cast<std::size_t>(config.replay.capacity),
-                                             config.replay.seed);
+                                             config.replay.seed,
+                                             diamond_pipeline::ReplayContents::metadata_only);
+        const auto replay_open_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - open_started).count();
         const auto ingested = diamond_pipeline::ingest_self_play(replay, episodes);
         std::size_t complete = 0, aborted = 0;
         for (const auto& episode : episodes) {
@@ -893,6 +912,7 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                 {"replay_size", Json{static_cast<int64_t>(replay.size())}},
                 {"replay_manifest", Json{replay_manifest}},
                 {"replay_manifest_sha256", Json{replay_digest}},
+                {"replay_open_seconds", Json{replay_open_seconds}},
             },
             {{"replay_manifest", Json{replay_manifest}}});
     }
@@ -905,10 +925,19 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             native_model, compatibility,
             {config.training.learning_rate, config.training.weight_decay}, device);
         source = load_iteration_source(request, config, iteration, trainer, device);
-        diamond_pipeline::ReplayStore replay(root(request) / "replay", compatibility,
-                                             static_cast<std::size_t>(config.replay.capacity),
-                                             config.replay.seed);
-        if (!std::filesystem::exists(staged / "CURRENT")) {
+        // Only the branch that actually trains needs the samples.  A resumed
+        // TRAIN reloads the staged checkpoint and just checks the manifest
+        // digest, so it opens metadata-only.
+        const bool must_train = !std::filesystem::exists(staged / "CURRENT");
+        const auto open_started = std::chrono::steady_clock::now();
+        diamond_pipeline::ReplayStore replay(
+            root(request) / "replay", compatibility,
+            static_cast<std::size_t>(config.replay.capacity), config.replay.seed,
+            must_train ? diamond_pipeline::ReplayContents::full
+                       : diamond_pipeline::ReplayContents::metadata_only);
+        const auto replay_open_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - open_started).count();
+        if (must_train) {
             const auto key = diamond_pipeline::ModelKey{
                 compatibility.model_name, compatibility.model_version,
                 diamond_training::canonical_model_digest(trainer.learner())};
@@ -924,9 +953,6 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             }
         } else {
             try {
-                diamond_pipeline::ReplayStore replay(
-                    root(request) / "replay", compatibility,
-                    static_cast<std::size_t>(config.replay.capacity), config.replay.seed);
                 validate_checkpoint_context(diamond_training::inspect_checkpoint_v2(staged),
                                             request, config, static_cast<uint64_t>(iteration),
                                             replay.manifest_digest());
@@ -959,6 +985,7 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                 {"training_batch_sizes", Json{std::move(batch_sizes)}},
                 {"training_metrics", Json{training_metrics_json(trained.training_metrics)}},
                 {"replay_size", Json{static_cast<int64_t>(trained.replay_size)}},
+                {"replay_open_seconds", Json{replay_open_seconds}},
                 {"replay_sample_seconds", Json{trained.replay_sample_seconds}},
                 {"replay_sample_max_seconds", Json{trained.replay_sample_max_seconds}},
                 {"training_step", Json{static_cast<int64_t>(trained.training_step)}},
@@ -974,9 +1001,12 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             {config.training.learning_rate, config.training.weight_decay}, device);
         diamond_training::CheckpointInfo saved;
         try {
-            diamond_pipeline::ReplayStore replay(root(request) / "replay", compatibility,
-                                                 static_cast<std::size_t>(config.replay.capacity),
-                                                 config.replay.seed);
+            // Provenance validation reads the manifest digest and nothing else.
+            const auto open_started = std::chrono::steady_clock::now();
+            diamond_pipeline::ReplayStore replay(
+                root(request) / "replay", compatibility,
+                static_cast<std::size_t>(config.replay.capacity), config.replay.seed,
+                diamond_pipeline::ReplayContents::metadata_only);
             validate_checkpoint_context(diamond_training::inspect_checkpoint_v2(staged), request,
                                         config, static_cast<uint64_t>(iteration),
                                         replay.manifest_digest());

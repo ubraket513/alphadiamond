@@ -80,9 +80,6 @@ Compatibility compatibility_from_json(const JsonValue& value) {
     try { out.validate(); } catch (const std::invalid_argument& error) { throw std::runtime_error(error.what()); }
     return out;
 }
-bool same_json(const JsonValue& a, const JsonValue& b) {
-    return diamond_support::canonical_json(a) == diamond_support::canonical_json(b);
-}
 TrainingSample legacy_sample(const JsonValue& value, const Compatibility& compatibility) { const auto& row=object(value,"sample"); TrainingSample sample; sample.compatibility=compatibility; for(const auto& feature:array(field(row,"node_features"),"features")) for(const auto& item:array(feature,"feature row")) sample.node_features.push_back(float(number(item,"feature"))); for(const auto& player:array(field(row,"canonical_player_ids"),"players")) sample.canonical_player_ids.push_back(int32_t(integer(player,"player"))); for(const auto& pair:array(field(row,"sparse_policy"),"policy")){const auto& values=array(pair,"policy row"); if(values.size()!=2) throw std::runtime_error("policy row width");sample.sparse_policy.emplace_back(int32_t(integer(values[0],"action")),float(number(values[1],"probability")));} for(const auto& target:array(field(row,"value_target"),"targets")) sample.value_target.push_back(float(number(target,"target"))); return sample; }
 uint64_t next_splitmix(uint64_t& state) { state += 0x9e3779b97f4a7c15ULL; uint64_t value=state; value=(value^(value>>30))*0xbf58476d1ce4e5b9ULL; value=(value^(value>>27))*0x94d049bb133111ebULL; return value^(value>>31); }
 bool failure_injected(const char* name) {
@@ -216,8 +213,7 @@ struct ReplayStore::Impl {
     Compatibility compatibility;
     size_t capacity;
     uint64_t replay_seed;
-    bool legacy = false;
-    JsonValue legacy_manifest;
+    ReplayContents contents = ReplayContents::full;
     JsonValue authoritative_compatibility;
     std::vector<EpisodeRecord> episodes;
     std::vector<TrainingSample> samples;
@@ -244,10 +240,6 @@ struct ReplayStore::Impl {
     mutable ReplaySamplingStats sampling_stats;
 
     void write_manifest() {
-        if (legacy) {
-            atomic_write(manifest_path, diamond_support::canonical_json(legacy_manifest));
-            return;
-        }
         Array chunks, game_ids;
         for (size_t i = 0; i < episodes.size(); ++i)
             if (episodes[i].completed) {
@@ -305,193 +297,89 @@ struct ReplayStore::Impl {
     }
 };
 
-ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility, size_t capacity, uint64_t seed) : impl_(std::make_unique<Impl>()) {
+ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility, size_t capacity,
+                         uint64_t seed, ReplayContents contents)
+    : impl_(std::make_unique<Impl>()) {
     if (capacity == 0) throw std::invalid_argument("replay capacity must be positive");
-    impl_->compatibility=std::move(compatibility); impl_->capacity=capacity; impl_->replay_seed=seed;
-    const auto original_root = root;
+    impl_->compatibility = std::move(compatibility);
+    impl_->capacity = capacity;
+    impl_->replay_seed = seed;
+    impl_->contents = contents;
+    impl_->compatibility.validate();
     const auto compatibility_digest = diamond_support::sha256(
         diamond_support::canonical_json(compatibility_json(impl_->compatibility)));
-    impl_->compatibility.validate();
     impl_->namespace_path = std::move(root) / "persistent-replay-v2" /
                             impl_->compatibility.family() / compatibility_digest;
     impl_->manifest_path = impl_->namespace_path / "manifest.json";
-    std::error_code root_error;
-    const bool root_exists = std::filesystem::exists(original_root, root_error) && !root_error;
-    if (!std::filesystem::exists(impl_->manifest_path) && root_exists) {
-        // A migrated store is authoritative.  Resolve it by the complete
-        // canonical compatibility object, never by model name/version alone.
-        std::filesystem::path match;
-        const auto v2_family = original_root / "persistent-replay-v2" / impl_->compatibility.family();
-        if (std::filesystem::exists(v2_family)) for (const auto& entry : std::filesystem::directory_iterator(v2_family, std::filesystem::directory_options::skip_permission_denied)) {
-            if (entry.path().filename() == "manifest.json" || !std::filesystem::is_directory(entry.path())) continue;
-            const auto manifest_path = entry.path() / "manifest.json";
-            try {
-                std::ifstream source(stream_path(manifest_path), std::ios::binary);
-                const auto parsed = diamond_support::parse_json(std::string{std::istreambuf_iterator<char>(source), {}});
-                const auto& manifest = object(parsed, "manifest");
-                const auto schema = integer(field(manifest, "schema_version"), "schema");
-                if ((schema >= 2 && schema <= 4) &&
-                    same_json(field(manifest, "compatibility"),
-                              compatibility_json(impl_->compatibility))) {
-                    if (!match.empty()) throw std::runtime_error("multiple replay stores match compatibility");
-                    match = manifest_path;
-                }
-            } catch (const std::runtime_error&) { throw; } catch (...) {}
-        }
-        if (!match.empty()) { impl_->manifest_path = match; impl_->namespace_path = match.parent_path(); }
-    }
-    if (!std::filesystem::exists(impl_->manifest_path) && root_exists) {
-        const auto v1_family = original_root / "persistent-replay-v1";
-        if (std::filesystem::exists(v1_family)) for (const auto& family : std::filesystem::directory_iterator(v1_family, std::filesystem::directory_options::skip_permission_denied)) {
-            if (!std::filesystem::is_directory(family.path())) continue;
-            for (const auto& digest_dir : std::filesystem::directory_iterator(family.path(), std::filesystem::directory_options::skip_permission_denied)) {
-            if (!std::filesystem::is_directory(digest_dir.path())) continue;
-            const auto manifest_path = digest_dir.path() / "manifest.json";
-            try {
-                std::ifstream candidate(stream_path(manifest_path), std::ios::binary);
-                const std::string text((std::istreambuf_iterator<char>(candidate)), {});
-                const auto parsed=diamond_support::parse_json(text); const auto& manifest=object(parsed,"manifest");
-                const auto& legacy=object(field(manifest,"compatibility"),"compatibility");
-                const bool compatibility_match = same_json(JsonValue{legacy}, compatibility_json(impl_->compatibility));
-                if (compatibility_match) { impl_->manifest_path=manifest_path; impl_->namespace_path=manifest_path.parent_path(); impl_->legacy=true; break; }
-            } catch (...) {}
-            }
-            if (impl_->legacy) break;
-        }
-    }
-    if (!impl_->legacy) {
-        if (!std::filesystem::exists(impl_->manifest_path)) { impl_->write_manifest(); return; }
-        std::ifstream source_manifest(stream_path(impl_->manifest_path), std::ios::binary);
-        const std::string manifest_text{std::istreambuf_iterator<char>(source_manifest),
-                                        std::istreambuf_iterator<char>()};
-        const auto parsed = diamond_support::parse_json(manifest_text);
-        const auto& manifest = object(parsed, "manifest");
-        const auto schema = integer(field(manifest, "schema_version"), "schema");
-        // v2/v3 manifests additionally carried sampler RNG state and
-        // transaction records.  They still load; those fields are ignored and
-        // dropped on the next write.
-        if (schema < 2 || schema > 4)
-            throw std::runtime_error("unsupported replay manifest");
-        const auto& chunks = array(field(manifest, "chunks"), "chunks");
-        const auto& ids = array(field(manifest, "game_ids"), "game ids");
-        if (chunks.size() != ids.size())
-            throw std::runtime_error("manifest game_ids do not match ordered chunks");
-        for (size_t i = 0; i < chunks.size(); ++i) {
-            const auto& descriptor = object(chunks[i], "chunk descriptor");
-            const auto id = string(field(descriptor, "game_id"), "game id");
-            if (id != string(ids[i], "game id"))
-                throw std::runtime_error("manifest game_ids do not match ordered chunks");
-            const auto digest = string(field(descriptor, "sha256"), "digest");
-            std::ifstream chunk_file(
-                stream_path(impl_->namespace_path / "chunks" / (digest + ".json")),
-                std::ios::binary);
-            if (!chunk_file)
-                throw std::runtime_error("missing replay chunk");
-            const std::string chunk_text{std::istreambuf_iterator<char>(chunk_file),
-                                         std::istreambuf_iterator<char>()};
-            auto chunk = diamond_support::parse_json(chunk_text);
-            auto payload = object(chunk, "chunk");
-            const auto stored = string(field(payload, "sha256"), "digest");
-            payload.erase("sha256");
-            if (stored != digest || diamond_support::sha256(diamond_support::canonical_json(
-                                        JsonValue{payload})) != digest)
-                throw std::runtime_error("corrupt replay chunk hash");
-            for (const auto& row : array(field(payload, "samples"), "samples"))
-                impl_->samples.push_back(legacy_sample(row, impl_->compatibility));
-        }
-        const auto persisted_capacity = integer(field(manifest, "capacity"), "capacity");
-        if (persisted_capacity <= 0) throw std::runtime_error("invalid replay capacity");
-        impl_->capacity = static_cast<size_t>(persisted_capacity);
-        impl_->samples.clear();
-        // Rebuild live episodes from the ordered descriptors so a subsequent
-        // sample/ingest cannot rewrite the manifest with empty chunks.
-        for (size_t i = 0; i < chunks.size(); ++i) {
-            const auto& descriptor = object(chunks[i], "chunk descriptor");
-            const auto id = string(field(descriptor, "game_id"), "game id");
-            const auto digest = string(field(descriptor, "sha256"), "digest");
-            std::ifstream chunk_file(
-                stream_path(impl_->namespace_path / "chunks" / (digest + ".json")),
-                std::ios::binary);
-            const std::string text{std::istreambuf_iterator<char>(chunk_file), std::istreambuf_iterator<char>()};
-            auto payload = object(diamond_support::parse_json(text), "chunk");
-            payload.erase("sha256");
-            impl_->chunk_digests.push_back(digest);
-            EpisodeRecord episode; episode.game_id = id; episode.completed = true;
-            const auto chunk_compatibility = compatibility_from_json(field(payload, "compatibility"));
-            for (const auto& row : array(field(payload, "samples"), "samples")) { impl_->samples.push_back(legacy_sample(row, chunk_compatibility)); ++episode.sample_count; }
-            impl_->episodes.push_back(std::move(episode));
-        }
-        if (impl_->samples.size() > impl_->capacity) impl_->samples.erase(impl_->samples.begin(), impl_->samples.end() - static_cast<std::ptrdiff_t>(impl_->capacity));
-        if (const auto found = manifest.find("aborted"); found != manifest.end()) impl_->aborted_records = array(found->second, "aborted");
-        impl_->authoritative_compatibility = field(manifest, "compatibility");
-        impl_->cleanup_unreachable_chunks();
+    if (!std::filesystem::exists(impl_->manifest_path)) {
+        impl_->write_manifest();
         return;
     }
-    std::ifstream manifest_file(stream_path(impl_->manifest_path), std::ios::binary);
-    std::string manifest_text((std::istreambuf_iterator<char>(manifest_file)), {});
-    impl_->legacy_manifest = diamond_support::parse_json(manifest_text);
-    const auto& manifest = object(impl_->legacy_manifest, "manifest");
-    if (integer(field(manifest, "schema_version"), "schema") != 1)
+
+    std::ifstream source_manifest(stream_path(impl_->manifest_path), std::ios::binary);
+    const std::string manifest_text{std::istreambuf_iterator<char>(source_manifest),
+                                    std::istreambuf_iterator<char>()};
+    const auto parsed = diamond_support::parse_json(manifest_text);
+    const auto& manifest = object(parsed, "manifest");
+    if (integer(field(manifest, "schema_version"), "schema") != 4)
         throw std::runtime_error("unsupported replay manifest");
+    const auto& chunks = array(field(manifest, "chunks"), "chunks");
+    const auto& ids = array(field(manifest, "game_ids"), "game ids");
+    if (chunks.size() != ids.size())
+        throw std::runtime_error("manifest game_ids do not match ordered chunks");
+    const auto persisted_capacity = integer(field(manifest, "capacity"), "capacity");
+    if (persisted_capacity <= 0) throw std::runtime_error("invalid replay capacity");
+    impl_->capacity = static_cast<size_t>(persisted_capacity);
     impl_->authoritative_compatibility = field(manifest, "compatibility");
-    if (!same_json(field(manifest, "compatibility"), compatibility_json(impl_->compatibility))) throw std::runtime_error("replay manifest compatibility mismatch");
-    const auto& chunks=array(field(manifest,"chunks"),"chunks"); const auto& ids=array(field(manifest,"game_ids"),"game ids"); if(chunks.size()!=ids.size()) throw std::runtime_error("manifest game_ids do not match ordered chunks");
-    // Destination of the v1 -> v2 migration.  Each migrated chunk is written
-    // inside the parse loop, while its payload is still in hand, so no payload
-    // has to be retained until after the loop.
-    const auto migrated_root = original_root / "persistent-replay-v2" /
-                               impl_->compatibility.family() /
-                               diamond_support::sha256(diamond_support::canonical_json(
-                                   impl_->authoritative_compatibility));
+    if (const auto found = manifest.find("aborted"); found != manifest.end())
+        impl_->aborted_records = array(found->second, "aborted");
+
+    // One pass over the descriptors.  Metadata-only stops here: the manifest
+    // already carries game_id, sample_count and sha256 for every episode, which
+    // is everything except the samples themselves -- so a stage that only needs
+    // the manifest digest or the episode index never touches a chunk file.
+    impl_->episodes.reserve(chunks.size());
+    impl_->chunk_digests.reserve(chunks.size());
     for (size_t i = 0; i < chunks.size(); ++i) {
-        const auto& chunk = object(chunks[i], "chunk");
-        const auto id = string(field(chunk, "game_id"), "game id");
-        if (id != string(ids[i], "game id")) throw std::runtime_error("manifest game_ids do not match ordered chunks");
-        std::ifstream source(
-            stream_path(impl_->namespace_path / "chunks" / (diamond_support::sha256(id) + ".json")),
-            std::ios::binary);
-        if (!source) throw std::runtime_error("missing replay chunk: " + (impl_->namespace_path / "chunks" / (diamond_support::sha256(id) + ".json")).string());
-        const std::string text{std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>()};
-        auto parsed = diamond_support::parse_json(text);
-        auto payload = object(parsed, "chunk");
-        const auto expected = string(field(payload, "sha256"), "digest");
-        payload.erase("sha256");
-        if (expected != string(field(chunk, "sha256"), "digest") || diamond_support::sha256(diamond_support::canonical_json(JsonValue{payload})) != expected) throw std::runtime_error("corrupt replay chunk hash");
-        // Migrate this chunk now, then drop the payload.  The v2 digest is over
-        // the v1 body exactly as it was stored, so the migrated chunk is
-        // byte-identical to what the post-loop rewrite used to produce.
-        const auto migrated_digest =
-            diamond_support::sha256(diamond_support::canonical_json(JsonValue{payload}));
-        {
-            auto stored = payload;
-            stored["sha256"] = JsonValue{migrated_digest};
-            atomic_write(migrated_root / "chunks" / (migrated_digest + ".json"),
-                         diamond_support::canonical_json(JsonValue{std::move(stored)}));
-        }
-        impl_->chunk_digests.push_back(migrated_digest);
-        EpisodeRecord episode; episode.game_id = id; episode.completed = true;
-        const auto chunk_compatibility = compatibility_from_json(field(payload, "compatibility"));
-        const auto& episode_data = object(field(payload, "episode"), "episode");
-        if (const auto found = episode_data.find("seed"); found != episode_data.end()) episode.seed = uint64_t(integer(found->second, "seed"));
-        if (const auto found = episode_data.find("move_count"); found != episode_data.end()) episode.move_count = uint64_t(integer(found->second, "move count"));
-        if (const auto found = episode_data.find("retry_id"); found != episode_data.end()) episode.retry_id = string(found->second, "retry id");
-        for (const auto& row : array(field(payload, "samples"), "samples")) {
-            impl_->samples.push_back(legacy_sample(row, chunk_compatibility));
-            ++episode.sample_count;
-        }
+        const auto& descriptor = object(chunks[i], "chunk descriptor");
+        const auto id = string(field(descriptor, "game_id"), "game id");
+        if (id != string(ids[i], "game id"))
+            throw std::runtime_error("manifest game_ids do not match ordered chunks");
+        const auto digest = string(field(descriptor, "sha256"), "digest");
+        EpisodeRecord episode;
+        episode.game_id = id;
+        episode.completed = true;
+        episode.sample_count =
+            static_cast<size_t>(integer(field(descriptor, "sample_count"), "sample count"));
         impl_->episodes.push_back(std::move(episode));
+        impl_->chunk_digests.push_back(digest);
+        if (contents == ReplayContents::metadata_only) continue;
+
+        // Full open: read and verify each chunk exactly once, materialising its
+        // samples straight into the pool.  This used to parse every chunk
+        // twice -- once to count, then again after clearing -- which at a 1M
+        // capacity meant parsing ~2 GB of JSON per store construction, and a
+        // training iteration constructs a store in three separate stages.
+        std::ifstream chunk_file(
+            stream_path(impl_->namespace_path / "chunks" / (digest + ".json")), std::ios::binary);
+        if (!chunk_file) throw std::runtime_error("missing replay chunk");
+        const std::string chunk_text{std::istreambuf_iterator<char>(chunk_file),
+                                     std::istreambuf_iterator<char>()};
+        auto payload = object(diamond_support::parse_json(chunk_text), "chunk");
+        const auto stored = string(field(payload, "sha256"), "digest");
+        payload.erase("sha256");
+        if (stored != digest ||
+            diamond_support::sha256(diamond_support::canonical_json(JsonValue{payload})) != digest)
+            throw std::runtime_error("corrupt replay chunk hash");
+        const auto chunk_compatibility = compatibility_from_json(field(payload, "compatibility"));
+        for (const auto& row : array(field(payload, "samples"), "samples"))
+            impl_->samples.push_back(legacy_sample(row, chunk_compatibility));
     }
-    if (const auto found = manifest.find("aborted"); found != manifest.end()) impl_->aborted_records = array(found->second, "aborted");
-    if (impl_->samples.size() > capacity)
+    if (impl_->samples.size() > impl_->capacity)
         impl_->samples.erase(impl_->samples.begin(),
-                             impl_->samples.end() - static_cast<std::ptrdiff_t>(capacity));
-    // A v1 manifest also carried a CPython MT19937 sampler state.  Sampling no
-    // longer has durable state, so it is read past and dropped on migration.
-    // Legacy stores are migrated transactionally before the object becomes usable.
-    impl_->legacy = false;
-    impl_->namespace_path = migrated_root;
-    impl_->manifest_path = impl_->namespace_path / "manifest.json";
-    impl_->write_manifest();
+                             impl_->samples.end() -
+                                 static_cast<std::ptrdiff_t>(impl_->capacity));
+    impl_->cleanup_unreachable_chunks();
 }
 ReplayStore::~ReplayStore() = default;
 ReplayStore::ReplayStore(ReplayStore&&) noexcept = default;
@@ -554,8 +442,11 @@ ReplayIngestReport ReplayStore::ingest_iteration(std::span<const Episode> episod
                                                     .completed = episode.completed});
             impl_->chunk_digests.push_back(accepted_digests[i]);
             if (episode.completed) {
-                impl_->samples.insert(impl_->samples.end(), episode.samples.begin(),
-                                      episode.samples.end());
+                // A metadata-only store has no pool to extend; size() reports
+                // from the records instead.
+                if (impl_->contents == ReplayContents::full)
+                    impl_->samples.insert(impl_->samples.end(), episode.samples.begin(),
+                                          episode.samples.end());
             } else {
                 impl_->aborted_records.emplace_back(
                     JsonValue{Object{{"game_id", JsonValue{episode.game_id}},
@@ -576,7 +467,16 @@ size_t ReplayStore::ingest(std::span<const Episode> episodes) {
     return ingest_iteration(episodes).accepted_games;
 }
 size_t ReplayStore::size() const noexcept {
-    return impl_ ? impl_->samples.size() : 0;
+    if (!impl_) return 0;
+    // Metadata-only holds no samples, so the pool size comes from the episode
+    // records the manifest carried -- the same number a full open would report.
+    if (impl_->contents == ReplayContents::metadata_only) {
+        size_t total = 0;
+        for (const auto& episode : impl_->episodes)
+            if (episode.completed) total += episode.sample_count;
+        return std::min(total, impl_->capacity);
+    }
+    return impl_->samples.size();
 }
 std::filesystem::path ReplayStore::manifest_path() const {
     if (!impl_ || !std::filesystem::is_regular_file(impl_->manifest_path))
@@ -599,6 +499,8 @@ uint64_t replay_sampling_seed(uint64_t replay_seed, uint64_t iteration, uint64_t
     return next_splitmix(state);
 }
 std::vector<TrainingSample> ReplayStore::sample(size_t count, uint64_t seed) const {
+    if (impl_->contents == ReplayContents::metadata_only)
+        throw std::logic_error("replay store was opened metadata-only and holds no samples");
     if (count == 0)
         return {};
     if (count > impl_->samples.size())
@@ -646,30 +548,4 @@ void ReplayStore::prune() {
     } catch (...) { impl_->episodes=old_episodes; impl_->samples=old_samples; impl_->chunk_digests=old_chunks; impl_->aborted_records=old_aborted; throw; }
     impl_->cleanup_unreachable_chunks();
 }
-void ReplayStore::restore_manifest(const std::filesystem::path& snapshot) {
-    std::ifstream file(stream_path(snapshot), std::ios::binary);
-    if (!file)
-        throw std::runtime_error("cannot read replay manifest snapshot");
-    const std::string value((std::istreambuf_iterator<char>(file)),{}); const auto parsed=diamond_support::parse_json(value); const auto& manifest=object(parsed,"manifest");
-    if (integer(field(manifest,"schema_version"),"schema") != 1) throw std::runtime_error("unsupported replay restore snapshot");
-    // Reopen through the normal v1 loader in an isolated scratch namespace.  It
-    // validates every descriptor/chunk and rebuilds episodes, samples, aborted
-    // records, and RNG state before touching the live store.
-    static std::atomic_uint64_t restore_sequence{0};
-    const auto temp = std::filesystem::temp_directory_path() / ("alphadiamond-replay-restore-" + std::to_string(++restore_sequence));
-    const auto legacy_dir = temp / "persistent-replay-v1" / "Soo" / snapshot.parent_path().filename();
-    std::filesystem::create_directories(legacy_dir / "chunks");
-    atomic_write(legacy_dir / "manifest.json", value);
-    const auto source_chunks = snapshot.parent_path() / "chunks";
-    if (std::filesystem::exists(source_chunks)) std::filesystem::copy(source_chunks, legacy_dir / "chunks", std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-    ReplayStore reopened(temp, impl_->compatibility, impl_->capacity, impl_->replay_seed);
-    const auto root = impl_->namespace_path.parent_path().parent_path().parent_path();
-    const auto digest = diamond_support::sha256(diamond_support::canonical_json(reopened.impl_->authoritative_compatibility));
-    reopened.impl_->namespace_path = root / "persistent-replay-v2" / reopened.impl_->compatibility.family() / digest;
-    reopened.impl_->manifest_path = reopened.impl_->namespace_path / "manifest.json";
-    reopened.impl_->write_manifest();
-    impl_ = std::move(reopened.impl_);
-    std::error_code ignored; std::filesystem::remove_all(temp, ignored);
-}
-
 }  // namespace diamond_pipeline

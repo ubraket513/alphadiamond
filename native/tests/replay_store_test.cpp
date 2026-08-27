@@ -73,10 +73,9 @@ void remove_tree(const std::filesystem::path& path, std::error_code& error) {
 } // namespace
 
 int main(int argc, char** argv) {
-    REQUIRE(argc == 3, "usage: replay_store_test <fixture-dir> <scratch-dir>");
+    REQUIRE(argc == 3, "usage: replay_store_test <unused> <scratch-dir>");
     const diamond_pipeline::Compatibility compatibility =
         diamond_pipeline::Compatibility::soo("1.2.3", {.residual_blocks = 1, .width = 16});
-    const auto fixtures = std::filesystem::path(argv[1]);
     const auto scratch = std::filesystem::path(argv[2]);
     std::error_code cleanup_error;
     remove_tree(scratch, cleanup_error);
@@ -206,25 +205,75 @@ int main(int argc, char** argv) {
         CHECK(contents.find("\"rng\"") == std::string::npos);
     }
 
-    bool corrupt = false;
-    std::filesystem::copy(fixtures / "corrupt-digest", scratch / "corrupt-digest", std::filesystem::copy_options::recursive);
-    try { diamond_pipeline::ReplayStore store(scratch / "corrupt-digest", compatibility, 8, 3); }
-    catch (const std::runtime_error&) { corrupt = true; }
-    CHECK(corrupt);
+    // Corrupt chunk detection, built natively rather than from a frozen v1
+    // fixture: ingest, then flip a byte inside a chunk body so its content no
+    // longer hashes to the name the manifest recorded.
     {
-        std::filesystem::copy(fixtures / "capacity-prune", scratch / "capacity-prune",
-                              std::filesystem::copy_options::recursive);
-        diamond_pipeline::ReplayStore capacity(scratch / "capacity-prune", compatibility, 3, 3);
-        REQUIRE(capacity.sample(3, 3).size() == 3, "capacity fixture retains only reachable rows");
+        const auto corrupt_root = scratch / "corrupt-digest";
+        {
+            diamond_pipeline::ReplayStore store(corrupt_root, compatibility, 8, 3);
+            CHECK_EQ(store.ingest(std::span<const diamond_pipeline::Episode>(&fresh, 1)), 1U);
+        }
+        std::filesystem::path chunk;
+        for (std::filesystem::recursive_directory_iterator it(corrupt_root), end; it != end; ++it)
+            if (it->is_regular_file() && it->path().parent_path().filename() == "chunks")
+                chunk = it->path();
+        REQUIRE(!chunk.empty(), "corrupt-digest chunk located");
+        std::string body;
+        {
+            std::ifstream input(chunk, std::ios::binary);
+            body.assign(std::istreambuf_iterator<char>(input), {});
+        }
+        const auto at = body.find("1.0");
+        REQUIRE(at != std::string::npos, "corrupt-digest payload is editable");
+        body.replace(at, 3, "2.0");
+        {
+            std::ofstream output(chunk, std::ios::binary | std::ios::trunc);
+            output << body;
+        }
+        bool corrupt = false;
+        try {
+            diamond_pipeline::ReplayStore store(corrupt_root, compatibility, 8, 3);
+        } catch (const std::runtime_error&) {
+            corrupt = true;
+        }
+        CHECK(corrupt);
     }
+    // Capacity bounds the sampling pool across a reopen.
     {
-        std::filesystem::copy(fixtures / "rollback", scratch / "rollback",
-                              std::filesystem::copy_options::recursive);
-        diamond_pipeline::ReplayStore rollback(scratch / "rollback", compatibility, 8, 3);
-        rollback.restore_manifest(
-            scratch / "rollback" / "persistent-replay-v1" / "Soo" /
-            "3f3372c174dba4b7bfa9288e2c7e0a33e284dfdc3313f1d073210de8e47df229" / "before.json");
-        CHECK_EQ(rollback.sample(1, 3).size(), 1U);
+        const auto capacity_root = scratch / "capacity";
+        {
+            diamond_pipeline::ReplayStore store(capacity_root, compatibility, 3, 3);
+            CHECK_EQ(store.ingest(pool), 64U);
+        }
+        diamond_pipeline::ReplayStore capacity(capacity_root, compatibility, 3, 3);
+        CHECK_EQ(capacity.size(), 3U);
+        REQUIRE(capacity.sample(3, 3).size() == 3, "capacity bounds the reopened pool");
+    }
+    // Metadata-only opens the manifest and nothing else: it reports the same
+    // size and digest as a full open, refuses to sample, and never reads a
+    // chunk -- which is what lets a digest-only stage skip rehydrating 1M rows.
+    {
+        const auto meta_root = scratch / "metadata-only";
+        std::string full_digest;
+        std::size_t full_size = 0;
+        {
+            diamond_pipeline::ReplayStore store(meta_root, compatibility, 128, 3);
+            CHECK_EQ(store.ingest(pool), 64U);
+            full_digest = store.manifest_digest();
+            full_size = store.size();
+        }
+        diamond_pipeline::ReplayStore meta(meta_root, compatibility, 128, 3,
+                                           diamond_pipeline::ReplayContents::metadata_only);
+        CHECK_EQ(meta.manifest_digest(), full_digest);
+        CHECK_EQ(meta.size(), full_size);
+        bool refused = false;
+        try {
+            (void)meta.sample(1, 3);
+        } catch (const std::logic_error&) {
+            refused = true;
+        }
+        CHECK(refused);
     }
     remove_tree(scratch, cleanup_error);
     CHECK(!cleanup_error);
