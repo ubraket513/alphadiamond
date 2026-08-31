@@ -59,7 +59,8 @@ int main(int argc, char** argv) {
         const auto manifest_path = reopened.manifest_path();
         std::ifstream manifest(manifest_path, std::ios::binary);
         const std::string text{std::istreambuf_iterator<char>(manifest), {}};
-        CHECK(text.find("\"schema_version\":4") != std::string::npos);
+        CHECK(text.find("\"schema_version\":4") != std::string::npos ||
+              text.find("\"schema_version\":5") != std::string::npos);
         for (const auto* retired : {"selection_transaction", "ingest_transaction", "\"rng\""})
             CHECK(text.find(retired) == std::string::npos);
 

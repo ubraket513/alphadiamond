@@ -37,6 +37,12 @@ struct BatchItem {
     // Min. An evaluator that ignores this fills `value` and leaves a Min lane
     // reading zeros for two of its seats.
     int value_width = 1;
+    // Which job in this run the request belongs to, or -1 when the caller does
+    // not track jobs. Lanes take the next unstarted job rather than owning one,
+    // so an evaluator that must treat games differently -- the arena router,
+    // which sends the candidate's turns to a different model in every game --
+    // cannot key on the lane or on the outcome pointer.
+    int job = -1;
 };
 
 // Whatever answers a batch. The dummy is native and sleeps; the Gate D one
@@ -232,6 +238,12 @@ struct EpisodeConfig {
     // Takes precedence over ``late_move_threshold`` when both are set.
     int repeat_window = 0;
 
+    // Use this move-selection temperature when the current physical position
+    // already occurred within ``repeat_window`` plies. Zero keeps the normal
+    // temperature schedule. Search remains unchanged; only the seeded choice
+    // among root visit counts escapes a demonstrated cycle.
+    double repetition_temperature = 0.0;
+
     // Bootstrap phase: take the policy prior from the vacancy heuristic instead
     // of the network, keeping values from the network.
     //
@@ -251,6 +263,8 @@ struct EpisodeMetrics {
     // How often the boosted budget fired. The trigger only earns its complexity
     // if this stays small, so it is reported rather than inferred.
     uint64_t boosted_moves = 0;
+    // How often repetition changed the move-selection temperature.
+    uint64_t repetition_moves = 0;
     double wall_seconds = 0.0;
     double evaluator_seconds = 0.0;
     double worker_busy_seconds = 0.0;

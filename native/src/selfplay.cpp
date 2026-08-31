@@ -466,6 +466,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     if (jobs.empty()) return {};
     if (config.threads < 1) throw std::invalid_argument("threads must be positive");
     if (config.max_batch < 1) throw std::invalid_argument("max_batch must be positive");
+    if (config.repetition_temperature < 0.0)
+        throw std::invalid_argument("repetition_temperature must not be negative");
 
     MCTSConfig search_config;
     search_config.simulations = config.simulations;
@@ -564,6 +566,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     // How often the boosted search budget fired.  Reported rather than
     // inferred: the trigger only earns its complexity if this stays small.
     std::atomic<uint64_t> boosted{0};
+    std::atomic<uint64_t> repetition_moves{0};
 
     std::exception_ptr failure;
     std::mutex failure_mutex;
@@ -631,8 +634,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 if (status == EpisodeSearch::Status::NeedsEvaluation) {
                     BatchItem item{&lane.session.pending_state(),
                                    &lane.session.pending_features(),
-                                   &lane.session.pending_actions(), 0, &lane.outcome,
-                                   lane.session.value_width()};
+                                   &lane.session.pending_actions(),
+                                   0,
+                                   &lane.outcome,
+                                   lane.session.value_width(),
+                                   static_cast<int>(lane.job_index)};
                     batch_evaluator.prepare(item);
                     if (config.bootstrap_prior) {
                         vacancy_prior(lane.session.pending_actions(),
@@ -749,6 +755,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 }
 
                 const uint64_t key = dynamics_key(lane.state);
+                const bool repeated = config.repeat_window > 0 && lane.seen_recently(key);
                 const int budget = simulations_for(lane, key, lane.move_count);
                 if (budget > config.simulations) {
                     boosted.fetch_add(1, std::memory_order_relaxed);
@@ -758,7 +765,12 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 }
                 lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
                 lane.session.set_simulations(budget);
-                lane.session.begin(lane.state, temperature_for(lane.move_count));
+                const double temperature = repeated && config.repetition_temperature > 0.0
+                                               ? config.repetition_temperature
+                                               : temperature_for(lane.move_count);
+                if (repeated && config.repetition_temperature > 0.0)
+                    repetition_moves.fetch_add(1, std::memory_order_relaxed);
+                lane.session.begin(lane.state, temperature);
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);
             }
@@ -777,10 +789,10 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             items.reserve(batch.size());
             for (const int lane_id : batch) {
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
-                items.push_back(BatchItem{&lane.session.pending_state(),
-                                          &lane.session.pending_features(),
-                                          &lane.session.pending_actions(), 0, &lane.outcome,
-                                          lane.session.value_width()});
+                items.push_back(
+                    BatchItem{&lane.session.pending_state(), &lane.session.pending_features(),
+                              &lane.session.pending_actions(), 0, &lane.outcome,
+                              lane.session.value_width(), static_cast<int>(lane.job_index)});
             }
             const auto eval_start = Clock::now();
             batch_evaluator.evaluate(items);
@@ -821,6 +833,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
         metrics.moves += static_cast<uint64_t>(episode.move_count);
     }
     metrics.boosted_moves = boosted.load();
+    metrics.repetition_moves = repetition_moves.load();
     return episodes;
 }
 

@@ -13,9 +13,12 @@
 
 namespace diamond_pipeline {
 
-ModelPool::ModelPool(std::size_t capacity, diamond_training::ResolvedDevice device)
-    : capacity_(capacity), device_(std::move(device)) {
+ModelPool::ModelPool(std::size_t capacity, diamond_training::ResolvedDevice device,
+                     InferencePrecision precision)
+    : capacity_(capacity), device_(std::move(device)), precision_(precision) {
     if (capacity == 0) throw std::invalid_argument("model pool capacity must be positive");
+    if (precision_ != InferencePrecision::fp32 && !device_.torch_device.is_cuda())
+        throw std::invalid_argument("reduced inference precision requires CUDA");
 }
 
 ModelKey ModelPool::install(const Compatibility& compatibility,
@@ -27,6 +30,10 @@ ModelKey ModelPool::install(const Compatibility& compatibility,
                                                   diamond_training::ModelRole::actor);
     ModelKey key{compatibility.model_name, compatibility.model_version,
                  diamond_training::canonical_model_digest(actor)};
+    if (precision_ == InferencePrecision::fp16)
+        actor->to(torch::kFloat16);
+    else if (precision_ == InferencePrecision::bf16)
+        actor->to(torch::kBFloat16);
     if (!models_.contains(key) && models_.size() == capacity_)
         throw PipelineError("model pool residency capacity is exhausted");
     models_.insert_or_assign(key, ResidentModel{compatibility, std::move(actor)});
@@ -253,15 +260,25 @@ void ModelPool::evaluate(std::vector<soo::BatchItem>& batch) {
     const auto forward_host_start = EvalClock::now();
     if (on_cuda)
         events->forward_start.record(events->stream);
-    const auto [logits, values] = model->forward(device_features);
+    const auto inference_type = precision_ == InferencePrecision::fp16
+                                    ? torch::kFloat16
+                                    : precision_ == InferencePrecision::bf16 ? torch::kBFloat16
+                                                                             : torch::kFloat32;
+    if (device_features.scalar_type() != inference_type)
+        device_features = device_features.to(inference_type);
+    auto [logits, values] = model->forward(device_features);
     if (on_cuda)
         events->forward_end.record(events->stream);
     const auto forward_host_end = EvalClock::now();
     if (logits.dim() != 2 || logits.size(0) != batch_size || logits.size(1) != kActionSpace ||
         values.dim() != 2 || values.size(0) != batch_size || values.size(1) != value_width ||
-        logits.scalar_type() != torch::kFloat32 || values.scalar_type() != torch::kFloat32 ||
+        logits.scalar_type() != inference_type || values.scalar_type() != inference_type ||
         logits.device() != device_.torch_device || values.device() != device_.torch_device) {
         throw PipelineError("active model produced an incompatible inference output");
+    }
+    if (inference_type != torch::kFloat32) {
+        logits = logits.to(torch::kFloat32);
+        values = values.to(torch::kFloat32);
     }
 
     const auto post_host_start = EvalClock::now();

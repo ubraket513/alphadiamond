@@ -162,6 +162,29 @@ int main(int argc, char** argv) {
         CHECK(drawn == expected_first);
         CHECK_EQ(store.manifest_digest(), manifest_before);
     }
+
+    const auto rollback_root = scratch / "in-memory-rollback";
+    {
+        diamond_pipeline::ReplayStore store(rollback_root, compatibility, 8, 23);
+        CHECK_EQ(store.ingest(std::span<const diamond_pipeline::Episode>(&fresh, 1)), 1U);
+        const auto size_before = store.size();
+        const auto manifest_before = store.manifest_digest();
+        auto next = episode(compatibility, 2);
+        set_environment("DIAMOND_REPLAY_FAIL_BEFORE_MANIFEST_COMMIT", "1");
+        bool failed = false;
+        try {
+            (void)store.ingest(std::span<const diamond_pipeline::Episode>(&next, 1));
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+        set_environment("DIAMOND_REPLAY_FAIL_BEFORE_MANIFEST_COMMIT", "");
+        CHECK(failed);
+        CHECK_EQ(store.size(), size_before);
+        CHECK_EQ(store.manifest_digest(), manifest_before);
+        CHECK_EQ(store.ingest(std::span<const diamond_pipeline::Episode>(&next, 1)), 1U);
+        CHECK_EQ(store.size(), size_before + 1U);
+    }
+
     const auto orphan_root = scratch / "orphan-recovery";
     {
         diamond_pipeline::ReplayStore store(orphan_root, compatibility, 8, 19);
@@ -199,7 +222,8 @@ int main(int argc, char** argv) {
             "manifest.json");
         const std::string contents{std::istreambuf_iterator<char>(manifest), {}};
         // Contents identity only: no sampler state, no transaction records.
-        CHECK(contents.find("\"schema_version\":4") != std::string::npos);
+        CHECK(contents.find("\"schema_version\":4") != std::string::npos ||
+              contents.find("\"schema_version\":5") != std::string::npos);
         CHECK(contents.find("selection_transaction") == std::string::npos);
         CHECK(contents.find("ingest_transaction") == std::string::npos);
         CHECK(contents.find("\"rng\"") == std::string::npos);
@@ -224,9 +248,8 @@ int main(int argc, char** argv) {
             std::ifstream input(chunk, std::ios::binary);
             body.assign(std::istreambuf_iterator<char>(input), {});
         }
-        const auto at = body.find("1.0");
-        REQUIRE(at != std::string::npos, "corrupt-digest payload is editable");
-        body.replace(at, 3, "2.0");
+        REQUIRE(!body.empty(), "corrupt-digest payload is editable");
+        body[body.size() / 2] ^= char{1};
         {
             std::ofstream output(chunk, std::ios::binary | std::ios::trunc);
             output << body;
@@ -239,16 +262,20 @@ int main(int argc, char** argv) {
         }
         CHECK(corrupt);
     }
-    // Capacity bounds the sampling pool across a reopen.
+    // Capacity bounds the durable manifest as well as the sampling pool. Old
+    // chunks must become unreachable during ordinary ingest so legacy JSON is
+    // progressively replaced instead of being parsed forever on cold open.
     {
         const auto capacity_root = scratch / "capacity";
         {
             diamond_pipeline::ReplayStore store(capacity_root, compatibility, 3, 3);
             CHECK_EQ(store.ingest(pool), 64U);
+            CHECK_EQ(chunk_file_count(capacity_root), 3U);
         }
         diamond_pipeline::ReplayStore capacity(capacity_root, compatibility, 3, 3);
         CHECK_EQ(capacity.size(), 3U);
         REQUIRE(capacity.sample(3, 3).size() == 3, "capacity bounds the reopened pool");
+        CHECK_EQ(chunk_file_count(capacity_root), 3U);
     }
     // Metadata-only opens the manifest and nothing else: it reports the same
     // size and digest as a full open, refuses to sample, and never reads a

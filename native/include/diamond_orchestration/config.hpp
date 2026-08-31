@@ -141,6 +141,7 @@ struct RunBudgetConfig final {
 };
 
 struct ArenaConfig final {
+    bool enabled = true;
     int64_t games = 36;
     uint64_t seed = 0;
     int64_t max_moves = 2000;
@@ -202,4 +203,4 @@ struct ProductionConfig final {
     bool operator==(const ProductionConfig&) const = default;
 };
 
-}  // namespace diamond_orchestration
+} // namespace diamond_orchestration

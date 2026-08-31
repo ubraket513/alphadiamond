@@ -195,8 +195,15 @@ void require_gradients(const diamond_model::DiamondModel& model, const torch::De
     }
 }
 
+std::size_t optimizer_parameter_count(const torch::optim::Optimizer& optimizer) {
+    std::size_t count = 0;
+    for (const auto& group : optimizer.param_groups())
+        count += group.params().size();
+    return count;
+}
+
 void require_optimizer_state(const torch::optim::AdamW& optimizer, const torch::Device& expected) {
-    if (optimizer.state().size() != optimizer.size()) {
+    if (optimizer.state().size() != optimizer_parameter_count(optimizer)) {
         throw std::invalid_argument("AdamW state does not cover every learner parameter");
     }
     for (const auto& entry : optimizer.state()) {

@@ -9,6 +9,7 @@
 
 #include "check.hpp"
 #include "diamond_orchestration/report.hpp"
+#include "diamond_orchestration/training_resources.hpp"
 #include "diamond_orchestration/training_wiring.hpp"
 
 namespace {
@@ -72,7 +73,8 @@ int main(int argc, char** argv) {
                                std::filesystem::copy_options::overwrite_existing);
 
     std::vector<std::string> calls;
-    const CommandService service = [&](const CommandRequest& request, const ProductionConfig& parsed) {
+    const CommandService service = [&](const CommandRequest& request,
+                                       const ProductionConfig& parsed) {
         CHECK_EQ(parsed.model_name, std::string("Soo"));
         CHECK_EQ(request.run_dir, run_dir);
         calls.push_back(request.command);
@@ -80,7 +82,8 @@ int main(int argc, char** argv) {
     };
     for (const char* verb : {"train", "resume", "evaluate", "report"}) {
         std::ostringstream output;
-        CHECK_EQ(diamond_orchestration::dispatch_command(command(verb, scratch, config), service, output),
+        CHECK_EQ(diamond_orchestration::dispatch_command(command(verb, scratch, config), service,
+                                                         output),
                  diamond_orchestration::kExitOk);
         const auto& report = report_object(output);
         CHECK_EQ(std::get<std::string>(report.at("command").value), std::string(verb));
@@ -88,6 +91,24 @@ int main(int argc, char** argv) {
         CHECK_EQ(std::get<std::string>(report.at("service").value), std::string("injected"));
     }
     CHECK_EQ(calls.size(), std::size_t{4});
+
+    auto active_config = ProductionConfig{};
+    active_config.model_version = "active-transition";
+    {
+        std::ofstream output(run_dir / "active-config.json", std::ios::binary | std::ios::trunc);
+        output << diamond_support::canonical_json(active_config.to_json());
+    }
+    const CommandService active_evaluation = [&](const CommandRequest& request,
+                                                  const ProductionConfig& parsed) {
+        CHECK_EQ(request.command, std::string("evaluate"));
+        CHECK_EQ(parsed.model_version, std::string("active-transition"));
+        return JsonValue::Object{{"service", JsonValue{std::string("active")}}};
+    };
+    std::ostringstream active_evaluation_output;
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("evaluate", scratch, config),
+                                                     active_evaluation,
+                                                     active_evaluation_output),
+             diamond_orchestration::kExitOk);
 
     auto conflicting_selectors = command("train", scratch, config);
     conflicting_selectors.emplace_back("--warm-start");
@@ -103,13 +124,13 @@ int main(int argc, char** argv) {
     CHECK_EQ(diamond_orchestration::dispatch_command(missing_selector, service, selector_output),
              diamond_orchestration::kExitArgumentError);
 
-    auto invalid_resume = command("resume", scratch, config);
-    invalid_resume.emplace_back("--config");
-    invalid_resume.emplace_back(config.string());
+    auto transition_resume = command("resume", scratch, config);
+    transition_resume.emplace_back("--config");
+    transition_resume.emplace_back(config.string());
     std::ostringstream resume_argument_output;
     CHECK_EQ(
-        diamond_orchestration::dispatch_command(invalid_resume, service, resume_argument_output),
-        diamond_orchestration::kExitArgumentError);
+        diamond_orchestration::dispatch_command(transition_resume, service, resume_argument_output),
+        diamond_orchestration::kExitOk);
 
     auto incomplete_evaluate = command("evaluate", scratch, config);
     incomplete_evaluate.erase(incomplete_evaluate.begin() + 5, incomplete_evaluate.begin() + 7);
@@ -121,24 +142,34 @@ int main(int argc, char** argv) {
     std::ostringstream argument_output;
     CHECK_EQ(diamond_orchestration::dispatch_command({"train"}, service, argument_output),
              diamond_orchestration::kExitArgumentError);
-    CHECK_EQ(std::get<std::string>(report_object(argument_output).at("status").value), std::string("error"));
+    CHECK_EQ(std::get<std::string>(report_object(argument_output).at("status").value),
+             std::string("error"));
 
     std::ostringstream runtime_output;
-    const CommandService incompatible = [](const CommandRequest&, const ProductionConfig&)
-        -> JsonValue::Object { throw diamond_orchestration::CommandArtifactError("incompatible checkpoint"); };
-    CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config), incompatible, runtime_output),
+    const CommandService incompatible = [](const CommandRequest&,
+                                           const ProductionConfig&) -> JsonValue::Object {
+        throw diamond_orchestration::CommandArtifactError("incompatible checkpoint");
+    };
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config),
+                                                     incompatible, runtime_output),
              diamond_orchestration::kExitArtifactError);
 
     std::ostringstream interrupted_output;
-    const CommandService interrupted = [](const CommandRequest&, const ProductionConfig&)
-        -> JsonValue::Object { throw diamond_orchestration::CommandInterruptedError("unfinished stage"); };
-    CHECK_EQ(diamond_orchestration::dispatch_command(command("resume", scratch, config), interrupted, interrupted_output),
+    const CommandService interrupted = [](const CommandRequest&,
+                                          const ProductionConfig&) -> JsonValue::Object {
+        throw diamond_orchestration::CommandInterruptedError("unfinished stage");
+    };
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("resume", scratch, config),
+                                                     interrupted, interrupted_output),
              diamond_orchestration::kExitInterrupted);
 
     std::ostringstream internal_output;
-    const CommandService broken = [](const CommandRequest&, const ProductionConfig&)
-        -> JsonValue::Object { throw std::runtime_error("broken"); };
-    CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config), broken, internal_output),
+    const CommandService broken = [](const CommandRequest&,
+                                     const ProductionConfig&) -> JsonValue::Object {
+        throw std::runtime_error("broken");
+    };
+    CHECK_EQ(diamond_orchestration::dispatch_command(command("train", scratch, config), broken,
+                                                     internal_output),
              diamond_orchestration::kExitInternalError);
 
     ProductionConfig wiring_config;
@@ -192,6 +223,78 @@ int main(int argc, char** argv) {
     explicit_none.self_play.bootstrap_prior =
         std::string(diamond_orchestration::kBootstrapPriorNone);
     CHECK(!diamond_orchestration::wire_training_iteration(explicit_none).selfplay.bootstrap_prior);
+
+    // The arena runs the same phase as self-play.
+    //
+    // It did not: `arena_episode_config` never set the prior, so during
+    // bootstrap both sides searched on a network prior that steers nobody into
+    // a camp, every game reached `arena.max_moves`, and the stage reported only
+    // incomplete blocks -- after paying for a full-length game each, played one
+    // at a time. Dropped here the failure is quiet in the same way self-play's
+    // was: the arena stays correct and only its completion rate and its cost
+    // move. Both sides take the same prior, so the comparison stays symmetric.
+    CHECK(!diamond_orchestration::wire_arena_episode(wiring_config, 4).bootstrap_prior);
+    CHECK(diamond_orchestration::wire_arena_episode(bootstrap_config, 4).bootstrap_prior);
+
+    // Lanes are the size of the group of games being played together, and
+    // threads and batch cannot usefully exceed it: synchronous MCTS allows one
+    // outstanding request per lane, so a group of two games can never present a
+    // third position to evaluate. Above the group size both saturate.
+    const auto small_group = diamond_orchestration::wire_arena_episode(wiring_config, 2);
+    CHECK_EQ(small_group.lanes, 2);
+    CHECK_EQ(small_group.threads, 2);
+    CHECK_EQ(small_group.max_batch, 2);
+    const auto large_group = diamond_orchestration::wire_arena_episode(wiring_config, 32);
+    CHECK_EQ(large_group.lanes, 32);
+    CHECK_EQ(large_group.threads, 2);
+    CHECK_EQ(large_group.max_batch, 11);
+
+    // The arena is a measurement, not a source of training data: its search is
+    // greedy from the first move and takes no root exploration noise, and its
+    // move budget is the arena's own rather than self-play's. Only a repeated
+    // physical state activates the seeded escape below.
+    CHECK_EQ(large_group.temperature, 0.0);
+    CHECK_EQ(large_group.temperature_moves, 0);
+    CHECK_EQ(large_group.dirichlet_epsilon, 0.0);
+    CHECK_EQ(large_group.max_moves, static_cast<int>(wiring_config.arena.max_moves));
+    CHECK_EQ(large_group.repeat_window, 8);
+    CHECK_EQ(large_group.repetition_temperature, 1.0);
+
+    // Repetition escape is an evaluation rule, not a training-data policy.
+    // Self-play keeps its configured repetition search trigger and never
+    // samples a move merely because a position repeated.
+    CHECK_EQ(wiring.selfplay.repetition_temperature, 0.0);
+
+    // Long-running self-play can deliberately bypass comparative evaluation.
+    // In that mode the newly trained candidate must become the next actor;
+    // keeping the old champion would silently generate every iteration from
+    // stale weights and defeat continuous training.
+    auto continuous_config = wiring_config;
+    continuous_config.arena.enabled = false;
+    const auto continuous = diamond_orchestration::wire_evaluation_pipeline(continuous_config);
+    CHECK(!continuous.run_arena);
+    CHECK(!continuous.record_rating);
+    CHECK(continuous.activate_candidate);
+
+    const auto evaluated = diamond_orchestration::wire_evaluation_pipeline(wiring_config);
+    CHECK(evaluated.run_arena);
+    CHECK(evaluated.record_rating);
+    CHECK(!evaluated.activate_candidate);
+
+    // A live training invocation keeps one materialized replay across stages
+    // and iterations. Reconstructing it here would parse and hash every JSON
+    // chunk again; at the 1M production capacity that was the dominant
+    // iteration cost even after metadata-only opens were introduced.
+    diamond_orchestration::TrainingRunResources resources(
+        scratch / "cached-replay",
+        diamond_training::Compatibility::soo(
+            "2.0.0", diamond_training::NetworkConfig{.residual_blocks = 6, .width = 128}),
+        1000000, 7);
+    CHECK(!resources.replay_loaded());
+    auto& first_replay = resources.full_replay();
+    CHECK(resources.replay_loaded());
+    auto& next_iteration_replay = resources.full_replay();
+    CHECK_EQ(&first_replay, &next_iteration_replay);
 
     auto cuda_config = wiring_config;
     cuda_config.runtime.device = "cuda";

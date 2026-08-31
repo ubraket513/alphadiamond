@@ -17,6 +17,8 @@
 
 namespace diamond_pipeline {
 
+enum class InferencePrecision { fp32, fp16, bf16 };
+
 class PipelineError : public std::runtime_error { public: using std::runtime_error::runtime_error; };
 class CancelledError final : public PipelineError { public: using PipelineError::PipelineError; };
 class DeadlineExceededError final : public PipelineError { public: using PipelineError::PipelineError; };
@@ -50,7 +52,8 @@ class ModelPool final : public soo::BatchEvaluator {
         bool operator==(const EvaluationStats&) const = default;
     };
 
-    ModelPool(std::size_t capacity, diamond_training::ResolvedDevice device);
+    ModelPool(std::size_t capacity, diamond_training::ResolvedDevice device,
+              InferencePrecision precision = InferencePrecision::fp32);
 
     ModelKey install(const Compatibility& compatibility, const diamond_model::DiamondModel& source);
     ModelKey install_checkpoint(const Compatibility& compatibility,
@@ -89,6 +92,7 @@ class ModelPool final : public soo::BatchEvaluator {
 
     std::size_t capacity_;
     diamond_training::ResolvedDevice device_;
+    InferencePrecision precision_;
     std::map<ModelKey, ResidentModel> models_;
     std::optional<ModelKey> active_;
     EvaluationStats last_evaluation_stats_;
