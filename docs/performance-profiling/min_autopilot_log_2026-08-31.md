@@ -187,3 +187,9 @@ transition, and v1.0.1 release session. Times are UTC.
 - A complete 36-game scheduled Arena was attempted with iteration 25 as candidate and iteration 24 as champion, using the active FP32 config.
 - Three games aborted, leaving one incomplete opening block; promotion statistics were therefore correctly marked invalid rather than extrapolated from partial data.
 - Across the 33 completed candidate seats, iteration 25 placed first 13 times, second 11 times, and third 9 times. This is mildly positive descriptive evidence but not a valid promotion result and is insufficient by itself to authorize removal of the B0 bootstrap prior.
+
+## A0 transition gate after release
+
+- A bounded no-prior probe started from the released iteration-25 checkpoint with 256 games, 128 lanes, 16 search threads, 128 simulations, and an 800-move cap.
+- The probe had not completed after more than ten minutes, despite being only one quarter of a production iteration's game count. GPU utilization remained roughly 29%–35%, compared with about 79%–82% during B0 self-play. This is operational evidence of long no-prior game tails and collapsing batch occupancy.
+- The probe was terminated rather than spending further training time on an already failed throughput/stability gate. A0 was not adopted. B0 training resumed at iteration 26 from the released iteration-25 champion, step 27,776, and the same 1M binary replay.
