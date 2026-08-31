@@ -77,7 +77,8 @@ void fold_to_soo_features(const soo::Encoded& min_state, std::vector<float>& out
     }
     out.resize(static_cast<std::size_t>(kBoardNodes) * kSooFeatures);
     for (int node = 0; node < kBoardNodes; ++node) {
-        const float* in = min_state.node_features.data() + static_cast<std::size_t>(node) * kMinFeatures;
+        const float* in =
+            min_state.node_features.data() + static_cast<std::size_t>(node) * kMinFeatures;
         float* row = out.data() + static_cast<std::size_t>(node) * kSooFeatures;
         row[0] = in[0];
         row[1] = std::max(in[1], in[2]);
@@ -103,7 +104,8 @@ void require_finite_distribution(const std::vector<double>& priors) {
             throw std::runtime_error("a prior must be finite and non-negative");
         total += prior;
     }
-    if (!(total > 0.0)) throw std::runtime_error("a prior must not sum to zero");
+    if (!(total > 0.0))
+        throw std::runtime_error("a prior must not sum to zero");
 }
 
 // The vacancy heuristic, computed on the search worker: it is ~7.5 us per
@@ -111,13 +113,13 @@ void require_finite_distribution(const std::vector<double>& priors) {
 class VacancyArm final : public soo::BatchEvaluator {
   public:
     void prepare(soo::BatchItem& item) override {
-        soo::vacancy_prior(*item.actions,
-                           soo::canonical_self_occupancy(*item.state, match_),
+        soo::vacancy_prior(*item.actions, soo::canonical_self_occupancy(*item.state, match_),
                            item.outcome->priors);
         require_finite_distribution(item.outcome->priors);
     }
     void evaluate(std::vector<soo::BatchItem>& batch) override {
-        for (auto& item : batch) fill_zero_values(item);
+        for (auto& item : batch)
+            fill_zero_values(item);
     }
     explicit VacancyArm(const soo::Match& match) : match_(match) {}
 
@@ -132,7 +134,8 @@ class UniformArm final : public soo::BatchEvaluator {
         item.outcome->priors.assign(item.actions->size(), weight);
     }
     void evaluate(std::vector<soo::BatchItem>& batch) override {
-        for (auto& item : batch) fill_zero_values(item);
+        for (auto& item : batch)
+            fill_zero_values(item);
     }
 };
 
@@ -155,12 +158,14 @@ class SooPolicyArm final : public soo::BatchEvaluator {
     }
 
     void evaluate(std::vector<soo::BatchItem>& batch) override {
-        if (batch.empty()) return;
+        if (batch.empty())
+            return;
         torch::NoGradGuard no_grad;
         const auto rows = static_cast<int64_t>(batch.size());
 
         std::size_t widest = 0;
-        for (const auto& item : batch) widest = std::max(widest, item.actions->size());
+        for (const auto& item : batch)
+            widest = std::max(widest, item.actions->size());
         const auto columns = static_cast<int64_t>(std::max<std::size_t>(widest, 1));
 
         auto features = torch::empty({rows, kBoardNodes, kSooFeatures}, torch::kFloat32);
@@ -189,7 +194,7 @@ class SooPolicyArm final : public soo::BatchEvaluator {
         }
 
         const auto [policy, value] = model_->forward(features.to(device_));
-        (void)value;   // Soo's scalar is deliberately discarded; see the header.
+        (void)value; // Soo's scalar is deliberately discarded; see the header.
         auto logits = policy.gather(1, indices.to(device_));
         // Padding columns must not take probability mass from the real ones.
         logits = logits.masked_fill(~valid.to(device_), -std::numeric_limits<float>::infinity());
@@ -229,24 +234,32 @@ soo::State opening(const soo::Match& match) {
 // nature: a game that cycles is cycling when it is cut off.
 int dominant_cycle_period(const std::vector<uint64_t>& tail, int longest = 32) {
     const auto size = static_cast<int>(tail.size());
-    if (size < 4) return 0;
-    for (int period = 1; period <= longest && period * 3 <= size; ++period) {
-        // Require three full repeats, so a coincidental match is not a cycle.
+    if (size < 4)
+        return 0;
+    // `period * 4 <= size` and `period * 3` comparisons together mean: the block
+    // plus three repeats of it, so four occurrences. That is the intent, stated
+    // because the two numbers do not obviously agree -- at period 1 this demands
+    // four identical consecutive positions, not three. Three occurrences would
+    // be `period * 2` comparisons, and is deliberately not what this asks for:
+    // two consecutive returns can happen while a game is still making progress.
+    for (int period = 1; period <= longest && period * 4 <= size; ++period) {
         bool periodic = true;
         for (int back = 0; back < period * 3 && periodic; ++back) {
             const int here = size - 1 - back;
             const int previous = here - period;
-            if (previous < 0 || tail[static_cast<std::size_t>(here)] !=
-                                    tail[static_cast<std::size_t>(previous)])
+            if (previous < 0 ||
+                tail[static_cast<std::size_t>(here)] != tail[static_cast<std::size_t>(previous)])
                 periodic = false;
         }
-        if (periodic) return period;
+        if (periodic)
+            return period;
     }
     return 0;
 }
 
 double percentile(std::vector<int> values, double fraction) {
-    if (values.empty()) return 0.0;
+    if (values.empty())
+        return 0.0;
     std::sort(values.begin(), values.end());
     const auto index = static_cast<std::size_t>(fraction * static_cast<double>(values.size() - 1));
     return values[index];
@@ -268,44 +281,63 @@ struct Options {
     double dirichlet_epsilon = 0.25;
     uint64_t seed = 7;
     std::string device = "cuda";
-    std::string match = "min";   // "soo" runs the two-player control
+    std::string match = "min"; // "soo" runs the two-player control
 };
 
 Options parse(int argc, char** argv) {
     Options options;
     const auto next = [&](int& index) -> std::string {
-        if (index + 1 >= argc) throw std::runtime_error(std::string(argv[index]) + " needs a value");
+        if (index + 1 >= argc)
+            throw std::runtime_error(std::string(argv[index]) + " needs a value");
         return argv[++index];
     };
     for (int index = 1; index < argc; ++index) {
         const std::string flag = argv[index];
-        if (flag == "--arm") options.arm = next(index);
-        else if (flag == "--artifact") options.artifact = next(index);
-        else if (flag == "--out") options.out = next(index);
-        else if (flag == "--games") options.games = std::stoi(next(index));
-        else if (flag == "--simulations") options.simulations = std::stoi(next(index));
-        else if (flag == "--max-moves") options.max_moves = std::stoi(next(index));
-        else if (flag == "--lanes") options.lanes = std::stoi(next(index));
-        else if (flag == "--threads") options.threads = std::stoi(next(index));
-        else if (flag == "--batch") options.max_batch = std::stoi(next(index));
-        else if (flag == "--max-wait-us") options.max_wait_us = std::stoi(next(index));
-        else if (flag == "--temperature") options.temperature = std::stod(next(index));
-        else if (flag == "--temperature-moves") options.temperature_moves = std::stoi(next(index));
-        else if (flag == "--dirichlet-epsilon") options.dirichlet_epsilon = std::stod(next(index));
-        else if (flag == "--seed") options.seed = std::stoull(next(index));
-        else if (flag == "--device") options.device = next(index);
-        else if (flag == "--match") options.match = next(index);
-        else throw std::runtime_error("unknown option: " + flag);
+        if (flag == "--arm")
+            options.arm = next(index);
+        else if (flag == "--artifact")
+            options.artifact = next(index);
+        else if (flag == "--out")
+            options.out = next(index);
+        else if (flag == "--games")
+            options.games = std::stoi(next(index));
+        else if (flag == "--simulations")
+            options.simulations = std::stoi(next(index));
+        else if (flag == "--max-moves")
+            options.max_moves = std::stoi(next(index));
+        else if (flag == "--lanes")
+            options.lanes = std::stoi(next(index));
+        else if (flag == "--threads")
+            options.threads = std::stoi(next(index));
+        else if (flag == "--batch")
+            options.max_batch = std::stoi(next(index));
+        else if (flag == "--max-wait-us")
+            options.max_wait_us = std::stoi(next(index));
+        else if (flag == "--temperature")
+            options.temperature = std::stod(next(index));
+        else if (flag == "--temperature-moves")
+            options.temperature_moves = std::stoi(next(index));
+        else if (flag == "--dirichlet-epsilon")
+            options.dirichlet_epsilon = std::stod(next(index));
+        else if (flag == "--seed")
+            options.seed = std::stoull(next(index));
+        else if (flag == "--device")
+            options.device = next(index);
+        else if (flag == "--match")
+            options.match = next(index);
+        else
+            throw std::runtime_error("unknown option: " + flag);
     }
     if (options.arm != "soo-policy" && options.arm != "vacancy" && options.arm != "uniform")
         throw std::runtime_error("--arm must be soo-policy, vacancy or uniform");
     if (options.match != "min" && options.match != "soo")
         throw std::runtime_error("--match must be min or soo");
-    if (options.games < 1) throw std::runtime_error("--games must be positive");
+    if (options.games < 1)
+        throw std::runtime_error("--games must be positive");
     return options;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -348,8 +380,8 @@ int main(int argc, char** argv) {
         } else if (options.arm == "uniform") {
             evaluator = std::make_unique<UniformArm>();
         } else {
-            const auto artifact = diamond_model::validate_deployment_artifact(
-                options.artifact, "soo");
+            const auto artifact =
+                diamond_model::validate_deployment_artifact(options.artifact, "soo");
             if (artifact.input_features != kSooFeatures || artifact.value_size != 1)
                 throw std::runtime_error("the teacher artifact is not a two-player Soo model");
             const torch::Device device(options.device == "cuda" && torch::cuda::is_available()
@@ -359,8 +391,8 @@ int main(int argc, char** argv) {
             model->to(device);
             model->load_weights(artifact.weights);
             evaluator = std::make_unique<SooPolicyArm>(std::move(model), device);
-            model_identity = artifact.model_family + ":" + artifact.model_version + ":" +
-                             artifact.model_sha256;
+            model_identity =
+                artifact.model_family + ":" + artifact.model_version + ":" + artifact.model_sha256;
         }
 
         soo::EpisodeMetrics metrics;
@@ -372,7 +404,7 @@ int main(int argc, char** argv) {
         int completed = 0;
         std::vector<int> completed_moves;
         std::vector<int> aborted_moves;
-        std::array<int, 4> wins_by_seat{};        // indexed by player id
+        std::array<int, 4> wins_by_seat{}; // indexed by player id
         double revisit_fraction_total = 0.0;
         double repeat_within_8_total = 0.0;
         double revisit_total = 0.0;
@@ -388,9 +420,8 @@ int main(int argc, char** argv) {
             // adds one more, so the denominator is move_count + 1. Dividing by
             // move_count reports 1 + 1/move_count for a game that repeated
             // nothing, which reads like an error and hides the headroom.
-            const double observations = diagnostics.observations > 0
-                                            ? static_cast<double>(diagnostics.observations)
-                                            : 1.0;
+            const double observations =
+                diagnostics.observations > 0 ? static_cast<double>(diagnostics.observations) : 1.0;
             const double revisit_fraction =
                 1.0 - static_cast<double>(diagnostics.unique_positions) / observations;
             const double repeat_within_8 =
@@ -422,7 +453,8 @@ int main(int argc, char** argv) {
             }
 
             JsonArray order;
-            for (const uint8_t seat : episode.finish_order) order.push_back(Json{int64_t(seat)});
+            for (const uint8_t seat : episode.finish_order)
+                order.push_back(Json{int64_t(seat)});
             games.push_back(Json{JsonObject{
                 {"completed", Json{episode.completed}},
                 {"moves", Json{static_cast<int64_t>(episode.move_count)}},
@@ -478,7 +510,8 @@ int main(int argc, char** argv) {
         const auto text = diamond_support::canonical_json(report);
         if (!options.out.empty()) {
             std::ofstream file(options.out);
-            if (!file) throw std::runtime_error("cannot write " + options.out.string());
+            if (!file)
+                throw std::runtime_error("cannot write " + options.out.string());
             file << text << '\n';
         }
         std::cout << text << '\n';

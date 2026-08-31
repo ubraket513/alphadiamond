@@ -186,10 +186,11 @@ int main(int argc, char** argv) {
     CHECK(!wiring.selfplay.bootstrap_prior);
     auto bootstrap_config = wiring_config;
     bootstrap_config.self_play.bootstrap_prior = "canonical-target-vacancy-distance-v2";
-    CHECK(diamond_orchestration::wire_training_iteration(bootstrap_config)
-              .selfplay.bootstrap_prior);
+    CHECK(
+        diamond_orchestration::wire_training_iteration(bootstrap_config).selfplay.bootstrap_prior);
     auto explicit_none = wiring_config;
-    explicit_none.self_play.bootstrap_prior = std::string(diamond_orchestration::kBootstrapPriorNone);
+    explicit_none.self_play.bootstrap_prior =
+        std::string(diamond_orchestration::kBootstrapPriorNone);
     CHECK(!diamond_orchestration::wire_training_iteration(explicit_none).selfplay.bootstrap_prior);
 
     auto cuda_config = wiring_config;

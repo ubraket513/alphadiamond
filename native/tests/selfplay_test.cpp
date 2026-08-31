@@ -198,7 +198,8 @@ int main(int argc, char** argv) {
                 break;
             }
         }
-        if (bootstrap_changed_play) break;
+        if (bootstrap_changed_play)
+            break;
     }
     CHECK(bootstrap_changed_play);
 
