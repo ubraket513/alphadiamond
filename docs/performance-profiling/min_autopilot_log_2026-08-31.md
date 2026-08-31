@@ -181,3 +181,9 @@ transition, and v1.0.1 release session. Times are UTC.
 - Release digests: checkpoint tree `51579b816bfed34378ebf89233717eecdfb713ee294ce9e85bef927017d79c1e`; state `d32d88e8a28d6295efb76c6402d9bdae8e435392250e46a1ed68e9e73e3fb776`; replay manifest `dc0ce2efea60fc4b4b3ce1a21fe36f60bf7ff5b0fb916489a127e1988ae3ee59`.
 - The replay manifest contained 8,223 `binary-v1` chunks and zero `json-v1` descriptors. No legacy JSON chunk files remained.
 - Iterations 24 and 25 were uploaded to `hf://buckets/ubraket513/AlphaDiamond` and verified exactly before cleanup: 22 files / 277,072,477 bytes and 22 files / 279,381,277 bytes respectively. Their recoverable `selfplay.episodes` files were then removed locally, reducing the run to 2.1 GB and disk use to 63%.
+
+## Iteration 25 incremental Arena
+
+- A complete 36-game scheduled Arena was attempted with iteration 25 as candidate and iteration 24 as champion, using the active FP32 config.
+- Three games aborted, leaving one incomplete opening block; promotion statistics were therefore correctly marked invalid rather than extrapolated from partial data.
+- Across the 33 completed candidate seats, iteration 25 placed first 13 times, second 11 times, and third 9 times. This is mildly positive descriptive evidence but not a valid promotion result and is insufficient by itself to authorize removal of the B0 bootstrap prior.
