@@ -142,6 +142,18 @@ struct EpisodeDiagnostics {
     // physical state, deliberately excluding turn_number.
     uint32_t unique_positions = 0;
     uint32_t max_revisits = 0;
+    // How many positions were observed, which is `move_count + 1`: the opening
+    // is recorded when the lane is seated, then once after every move. Carried
+    // explicitly because it is the denominator `unique_positions` belongs over,
+    // and dividing by `move_count` instead reports 1 + 1/move_count for a game
+    // that never repeated anything -- a ratio above 1.0, which reads like an
+    // error and hides how much headroom is left.
+    uint32_t observations = 0;
+    // Observations whose position had already occurred within the previous 8
+    // plies. `max_revisits` says one position recurred often; it cannot tell a
+    // tight A-B-A cycle from a slow return, and the tight cycle is what the
+    // aborted tail is made of.
+    uint32_t repeat_within_8 = 0;
     // The tail of the game, newest last, so a short cycle is visible directly.
     std::vector<uint64_t> recent_keys;
 };

@@ -221,6 +221,30 @@ soo::State opening(const soo::Match& match) {
     return state;
 }
 
+// The shortest period the tail is consistent with, or 0 if it is not periodic.
+//
+// `max_revisits` counts how often one position recurred; it cannot say whether
+// the game is locked in an A-B-A oscillation or returning slowly to a hub. The
+// period is what distinguishes them, and it is a property of the tail by
+// nature: a game that cycles is cycling when it is cut off.
+int dominant_cycle_period(const std::vector<uint64_t>& tail, int longest = 32) {
+    const auto size = static_cast<int>(tail.size());
+    if (size < 4) return 0;
+    for (int period = 1; period <= longest && period * 3 <= size; ++period) {
+        // Require three full repeats, so a coincidental match is not a cycle.
+        bool periodic = true;
+        for (int back = 0; back < period * 3 && periodic; ++back) {
+            const int here = size - 1 - back;
+            const int previous = here - period;
+            if (previous < 0 || tail[static_cast<std::size_t>(here)] !=
+                                    tail[static_cast<std::size_t>(previous)])
+                periodic = false;
+        }
+        if (periodic) return period;
+    }
+    return 0;
+}
+
 double percentile(std::vector<int> values, double fraction) {
     if (values.empty()) return 0.0;
     std::sort(values.begin(), values.end());
@@ -349,20 +373,36 @@ int main(int argc, char** argv) {
         std::vector<int> completed_moves;
         std::vector<int> aborted_moves;
         std::array<int, 4> wins_by_seat{};        // indexed by player id
-        double unique_ratio_total = 0.0;
+        double revisit_fraction_total = 0.0;
+        double repeat_within_8_total = 0.0;
         double revisit_total = 0.0;
+        int cycling_games = 0;
+        std::vector<int> cycle_periods;
         double foreign_blockers_total = 0.0;
         double stale_camp_total = 0.0;
         JsonArray games;
 
         for (const auto& episode : episodes) {
             const auto& diagnostics = episode.diagnostics;
-            const double unique_ratio =
-                episode.move_count > 0
-                    ? static_cast<double>(diagnostics.unique_positions) / episode.move_count
-                    : 0.0;
-            unique_ratio_total += unique_ratio;
+            // The opening is observed when the lane is seated and every move
+            // adds one more, so the denominator is move_count + 1. Dividing by
+            // move_count reports 1 + 1/move_count for a game that repeated
+            // nothing, which reads like an error and hides the headroom.
+            const double observations = diagnostics.observations > 0
+                                            ? static_cast<double>(diagnostics.observations)
+                                            : 1.0;
+            const double revisit_fraction =
+                1.0 - static_cast<double>(diagnostics.unique_positions) / observations;
+            const double repeat_within_8 =
+                static_cast<double>(diagnostics.repeat_within_8) / observations;
+            revisit_fraction_total += revisit_fraction;
+            repeat_within_8_total += repeat_within_8;
             revisit_total += diagnostics.max_revisits;
+            const int period = dominant_cycle_period(diagnostics.recent_keys);
+            if (period > 0) {
+                ++cycling_games;
+                cycle_periods.push_back(period);
+            }
             int foreign = 0;
             uint32_t stale = 0;
             for (const auto& camp : diagnostics.camps) {
@@ -388,8 +428,11 @@ int main(int argc, char** argv) {
                 {"moves", Json{static_cast<int64_t>(episode.move_count)}},
                 {"finish_order", Json{order}},
                 {"unique_positions", Json{static_cast<int64_t>(diagnostics.unique_positions)}},
+                {"observations", Json{static_cast<int64_t>(diagnostics.observations)}},
                 {"max_revisits", Json{static_cast<int64_t>(diagnostics.max_revisits)}},
-                {"unique_ratio", Json{unique_ratio}},
+                {"revisit_fraction", Json{revisit_fraction}},
+                {"repeat_within_8_fraction", Json{repeat_within_8}},
+                {"dominant_cycle_period", Json{static_cast<int64_t>(period)}},
                 {"foreign_in_target", Json{static_cast<int64_t>(foreign)}},
                 {"plies_since_camp_changed", Json{static_cast<int64_t>(stale)}},
             }});
@@ -415,8 +458,13 @@ int main(int argc, char** argv) {
             {"completed_moves_p90", Json{percentile(completed_moves, 0.90)}},
             {"completed_moves_p99", Json{percentile(completed_moves, 0.99)}},
             {"aborted_moves_p50", Json{percentile(aborted_moves, 0.50)}},
-            {"mean_unique_ratio", Json{count > 0 ? unique_ratio_total / count : 0.0}},
+            {"mean_revisit_fraction", Json{count > 0 ? revisit_fraction_total / count : 0.0}},
+            {"mean_repeat_within_8_fraction",
+             Json{count > 0 ? repeat_within_8_total / count : 0.0}},
             {"mean_max_revisits", Json{count > 0 ? revisit_total / count : 0.0}},
+            {"cycling_games", Json{int64_t(cycling_games)}},
+            {"cycling_fraction", Json{count > 0 ? cycling_games / count : 0.0}},
+            {"median_cycle_period", Json{percentile(cycle_periods, 0.50)}},
             {"mean_foreign_in_target", Json{count > 0 ? foreign_blockers_total / count : 0.0}},
             {"mean_plies_since_camp_changed", Json{count > 0 ? stale_camp_total / count : 0.0}},
             {"first_finisher_by_player", Json{seat_wins}},

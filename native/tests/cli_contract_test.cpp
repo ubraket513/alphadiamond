@@ -174,6 +174,24 @@ int main(int argc, char** argv) {
     CHECK_EQ(triggered.selfplay.simulations_late, 256);
     CHECK_EQ(triggered.selfplay.repeat_window, 8);
 
+    // The same failure, one field over. `self_play.bootstrap_prior` was parsed
+    // and validated by the config and read by nothing: vacancy_prior() had a
+    // single caller, a timing harness. So the heuristic never reached search,
+    // every from-scratch game ran to max_moves, and the iteration died on
+    // "insufficient replay samples" -- which reads like a replay bug and is
+    // not one. Soo hid it by warm-starting from a shipped artifact; Min has
+    // none, so for Min this was the difference between training and not.
+    // Asserted here because a prior that is silently dropped leaves the search
+    // correct and only moves the completion rate.
+    CHECK(!wiring.selfplay.bootstrap_prior);
+    auto bootstrap_config = wiring_config;
+    bootstrap_config.self_play.bootstrap_prior = "canonical-target-vacancy-distance-v2";
+    CHECK(diamond_orchestration::wire_training_iteration(bootstrap_config)
+              .selfplay.bootstrap_prior);
+    auto explicit_none = wiring_config;
+    explicit_none.self_play.bootstrap_prior = std::string(diamond_orchestration::kBootstrapPriorNone);
+    CHECK(!diamond_orchestration::wire_training_iteration(explicit_none).selfplay.bootstrap_prior);
+
     auto cuda_config = wiring_config;
     cuda_config.runtime.device = "cuda";
     const auto cuda_config_path = scratch / "cuda-config.json";

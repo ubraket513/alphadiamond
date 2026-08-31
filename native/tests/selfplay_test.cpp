@@ -168,6 +168,40 @@ int main(int argc, char** argv) {
     CHECK_EQ(zero_budget[0].max_game_seconds_exceeded, false);
     CHECK_EQ(zero_budget[0].move_limit_exceeded, true);
 
+    // The bootstrap prior has to reach the search, not just the config.
+    //
+    // It previously did not: `self_play.bootstrap_prior` was validated by the
+    // config and consumed by nothing, so every from-scratch run played the
+    // network's own prior, finished no games, and produced no samples. The
+    // symptom surfaced two stages later as "insufficient replay samples", which
+    // is why the wiring is asserted on behaviour rather than on the flag alone.
+    //
+    // Deterministic by construction: temperature and dirichlet are both zero
+    // above, so with the same evaluator, jobs and seeds the only thing that can
+    // move a trajectory is the prior the search was handed.
+    auto bootstrapped = episodes;
+    bootstrapped.bootstrap_prior = true;
+    soo::EpisodeMetrics bootstrap_metrics;
+    const auto with_prior =
+        soo::run_episodes(match, jobs, bootstrapped, evaluator, bootstrap_metrics);
+    REQUIRE(with_prior.size() == first.size(), "bootstrap run returned a different job count");
+    bool bootstrap_changed_play = false;
+    for (std::size_t game = 0; game < with_prior.size(); ++game) {
+        if (with_prior[game].move_count != first[game].move_count) {
+            bootstrap_changed_play = true;
+            break;
+        }
+        for (std::size_t move = 0; move < with_prior[game].moves.size(); ++move) {
+            if (with_prior[game].moves[move].selected_action !=
+                first[game].moves[move].selected_action) {
+                bootstrap_changed_play = true;
+                break;
+            }
+        }
+        if (bootstrap_changed_play) break;
+    }
+    CHECK(bootstrap_changed_play);
+
     std::fprintf(stderr, "scheduler moves=%llu episodes=%zu\n",
                  static_cast<unsigned long long>(parallel.moves), first.size());
     return soo_test::report("selfplay_test");

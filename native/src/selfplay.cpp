@@ -425,7 +425,20 @@ struct EpisodeLane {
     std::array<std::array<uint8_t, kCampSize>, kMaxPlayers> camp_snapshot{};
     std::array<uint32_t, kMaxPlayers> camp_changed_ply{};
 
+    // Counted before the push, over the previous 8 entries: a position is a
+    // short-cycle repeat if it already occurred within that reach.
+    uint32_t observations = 0;
+    uint32_t repeat_within_8 = 0;
+
     void observe(uint64_t key, uint32_t window) {
+        ++observations;
+        std::size_t back = 0;
+        for (auto it = key_tail.rbegin(); it != key_tail.rend() && back < 8; ++it, ++back) {
+            if (*it == key) {
+                ++repeat_within_8;
+                break;
+            }
+        }
         ++key_counts[key];
         key_tail.push_back(key);
         while (key_tail.size() > window) key_tail.pop_front();
@@ -512,6 +525,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             lane.recent.clear();
             lane.key_counts.clear();
             lane.key_tail.clear();
+            lane.observations = 0;
+            lane.repeat_within_8 = 0;
             lane.camp_changed_ply.fill(0);
             {
                 const Topology& topo = topology();
@@ -674,6 +689,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                         diag.occupancy.assign(lane.state.occupancy.begin(),
                                               lane.state.occupancy.end());
                         diag.unique_positions = static_cast<uint32_t>(lane.key_counts.size());
+                        diag.observations = lane.observations;
+                        diag.repeat_within_8 = lane.repeat_within_8;
                         for (const auto& [ignored, count] : lane.key_counts) {
                             (void)ignored;
                             diag.max_revisits = std::max(diag.max_revisits, count);
