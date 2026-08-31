@@ -15,6 +15,7 @@
 #include "soo/batcher.hpp"
 #include "soo/encoder.hpp"
 #include "soo/evaluator.hpp"
+#include "soo/prior.hpp"
 #include "soo/rules.hpp"
 
 namespace soo {
@@ -405,6 +406,13 @@ struct EpisodeLane {
     std::optional<Clock::time_point> deadline;
     bool done = false;
     EvalOutcome outcome;
+    // Filled on the search worker when the bootstrap phase is configured, and
+    // supplied in place of the network's priors once the batch comes back.  It
+    // is computed here rather than on the evaluator thread because that thread
+    // is the serial resource: the vacancy prior is ~7.5 us per evaluation, and
+    // a batch of 32 of them on the critical path is 240 us the workers could
+    // have absorbed in parallel.
+    std::vector<double> bootstrap_priors;
     // Which job this lane is currently playing.  A lane outlives its game.
     size_t job_index = 0;
     // Unconditional position history, kept for diagnosis whether or not the
@@ -611,6 +619,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                                    &lane.session.pending_actions(), 0, &lane.outcome,
                                    lane.session.value_width()};
                     batch_evaluator.prepare(item);
+                    if (config.bootstrap_prior) {
+                        vacancy_prior(lane.session.pending_actions(),
+                                      canonical_self_occupancy(lane.session.pending_state(), match),
+                                      lane.bootstrap_priors);
+                    }
                     busy[static_cast<size_t>(w)] += seconds_since(work_start);
                     batcher.submit(lane_id);
                     continue;
@@ -767,7 +780,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 const double* values = lane.session.value_width() == 1
                                            ? &lane.outcome.value
                                            : lane.outcome.values.data();
-                lane.session.supply(lane.outcome.priors, values);
+                lane.session.supply(
+                    config.bootstrap_prior ? lane.bootstrap_priors : lane.outcome.priors, values);
             }
             ready.push_many(batch);
         }

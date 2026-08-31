@@ -219,6 +219,17 @@ struct EpisodeConfig {
     //
     // Takes precedence over ``late_move_threshold`` when both are set.
     int repeat_window = 0;
+
+    // Bootstrap phase: take the policy prior from the vacancy heuristic instead
+    // of the network, keeping values from the network.
+    //
+    // A randomly initialised network has no idea how to make progress toward
+    // the target camp, and a game ends only when a camp is filled -- so without
+    // this every from-scratch game runs to ``max_moves``, produces no samples,
+    // and the run learns nothing.  The heuristic is stated in canonical
+    // coordinates, where the acting seat's target is always canonical z-, so it
+    // is seat-agnostic and applies to Min exactly as it does to Soo.
+    bool bootstrap_prior = false;
 };
 
 struct EpisodeMetrics {

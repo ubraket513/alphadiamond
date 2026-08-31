@@ -323,6 +323,20 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_options(soo_evaluator_probe PRIVATE /bigobj)
     endif()
 
+    # Which prior carries Min out of a cold start: Soo's policy through a 3P
+    # adapter, the vacancy heuristic, or nothing.  Self-play only -- it never
+    # touches the arena or a run directory.
+    add_executable(alphadiamond-min-probe src/min_bootstrap_probe.cpp)
+    target_link_libraries(alphadiamond-min-probe
+        PRIVATE alphadiamond::diamond_model alphadiamond::soo_search
+                alphadiamond::diamond_native_pipeline ${TORCH_LIBRARIES})
+    target_compile_features(alphadiamond-min-probe PRIVATE cxx_std_20)
+    target_include_directories(alphadiamond-min-probe PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_compile_definitions(alphadiamond-min-probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(alphadiamond-min-probe PRIVATE /bigobj)
+    endif()
+
     add_executable(soo_mcts_probe src/soo_mcts_probe.cpp)
     target_link_libraries(soo_mcts_probe PRIVATE alphadiamond::diamond_model alphadiamond::soo_search)
     target_compile_features(soo_mcts_probe PRIVATE cxx_std_20)
