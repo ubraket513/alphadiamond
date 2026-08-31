@@ -37,6 +37,7 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
                 .simulations_late =
                     native_int(config.mcts.simulations_late, "mcts.simulations_late"),
                 .repeat_window = native_int(config.mcts.repeat_window, "mcts.repeat_window"),
+                .bootstrap_prior = config.self_play.bootstrap_prior != kBootstrapPriorNone,
             },
         .games_per_iteration = static_cast<std::size_t>(config.workers.games_per_iteration),
         .training_batch_size = static_cast<std::size_t>(config.training.batch_size),

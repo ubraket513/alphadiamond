@@ -15,6 +15,7 @@
 #include "soo/batcher.hpp"
 #include "soo/encoder.hpp"
 #include "soo/evaluator.hpp"
+#include "soo/prior.hpp"
 #include "soo/rules.hpp"
 
 namespace soo {
@@ -405,6 +406,13 @@ struct EpisodeLane {
     std::optional<Clock::time_point> deadline;
     bool done = false;
     EvalOutcome outcome;
+    // Filled on the search worker when the bootstrap phase is configured, and
+    // supplied in place of the network's priors once the batch comes back.  It
+    // is computed here rather than on the evaluator thread because that thread
+    // is the serial resource: the vacancy prior is ~7.5 us per evaluation, and
+    // a batch of 32 of them on the critical path is 240 us the workers could
+    // have absorbed in parallel.
+    std::vector<double> bootstrap_priors;
     // Which job this lane is currently playing.  A lane outlives its game.
     size_t job_index = 0;
     // Unconditional position history, kept for diagnosis whether or not the
@@ -417,7 +425,20 @@ struct EpisodeLane {
     std::array<std::array<uint8_t, kCampSize>, kMaxPlayers> camp_snapshot{};
     std::array<uint32_t, kMaxPlayers> camp_changed_ply{};
 
+    // Counted before the push, over the previous 8 entries: a position is a
+    // short-cycle repeat if it already occurred within that reach.
+    uint32_t observations = 0;
+    uint32_t repeat_within_8 = 0;
+
     void observe(uint64_t key, uint32_t window) {
+        ++observations;
+        std::size_t back = 0;
+        for (auto it = key_tail.rbegin(); it != key_tail.rend() && back < 8; ++it, ++back) {
+            if (*it == key) {
+                ++repeat_within_8;
+                break;
+            }
+        }
         ++key_counts[key];
         key_tail.push_back(key);
         while (key_tail.size() > window) key_tail.pop_front();
@@ -504,6 +525,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             lane.recent.clear();
             lane.key_counts.clear();
             lane.key_tail.clear();
+            lane.observations = 0;
+            lane.repeat_within_8 = 0;
             lane.camp_changed_ply.fill(0);
             {
                 const Topology& topo = topology();
@@ -611,6 +634,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                                    &lane.session.pending_actions(), 0, &lane.outcome,
                                    lane.session.value_width()};
                     batch_evaluator.prepare(item);
+                    if (config.bootstrap_prior) {
+                        vacancy_prior(lane.session.pending_actions(),
+                                      canonical_self_occupancy(lane.session.pending_state(), match),
+                                      lane.bootstrap_priors);
+                    }
                     busy[static_cast<size_t>(w)] += seconds_since(work_start);
                     batcher.submit(lane_id);
                     continue;
@@ -661,6 +689,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                         diag.occupancy.assign(lane.state.occupancy.begin(),
                                               lane.state.occupancy.end());
                         diag.unique_positions = static_cast<uint32_t>(lane.key_counts.size());
+                        diag.observations = lane.observations;
+                        diag.repeat_within_8 = lane.repeat_within_8;
                         for (const auto& [ignored, count] : lane.key_counts) {
                             (void)ignored;
                             diag.max_revisits = std::max(diag.max_revisits, count);
@@ -767,7 +797,8 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 const double* values = lane.session.value_width() == 1
                                            ? &lane.outcome.value
                                            : lane.outcome.values.data();
-                lane.session.supply(lane.outcome.priors, values);
+                lane.session.supply(
+                    config.bootstrap_prior ? lane.bootstrap_priors : lane.outcome.priors, values);
             }
             ready.push_many(batch);
         }

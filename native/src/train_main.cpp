@@ -207,8 +207,18 @@ uint64_t arena_seed(const diamond_orchestration::MaterializedOpening& opening,
     return std::stoull(digest.substr(0, 16), nullptr, 16);
 }
 diamond_model::DiamondModel model(const ProductionConfig& config) {
-    return diamond_model::DiamondModel(config.network.width, config.network.residual_blocks,
-        config.model_name == "Soo" ? 4 : 6, config.model_name == "Soo" ? 1 : 3);
+    auto built = diamond_model::DiamondModel(config.network.width, config.network.residual_blocks,
+                                             config.model_name == "Soo" ? 4 : 6,
+                                             config.model_name == "Soo" ? 1 : 3);
+    // Min starts from a neutral value, not a random one. Applied here rather
+    // than at one call site because every stage rebuilds this model and the
+    // scratch path identifies iteration 0 by the model's digest -- zeroing in
+    // one stage only would make INITIALIZE and TRAIN disagree about what the
+    // scratch network is. A warm start or a checkpoint overwrites these weights
+    // immediately afterwards, so this changes nothing for either.
+    if (config.model_name != "Soo")
+        diamond_training::zero_value_head(built);
+    return built;
 }
 soo::Match ordered_match(const ProductionConfig& config, const auto& turn_order) {
     auto match = game_match(config);

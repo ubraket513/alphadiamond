@@ -47,6 +47,25 @@ diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& so
                                            const Compatibility& compatibility, torch::Device target,
                                            ModelRole role);
 
+// Zeroes the final value layer, leaving every other parameter untouched.
+//
+// A freshly initialised Min network answers every leaf with an arbitrary
+// three-vector, which is a bias toward seats the network has no reason to
+// prefer -- and during the bootstrap phase, where the policy prior comes from
+// the vacancy heuristic rather than the network, that noise is the only thing
+// competing with the heuristic's sense of direction. Zeroing the last layer
+// makes the initial value exactly [0,0,0]: neutral rather than random.
+//
+// Deliberately applied after construction, not inside it. The model consumes
+// exactly the same RNG draws either way, so a zero-initialised network and a
+// random one differ in this layer and are bit-identical everywhere else, which
+// is what makes an A/B between them an experiment about one term.
+//
+// Symmetry does not survive the first optimizer step: the final layer sees a
+// gradient immediately, and the layers below it start moving on the second,
+// once that layer is no longer zero.
+void zero_value_head(const diamond_model::DiamondModel& model);
+
 // A versioned SHA-256 identity over sorted named parameters then named buffers.
 // FP32 tensor data is serialized canonically as contiguous CPU little-endian bytes.
 std::string canonical_model_digest(const diamond_model::DiamondModel& model);
