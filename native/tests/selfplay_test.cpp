@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -202,6 +203,71 @@ int main(int argc, char** argv) {
             break;
     }
     CHECK(bootstrap_changed_play);
+
+    // Playing games together must not change them.
+    //
+    // The promotion arena used to run one game per scheduler call, which forced
+    // batch = 1 and made the stage the cost of an iteration. It now plays the
+    // games of an opening block that share a turn order in one call. That is
+    // only sound if a game's result does not depend on which games were in
+    // flight beside it, so the claim is asserted rather than argued: the same
+    // jobs, played strictly one at a time, must reproduce the grouped run move
+    // for move.
+    auto solitary = episodes;
+    solitary.lanes = 1;
+    solitary.threads = 1;
+    solitary.max_batch = 1;
+    for (std::size_t index = 0; index < jobs.size(); ++index) {
+        soo::EpisodeMetrics alone_metrics;
+        const auto alone =
+            soo::run_episodes(match, {jobs[index]}, solitary, evaluator, alone_metrics);
+        REQUIRE(alone.size() == 1, "solitary run did not return one episode");
+        const std::string where = "solitary episode " + std::to_string(index) + ": ";
+        if (alone[0].move_count != first[index].move_count ||
+            alone[0].completed != first[index].completed) {
+            soo_test::fail(__FILE__, __LINE__, where + "grouping changed the episode shape");
+            continue;
+        }
+        for (std::size_t move = 0; move < alone[0].moves.size(); ++move) {
+            if (alone[0].moves[move].selected_action != first[index].moves[move].selected_action) {
+                soo_test::fail(__FILE__, __LINE__,
+                               where + "grouping changed move " + std::to_string(move));
+                break;
+            }
+        }
+    }
+
+    // A batch item has to say which game it came from.
+    //
+    // The arena router sends the candidate's turns to one model and everyone
+    // else's to another, and the candidate holds a different seat in every game
+    // of a block -- so with several games batched together, routing needs the
+    // job. It cannot be recovered from the lane or the outcome pointer: a lane
+    // takes the next unstarted job when its own game ends, which is exactly
+    // what three jobs on two lanes exercises here. A `job` wired from the lane
+    // id would report two distinct values for three games.
+    class JobObserver final : public soo::BatchEvaluator {
+      public:
+        JobObserver(soo::BatchEvaluator& inner, std::size_t jobs) : inner_(inner), jobs_(jobs) {}
+        void evaluate(std::vector<soo::BatchItem>& batch) override {
+            for (const auto& item : batch) {
+                REQUIRE(item.job >= 0 && static_cast<std::size_t>(item.job) < jobs_,
+                        "batch item reported an unknown job");
+                seen.insert(item.job);
+            }
+            inner_.evaluate(batch);
+        }
+        std::set<int> seen;
+
+      private:
+        soo::BatchEvaluator& inner_;
+        std::size_t jobs_;
+    };
+    JobObserver observer(evaluator, jobs.size());
+    soo::EpisodeMetrics observed_metrics;
+    const auto observed = soo::run_episodes(match, jobs, episodes, observer, observed_metrics);
+    CHECK_EQ(observed.size(), jobs.size());
+    CHECK_EQ(observer.seen.size(), jobs.size());
 
     std::fprintf(stderr, "scheduler moves=%llu episodes=%zu\n",
                  static_cast<unsigned long long>(parallel.moves), first.size());

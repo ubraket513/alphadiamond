@@ -193,6 +193,39 @@ int main(int argc, char** argv) {
         std::string(diamond_orchestration::kBootstrapPriorNone);
     CHECK(!diamond_orchestration::wire_training_iteration(explicit_none).selfplay.bootstrap_prior);
 
+    // The arena runs the same phase as self-play.
+    //
+    // It did not: `arena_episode_config` never set the prior, so during
+    // bootstrap both sides searched on a network prior that steers nobody into
+    // a camp, every game reached `arena.max_moves`, and the stage reported only
+    // incomplete blocks -- after paying for a full-length game each, played one
+    // at a time. Dropped here the failure is quiet in the same way self-play's
+    // was: the arena stays correct and only its completion rate and its cost
+    // move. Both sides take the same prior, so the comparison stays symmetric.
+    CHECK(!diamond_orchestration::wire_arena_episode(wiring_config, 4).bootstrap_prior);
+    CHECK(diamond_orchestration::wire_arena_episode(bootstrap_config, 4).bootstrap_prior);
+
+    // Lanes are the size of the group of games being played together, and
+    // threads and batch cannot usefully exceed it: synchronous MCTS allows one
+    // outstanding request per lane, so a group of two games can never present a
+    // third position to evaluate. Above the group size both saturate.
+    const auto small_group = diamond_orchestration::wire_arena_episode(wiring_config, 2);
+    CHECK_EQ(small_group.lanes, 2);
+    CHECK_EQ(small_group.threads, 2);
+    CHECK_EQ(small_group.max_batch, 2);
+    const auto large_group = diamond_orchestration::wire_arena_episode(wiring_config, 32);
+    CHECK_EQ(large_group.lanes, 32);
+    CHECK_EQ(large_group.threads, 2);
+    CHECK_EQ(large_group.max_batch, 11);
+
+    // The arena is a measurement, not a source of training data: its search is
+    // greedy from the first move and takes no exploration noise, and its move
+    // budget is the arena's own rather than self-play's.
+    CHECK_EQ(large_group.temperature, 0.0);
+    CHECK_EQ(large_group.temperature_moves, 0);
+    CHECK_EQ(large_group.dirichlet_epsilon, 0.0);
+    CHECK_EQ(large_group.max_moves, static_cast<int>(wiring_config.arena.max_moves));
+
     auto cuda_config = wiring_config;
     cuda_config.runtime.device = "cuda";
     const auto cuda_config_path = scratch / "cuda-config.json";

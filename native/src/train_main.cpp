@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "diamond_model/deployment_artifact.hpp"
@@ -232,24 +233,16 @@ soo::Match ordered_match(const ProductionConfig& config, const auto& turn_order)
     }
     return match;
 }
-soo::EpisodeConfig arena_episode_config(const ProductionConfig& config) {
-    return {.lanes = 1,
-            .threads = 1,
-            .max_batch = 1,
-            .max_wait_us = static_cast<int>(config.inference.max_wait_us),
-            .simulations = static_cast<int>(config.mcts.simulations),
-            .max_moves = static_cast<int>(config.arena.max_moves),
-            .temperature = 0.0,
-            .temperature_moves = 0,
-            .dirichlet_alpha = config.mcts.dirichlet_alpha,
-            .dirichlet_epsilon = 0.0};
-}
 
+// Which model answers a request depends on the seat to move *in that game*, and
+// a batch now carries requests from several games at once. The candidate seat is
+// therefore held per job rather than once for the run.
 class ArenaModelRouter final : public soo::BatchEvaluator {
   public:
-    ArenaModelRouter(diamond_pipeline::ModelPool& candidate,
-                     diamond_pipeline::ModelPool& champion, int candidate_player)
-        : candidate_(candidate), champion_(champion), candidate_player_(candidate_player) {}
+    ArenaModelRouter(diamond_pipeline::ModelPool& candidate, diamond_pipeline::ModelPool& champion,
+                     std::vector<int> candidate_player_by_job)
+        : candidate_(candidate), champion_(champion),
+          candidate_player_by_job_(std::move(candidate_player_by_job)) {}
 
     void evaluate(std::vector<soo::BatchItem>& batch) override {
         std::vector<soo::BatchItem> candidate;
@@ -258,7 +251,12 @@ class ArenaModelRouter final : public soo::BatchEvaluator {
         champion.reserve(batch.size());
         for (const auto& item : batch) {
             if (!item.state) throw std::invalid_argument("arena evaluation requires a state");
-            (item.state->current_player == candidate_player_ ? candidate : champion).push_back(item);
+            if (item.job < 0 ||
+                static_cast<std::size_t>(item.job) >= candidate_player_by_job_.size())
+                throw std::invalid_argument("arena evaluation requires a known job");
+            const int candidate_player =
+                candidate_player_by_job_[static_cast<std::size_t>(item.job)];
+            (item.state->current_player == candidate_player ? candidate : champion).push_back(item);
         }
         candidate_.evaluate(candidate);
         champion_.evaluate(champion);
@@ -267,19 +265,74 @@ class ArenaModelRouter final : public soo::BatchEvaluator {
   private:
     diamond_pipeline::ModelPool& candidate_;
     diamond_pipeline::ModelPool& champion_;
-    int candidate_player_;
+    std::vector<int> candidate_player_by_job_;
 };
 
-soo::Episode play_arena_game(const ProductionConfig& config, const soo::Match& match,
-                             const soo::State& start, uint64_t seed, int candidate_player,
-                             diamond_pipeline::ModelPool& candidate,
-                             diamond_pipeline::ModelPool& champion) {
-    ArenaModelRouter evaluator(candidate, champion, candidate_player);
-    soo::EpisodeMetrics metrics;
-    auto episodes =
-        soo::run_episodes(match, {{start, seed}}, arena_episode_config(config), evaluator, metrics);
-    if (episodes.size() != 1) throw std::runtime_error("arena did not return exactly one game");
-    return std::move(episodes.front());
+// Every game of the arena schedule, indexed [block][cell] in schedule order.
+//
+// Games that share a turn order share a match, and a scheduler run fixes the
+// match -- but not the position, since every job carries its own start state.
+// So the grouping is by turn order across the whole schedule rather than within
+// an opening: with ten openings the six Min turn orders become six runs of
+// sixty concurrent games instead of sixty runs of one.
+//
+// Nothing else about a game changes. Each keeps its own seed, its own opening
+// and its own candidate seat, and the search is greedy with no Dirichlet noise,
+// so a result does not depend on which games were in flight beside it --
+// asserted in selfplay_test, because the whole grouping rests on it.
+template <typename Block>
+std::vector<std::vector<soo::Episode>>
+play_arena_schedule(const ProductionConfig& config, const std::vector<Block>& blocks,
+                    diamond_pipeline::ModelPool& candidate, diamond_pipeline::ModelPool& champion) {
+    struct Cell {
+        std::size_t block = 0;
+        std::size_t cell = 0;
+    };
+    struct Group {
+        std::remove_cvref_t<decltype(blocks.front().matches.front().turn_order)> turn_order;
+        std::vector<Cell> cells;
+    };
+    std::vector<Group> groups;
+    std::vector<std::vector<soo::Episode>> episodes;
+    episodes.reserve(blocks.size());
+    for (std::size_t block = 0; block < blocks.size(); ++block) {
+        episodes.emplace_back(blocks[block].matches.size());
+        for (std::size_t cell = 0; cell < blocks[block].matches.size(); ++cell) {
+            const auto& turn_order = blocks[block].matches[cell].turn_order;
+            const auto found = std::find_if(groups.begin(), groups.end(), [&](const Group& group) {
+                return group.turn_order == turn_order;
+            });
+            if (found == groups.end())
+                groups.push_back(Group{.turn_order = turn_order, .cells = {{block, cell}}});
+            else
+                found->cells.push_back({block, cell});
+        }
+    }
+
+    for (const auto& group : groups) {
+        const auto match = ordered_match(config, group.turn_order);
+        std::vector<soo::EpisodeJob> jobs;
+        std::vector<int> candidate_player_by_job;
+        jobs.reserve(group.cells.size());
+        candidate_player_by_job.reserve(group.cells.size());
+        for (const auto& cell : group.cells) {
+            const auto& block = blocks[cell.block];
+            const auto& matchup = block.matches[cell.cell];
+            jobs.push_back(
+                {opening(match, block.opening), arena_seed(block.opening, matchup.match_id)});
+            candidate_player_by_job.push_back(matchup.seat_assignment[0]);
+        }
+        ArenaModelRouter evaluator(candidate, champion, candidate_player_by_job);
+        soo::EpisodeMetrics metrics;
+        auto played = soo::run_episodes(
+            match, jobs, diamond_orchestration::wire_arena_episode(config, jobs.size()), evaluator,
+            metrics);
+        if (played.size() != jobs.size())
+            throw std::runtime_error("arena did not return one game per matchup");
+        for (std::size_t index = 0; index < group.cells.size(); ++index)
+            episodes[group.cells[index].block][group.cells[index].cell] = std::move(played[index]);
+    }
+    return episodes;
 }
 
 diamond_orchestration::RatingRegistry rating_registry(
@@ -1412,15 +1465,16 @@ Object evaluate(const CommandRequest& request, const ProductionConfig& config,
         int64_t wins = 0;
         int64_t losses = 0;
         uint64_t sequence = 0;
-        for (const auto& block : blocks) {
+        const auto schedule = play_arena_schedule(config, blocks, candidate, champion);
+        for (std::size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+            const auto& block = blocks[block_index];
             diamond_orchestration::SooOpeningBlockResult block_result{.opening_id =
                                                                           block.opening.opening_id};
-            for (const auto& cell : block.matches) {
-                const auto match = ordered_match(config, cell.turn_order);
+            const auto& played = schedule[block_index];
+            for (std::size_t index = 0; index < block.matches.size(); ++index) {
+                const auto& cell = block.matches[index];
                 const int candidate_player = cell.seat_assignment[0];
-                const auto episode = play_arena_game(config, match, opening(match, block.opening),
-                                                     arena_seed(block.opening, cell.match_id),
-                                                     candidate_player, candidate, champion);
+                const auto& episode = played[index];
                 std::optional<bool> candidate_won;
                 if (episode.completed && !episode.finish_order.empty()) {
                     candidate_won = episode.finish_order.front() == candidate_player;
@@ -1472,15 +1526,16 @@ Object evaluate(const CommandRequest& request, const ProductionConfig& config,
         std::vector<diamond_orchestration::MinOpeningBlockResult> outcomes;
         int64_t placements[3]{};
         uint64_t sequence = 0;
-        for (const auto& block : blocks) {
+        const auto schedule = play_arena_schedule(config, blocks, candidate, champion);
+        for (std::size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+            const auto& block = blocks[block_index];
             diamond_orchestration::MinOpeningBlockResult block_result{.opening_id =
                                                                           block.opening.opening_id};
-            for (const auto& cell : block.matches) {
-                const auto match = ordered_match(config, cell.turn_order);
+            const auto& played = schedule[block_index];
+            for (std::size_t index = 0; index < block.matches.size(); ++index) {
+                const auto& cell = block.matches[index];
                 const int candidate_player = cell.seat_assignment[0];
-                const auto episode = play_arena_game(config, match, opening(match, block.opening),
-                                                     arena_seed(block.opening, cell.match_id),
-                                                     candidate_player, candidate, champion);
+                const auto& episode = played[index];
                 std::optional<int> placement;
                 if (episode.completed) {
                     const auto found = std::find(episode.finish_order.begin(),

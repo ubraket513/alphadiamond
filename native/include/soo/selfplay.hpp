@@ -37,6 +37,12 @@ struct BatchItem {
     // Min. An evaluator that ignores this fills `value` and leaves a Min lane
     // reading zeros for two of its seats.
     int value_width = 1;
+    // Which job in this run the request belongs to, or -1 when the caller does
+    // not track jobs. Lanes take the next unstarted job rather than owning one,
+    // so an evaluator that must treat games differently -- the arena router,
+    // which sends the candidate's turns to a different model in every game --
+    // cannot key on the lane or on the outcome pointer.
+    int job = -1;
 };
 
 // Whatever answers a batch. The dummy is native and sleeps; the Gate D one

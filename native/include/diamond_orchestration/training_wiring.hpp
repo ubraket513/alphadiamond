@@ -16,4 +16,11 @@ struct TrainingIterationWiring final {
 
 TrainingIterationWiring wire_training_iteration(const ProductionConfig& config);
 
+// The arena's episode config for a group of `lanes` games played together.
+//
+// Separate from the iteration wiring because its lane count is not a setting:
+// it is the size of the group of games sharing a turn order that the promotion
+// arena is about to play, and the search threads and batch are bounded by it.
+soo::EpisodeConfig wire_arena_episode(const ProductionConfig& config, std::size_t lanes);
+
 } // namespace diamond_orchestration

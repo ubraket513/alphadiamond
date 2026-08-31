@@ -631,8 +631,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 if (status == EpisodeSearch::Status::NeedsEvaluation) {
                     BatchItem item{&lane.session.pending_state(),
                                    &lane.session.pending_features(),
-                                   &lane.session.pending_actions(), 0, &lane.outcome,
-                                   lane.session.value_width()};
+                                   &lane.session.pending_actions(),
+                                   0,
+                                   &lane.outcome,
+                                   lane.session.value_width(),
+                                   static_cast<int>(lane.job_index)};
                     batch_evaluator.prepare(item);
                     if (config.bootstrap_prior) {
                         vacancy_prior(lane.session.pending_actions(),
@@ -777,10 +780,10 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             items.reserve(batch.size());
             for (const int lane_id : batch) {
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
-                items.push_back(BatchItem{&lane.session.pending_state(),
-                                          &lane.session.pending_features(),
-                                          &lane.session.pending_actions(), 0, &lane.outcome,
-                                          lane.session.value_width()});
+                items.push_back(
+                    BatchItem{&lane.session.pending_state(), &lane.session.pending_features(),
+                              &lane.session.pending_actions(), 0, &lane.outcome,
+                              lane.session.value_width(), static_cast<int>(lane.job_index)});
             }
             const auto eval_start = Clock::now();
             batch_evaluator.evaluate(items);
