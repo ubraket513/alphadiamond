@@ -193,3 +193,10 @@ transition, and v1.0.1 release session. Times are UTC.
 - A bounded no-prior probe started from the released iteration-25 checkpoint with 256 games, 128 lanes, 16 search threads, 128 simulations, and an 800-move cap.
 - The probe had not completed after more than ten minutes, despite being only one quarter of a production iteration's game count. GPU utilization remained roughly 29%–35%, compared with about 79%–82% during B0 self-play. This is operational evidence of long no-prior game tails and collapsing batch occupancy.
 - The probe was terminated rather than spending further training time on an already failed throughput/stability gate. A0 was not adopted. B0 training resumed at iteration 26 from the released iteration-25 champion, step 27,776, and the same 1M binary replay.
+
+## End-of-session learning assessment
+
+- Extending the unchanged B0 loop is unlikely to produce a large strength gain. From iterations 22 through 25, policy loss stayed effectively fixed at approximately `6.063785` across more than 5,000 optimizer steps. Value loss fluctuated around `0.58`–`0.61` without a sustained downward trend.
+- The iteration-25 Arena placements (13 first, 11 second, 9 third among 33 completed games) are mildly positive but too small and incomplete to establish a meaningful improvement over iteration 24.
+- B0 remains useful as a stable replay generator and may yield marginal gains, but additional iterations alone do not address the apparent policy-learning plateau. Before another long run, measure MCTS visit-target entropy, policy-head gradient norms, and policy KL divergence between adjacent checkpoints. These distinguish an uninformative target distribution from a disconnected/saturated policy head or simply tiny updates.
+- The session stopped iteration 26 during `SELF_PLAY` before ingest or training. Durable state remains at the released iteration-25 champion, training step 27,776; iteration 26 contains only `initialize.json`. Resuming the run will restart iteration-26 self-play without losing checkpoint or replay state.
