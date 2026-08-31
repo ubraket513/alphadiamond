@@ -329,7 +329,8 @@ if(DIAMOND_BUILD_LIBTORCH)
     add_executable(alphadiamond-min-probe src/min_bootstrap_probe.cpp)
     target_link_libraries(alphadiamond-min-probe
         PRIVATE alphadiamond::diamond_model alphadiamond::soo_search
-                alphadiamond::diamond_native_pipeline ${TORCH_LIBRARIES})
+                alphadiamond::diamond_training alphadiamond::diamond_native_pipeline
+                ${TORCH_LIBRARIES})
     target_compile_features(alphadiamond-min-probe PRIVATE cxx_std_20)
     target_include_directories(alphadiamond-min-probe PRIVATE ${TORCH_INCLUDE_DIRS})
     target_compile_definitions(alphadiamond-min-probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
@@ -433,6 +434,17 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_definitions(training_step_parity_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
         if(MSVC)
             target_compile_options(training_step_parity_test PRIVATE /bigobj)
+        endif()
+
+        add_executable(min_value_head_init_test tests/min_value_head_init_test.cpp)
+        target_link_libraries(min_value_head_init_test PRIVATE alphadiamond::diamond_training)
+        target_include_directories(min_value_head_init_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(min_value_head_init_test PRIVATE cxx_std_20)
+        target_compile_definitions(min_value_head_init_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        add_test(NAME min_value_head_init_test COMMAND min_value_head_init_test)
+        set_tests_properties(min_value_head_init_test PROPERTIES LABELS training)
+        if(MSVC)
+            target_compile_options(min_value_head_init_test PRIVATE /bigobj)
         endif()
 
         add_executable(checkpoint_v2_roundtrip_test tests/checkpoint_v2_roundtrip_test.cpp)

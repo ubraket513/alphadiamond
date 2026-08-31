@@ -397,6 +397,15 @@ diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& so
     return snapshot;
 }
 
+void zero_value_head(const diamond_model::DiamondModel& model) {
+    if (!model)
+        throw std::invalid_argument("zero_value_head requires a model");
+    torch::NoGradGuard no_grad;
+    model->value_linear2->weight.zero_();
+    if (model->value_linear2->bias.defined())
+        model->value_linear2->bias.zero_();
+}
+
 std::string canonical_model_digest(const diamond_model::DiamondModel& model) {
     std::string stream;
     append_string(stream, "alphadiamond.canonical-model-digest.v1");

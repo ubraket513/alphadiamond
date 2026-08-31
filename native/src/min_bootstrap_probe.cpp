@@ -18,6 +18,13 @@
 //   vacancy      canonical-target-vacancy-distance, the current bootstrap
 //   uniform      the negative control: no information at all
 //
+// The value-init arms are the exception to the zero-value rule, and say so:
+// `vacancy-min-value` keeps the vacancy prior and takes leaf values from a
+// freshly initialised Min network, which is what a real bootstrap iteration
+// actually searches with. `--value-init zero|random` chooses whether that
+// network's final value layer is zeroed. Both arms are built from the same
+// `--network-seed`, so they differ in that layer and nothing else.
+//
 // What comes out is not a win rate. Three copies of one agent cannot rank
 // themselves; what they can show is whether games end, whether they end from
 // every seat, and whether the search escapes the short-cycle attractor that the
@@ -40,6 +47,7 @@
 
 #include "diamond_model/deployment_artifact.hpp"
 #include "diamond_model/soo_model.hpp"
+#include "diamond_training/trainer.hpp"
 #include "diamond_support/json.hpp"
 #include "soo/board.hpp"
 #include "soo/encoder.hpp"
@@ -139,6 +147,58 @@ class UniformArm final : public soo::BatchEvaluator {
     }
 };
 
+// A freshly initialised Min network, supplying leaf values to a vacancy prior.
+//
+// This is the one arm that is not zero-value: the question it answers is
+// whether an untrained value head helps or hurts the heuristic that is steering
+// the game, and pinning the values at zero would erase the question.
+class VacancyWithMinValueArm final : public soo::BatchEvaluator {
+  public:
+    VacancyWithMinValueArm(const soo::Match& match, diamond_model::DiamondModel model,
+                           torch::Device device)
+        : match_(match), model_(std::move(model)), device_(device) {
+        model_->eval();
+    }
+
+    void prepare(soo::BatchItem& item) override {
+        soo::vacancy_prior(*item.actions, soo::canonical_self_occupancy(*item.state, match_),
+                           item.outcome->priors);
+        require_finite_distribution(item.outcome->priors);
+    }
+
+    void evaluate(std::vector<soo::BatchItem>& batch) override {
+        if (batch.empty())
+            return;
+        torch::NoGradGuard no_grad;
+        const auto rows = static_cast<int64_t>(batch.size());
+        auto features = torch::empty({rows, kBoardNodes, kMinFeatures}, torch::kFloat32);
+        float* out = features.data_ptr<float>();
+        for (std::size_t row = 0; row < batch.size(); ++row) {
+            const auto& encoded = *batch[row].encoded;
+            if (encoded.feature_count != kMinFeatures)
+                throw std::runtime_error("the Min value arm requires a [73,6] encoding");
+            std::copy(encoded.node_features.begin(), encoded.node_features.end(),
+                      out + row * kBoardNodes * kMinFeatures);
+        }
+        const auto [policy, value] = model_->forward(features.to(device_));
+        (void)policy; // the prior is the heuristic's; only the value is read
+        const auto values = value.to(torch::kCPU).contiguous();
+        const float* read = values.data_ptr<float>();
+        for (std::size_t row = 0; row < batch.size(); ++row) {
+            auto& outcome = *batch[row].outcome;
+            for (int seat = 0; seat < 3; ++seat)
+                outcome.values[static_cast<std::size_t>(seat)] =
+                    static_cast<double>(read[row * 3 + static_cast<std::size_t>(seat)]);
+            outcome.value = outcome.values[0];
+        }
+    }
+
+  private:
+    soo::Match match_;
+    diamond_model::DiamondModel model_;
+    torch::Device device_;
+};
+
 // Soo's policy, asked about three-player positions.
 //
 // The legal set is never Soo's to decide: the actions handed to the model come
@@ -216,6 +276,23 @@ class SooPolicyArm final : public soo::BatchEvaluator {
     std::vector<float> folded_;
 };
 
+// The [6,73,73] adjacency the trunk expects, built from the generated topology
+// rather than read from a shipped weight file: this network has no weights.
+torch::Tensor topology_adjacency() {
+    auto adjacency = torch::zeros({6, kBoardNodes, kBoardNodes}, torch::kFloat32);
+    auto accessor = adjacency.accessor<float, 3>();
+    const soo::Topology& topo = soo::topology();
+    for (int node = 0; node < kBoardNodes; ++node) {
+        for (int direction = 0; direction < 6; ++direction) {
+            const int8_t neighbour =
+                topo.neighbour[static_cast<std::size_t>(node)][static_cast<std::size_t>(direction)];
+            if (neighbour >= 0)
+                accessor[direction][node][neighbour] = 1.0F;
+        }
+    }
+    return adjacency;
+}
+
 soo::State opening(const soo::Match& match) {
     soo::State state;
     state.occupancy.fill(soo::kEmpty);
@@ -281,7 +358,11 @@ struct Options {
     double dirichlet_epsilon = 0.25;
     uint64_t seed = 7;
     std::string device = "cuda";
-    std::string match = "min"; // "soo" runs the two-player control
+    std::string match = "min";       // "soo" runs the two-player control
+    std::string value_init = "zero"; // vacancy-min-value only: zero | random
+    uint64_t network_seed = 4242;    // both value-init arms draw from this
+    int64_t width = 128;
+    int64_t residual_blocks = 6;
 };
 
 Options parse(int argc, char** argv) {
@@ -325,11 +406,22 @@ Options parse(int argc, char** argv) {
             options.device = next(index);
         else if (flag == "--match")
             options.match = next(index);
+        else if (flag == "--value-init")
+            options.value_init = next(index);
+        else if (flag == "--network-seed")
+            options.network_seed = std::stoull(next(index));
+        else if (flag == "--width")
+            options.width = std::stoll(next(index));
+        else if (flag == "--residual-blocks")
+            options.residual_blocks = std::stoll(next(index));
         else
             throw std::runtime_error("unknown option: " + flag);
     }
-    if (options.arm != "soo-policy" && options.arm != "vacancy" && options.arm != "uniform")
-        throw std::runtime_error("--arm must be soo-policy, vacancy or uniform");
+    if (options.arm != "soo-policy" && options.arm != "vacancy" && options.arm != "uniform" &&
+        options.arm != "vacancy-min-value")
+        throw std::runtime_error("--arm must be soo-policy, vacancy, uniform or vacancy-min-value");
+    if (options.value_init != "zero" && options.value_init != "random")
+        throw std::runtime_error("--value-init must be zero or random");
     if (options.match != "min" && options.match != "soo")
         throw std::runtime_error("--match must be min or soo");
     if (options.games < 1)
@@ -377,6 +469,25 @@ int main(int argc, char** argv) {
         std::string model_identity = "none";
         if (options.arm == "vacancy") {
             evaluator = std::make_unique<VacancyArm>(match);
+        } else if (options.arm == "vacancy-min-value") {
+            const torch::Device device(options.device == "cuda" && torch::cuda::is_available()
+                                           ? torch::kCUDA
+                                           : torch::kCPU);
+            // Seeded before construction, so the two value-init arms consume
+            // identical draws and differ only where zero_value_head writes.
+            torch::manual_seed(static_cast<int64_t>(options.network_seed));
+            diamond_model::DiamondModel network(options.width, options.residual_blocks,
+                                                kMinFeatures, 3);
+            network->set_adjacency(topology_adjacency());
+            if (options.value_init == "zero")
+                diamond_training::zero_value_head(network);
+            network->to(device);
+            // set_adjacency again after the move: the trunk's gather tables are
+            // cached against adjacency's version, and to() does not bump it.
+            network->set_adjacency(topology_adjacency().to(device));
+            model_identity = "min-scratch:" + options.value_init + ":seed-" +
+                             std::to_string(options.network_seed);
+            evaluator = std::make_unique<VacancyWithMinValueArm>(match, std::move(network), device);
         } else if (options.arm == "uniform") {
             evaluator = std::make_unique<UniformArm>();
         } else {
@@ -479,6 +590,8 @@ int main(int argc, char** argv) {
             {"schema_version", Json{int64_t{1}}},
             {"arm", Json{options.arm}},
             {"match", Json{options.match}},
+            {"value_init", Json{options.arm == "vacancy-min-value" ? options.value_init
+                                                                   : std::string("zero-leaf")}},
             {"teacher", Json{model_identity}},
             {"games", Json{static_cast<int64_t>(episodes.size())}},
             {"simulations", Json{static_cast<int64_t>(options.simulations)}},
