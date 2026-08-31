@@ -219,12 +219,20 @@ int main(int argc, char** argv) {
     CHECK_EQ(large_group.max_batch, 11);
 
     // The arena is a measurement, not a source of training data: its search is
-    // greedy from the first move and takes no exploration noise, and its move
-    // budget is the arena's own rather than self-play's.
+    // greedy from the first move and takes no root exploration noise, and its
+    // move budget is the arena's own rather than self-play's. Only a repeated
+    // physical state activates the seeded escape below.
     CHECK_EQ(large_group.temperature, 0.0);
     CHECK_EQ(large_group.temperature_moves, 0);
     CHECK_EQ(large_group.dirichlet_epsilon, 0.0);
     CHECK_EQ(large_group.max_moves, static_cast<int>(wiring_config.arena.max_moves));
+    CHECK_EQ(large_group.repeat_window, 8);
+    CHECK_EQ(large_group.repetition_temperature, 1.0);
+
+    // Repetition escape is an evaluation rule, not a training-data policy.
+    // Self-play keeps its configured repetition search trigger and never
+    // samples a move merely because a position repeated.
+    CHECK_EQ(wiring.selfplay.repetition_temperature, 0.0);
 
     auto cuda_config = wiring_config;
     cuda_config.runtime.device = "cuda";

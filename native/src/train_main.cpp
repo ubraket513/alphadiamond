@@ -277,7 +277,8 @@ class ArenaModelRouter final : public soo::BatchEvaluator {
 // sixty concurrent games instead of sixty runs of one.
 //
 // Nothing else about a game changes. Each keeps its own seed, its own opening
-// and its own candidate seat, and the search is greedy with no Dirichlet noise,
+// and its own candidate seat. Search is greedy with no Dirichlet noise until a
+// repeated physical state activates a move-number-seeded temperature sample,
 // so a result does not depend on which games were in flight beside it --
 // asserted in selfplay_test, because the whole grouping rests on it.
 template <typename Block>

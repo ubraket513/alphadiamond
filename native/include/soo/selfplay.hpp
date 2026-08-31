@@ -238,6 +238,12 @@ struct EpisodeConfig {
     // Takes precedence over ``late_move_threshold`` when both are set.
     int repeat_window = 0;
 
+    // Use this move-selection temperature when the current physical position
+    // already occurred within ``repeat_window`` plies. Zero keeps the normal
+    // temperature schedule. Search remains unchanged; only the seeded choice
+    // among root visit counts escapes a demonstrated cycle.
+    double repetition_temperature = 0.0;
+
     // Bootstrap phase: take the policy prior from the vacancy heuristic instead
     // of the network, keeping values from the network.
     //
@@ -257,6 +263,8 @@ struct EpisodeMetrics {
     // How often the boosted budget fired. The trigger only earns its complexity
     // if this stays small, so it is reported rather than inferred.
     uint64_t boosted_moves = 0;
+    // How often repetition changed the move-selection temperature.
+    uint64_t repetition_moves = 0;
     double wall_seconds = 0.0;
     double evaluator_seconds = 0.0;
     double worker_busy_seconds = 0.0;

@@ -99,25 +99,50 @@ comparable amount of work. Two effects, both measurable in the numbers above:
   no Dirichlet -- and at iteration 0 candidate and champion hold the *same*
   weights, which is the setup most likely to cycle.
 
-## 4. What this does not establish
+## 4. The completion curve separates the two effects
 
-The 120-move cap is close to self-play's median, so the abort count does not
-separate "greedy identical players cycle" from "the cap is simply tight". The
-distributions were not compared: no move-percentile or repetition statistics
-were collected for arena games, only the completion count. `alphadiamond-min-probe`
-measures exactly those, but on self-play, not on an arena pairing.
+The standalone arena was rerun from the same candidate and champion, opening,
+seed, 64-simulation search and vacancy prior. Only `arena.max_moves` changed:
 
-More openings do **not** fix the throughput half. They make groups bigger and
-multiply the number of games by the same factor, so wall time barely moves.
+| max moves | completed | aborted | wall |
+|---:|---:|---:|---:|
+| 120 | 5/36 | 31/36 | 233 s |
+| 200 | 12/36 | 24/36 | 361 s |
+| 400 | 12/36 | 24/36 | 680 s |
+| 800 | 10/36 | 26/36 | 1,373 s |
+
+Completion plateaued after 200 while cost scaled with the cap. The small
+non-monotonicity is scheduler/search trajectory nondeterminism, but the causal
+result is unambiguous: a larger cap does not cure greedy repetition.
+
+The remedy is arena-only. Ordinary moves remain temperature 0 with no
+Dirichlet noise. When the current physical state (`dynamics_key`) already
+occurred within the previous eight plies, that move alone uses temperature 1,
+seeded from the game's durable seed and move number. Both models receive the
+same rule, and self-play remains unchanged.
+
+The same controlled sweep after the remedy:
+
+| max moves | completed | aborted | wall |
+|---:|---:|---:|---:|
+| 120 | 16/36 | 20/36 | 232 s |
+| 200 | 32/36 | 4/36 | 328 s |
+| 400 | 34/36 | 2/36 | 387 s |
+| **800** | **36/36** | **0/36** | **341 s** |
+
+At 800 the arena now produces a complete opening block in one quarter of the
+old wall time. `runtime/configs/min-smoke.json` therefore uses 800; the larger
+budget is a ceiling rather than a cost when repetition escape lets games end.
+The test suite pins the arena-only wiring, real activation on a repeating Min
+bootstrap game, changed play rather than a metric-only effect, and seeded
+reproducibility across grouped and solitary scheduling.
+
+More openings still do **not** fix the throughput half. They make groups bigger
+and multiply the number of games by the same factor, so wall time barely moves.
 
 ## 5. Where to pick up
 
-1. **Separate the two effects.** Re-run the standalone arena
-   (`alphadiamond-train evaluate`) at caps of 200, 400 and 800 and record the
-   completion curve. If completion is still poor at 800, the cause is cycling,
-   not the cap, and the arena needs a repetition remedy of its own rather than a
-   bigger budget.
-2. **Per-job matches, if throughput is the binding constraint.** The remaining
+1. **Per-job matches, if throughput is still binding.** The remaining
    serialisation is that `run_episodes` fixes one `Match` for the whole call, so
    the six turn-order groups run one after another. Giving `EpisodeJob` its own
    match would let the entire schedule run as one batch -- 36 lanes at one
@@ -125,7 +150,7 @@ multiply the number of games by the same factor, so wall time barely moves.
    loop (`native/src/selfplay.cpp` lines ~533-706), all of them per-lane-able.
    Cost this against step 1 first: if arena games are cycling to the cap, the
    cheaper win is making them end.
-3. **Then B0.** Min from scratch, vacancy bootstrap, zero value head, at the
+2. **Then B0.** Min from scratch, vacancy bootstrap, zero value head, at the
    intended production search, as [min_bootstrap.md §7](min_bootstrap.md)
    specifies. Run it in short `--run-dir` segments joined by
    `alphadiamond-train resume`; every long run in these sessions has been killed,

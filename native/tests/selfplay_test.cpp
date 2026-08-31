@@ -48,15 +48,20 @@ int main(int argc, char** argv) {
     REQUIRE(soo_test::load_golden(golden_dir + "/rules-v1.txt", golden, error), error.c_str());
     const soo::Match& match = golden.match(2);
     REQUIRE(match.count == 2, "golden file is missing the 2P match line");
+    const soo::Match& min_match = golden.match(3);
+    REQUIRE(min_match.count == 3, "golden file is missing the 3P match line");
 
     const soo::State* opening = nullptr;
+    const soo::State* min_opening = nullptr;
     for (const soo_test::GoldenCase& entry : golden.cases) {
         if (entry.tag == "opening" && entry.player_count == 2) {
             opening = &entry.state;
-            break;
+        } else if (entry.tag == "opening" && entry.player_count == 3) {
+            min_opening = &entry.state;
         }
     }
     REQUIRE(opening != nullptr, "golden file has no 2P opening position");
+    REQUIRE(min_opening != nullptr, "golden file has no 3P opening position");
 
     soo::DummyBatchEvaluator evaluator(0.0);
 
@@ -268,6 +273,59 @@ int main(int argc, char** argv) {
     const auto observed = soo::run_episodes(match, jobs, episodes, observer, observed_metrics);
     CHECK_EQ(observed.size(), jobs.size());
     CHECK_EQ(observer.seen.size(), jobs.size());
+
+    // Arena play stays greedy until a physical state repeats, then uses a
+    // seeded temperature sample for that move to escape the cycle. A missing
+    // repetition-temperature branch leaves this counter at zero even though
+    // this deterministic Min bootstrap game revisits positions within eight
+    // plies. The same game with escape disabled must retain a different line,
+    // so the assertion covers changed play rather than bookkeeping alone.
+    auto repetition_escape = episodes;
+    repetition_escape.max_moves = 500;
+    repetition_escape.repeat_window = 8;
+    repetition_escape.repetition_temperature = 1.0;
+    repetition_escape.bootstrap_prior = true;
+    const std::vector<soo::EpisodeJob> repetition_jobs{{*min_opening, 7}, {*min_opening, 11}};
+    soo::EpisodeMetrics repetition_metrics;
+    const auto escaped = soo::run_episodes(min_match, repetition_jobs, repetition_escape, evaluator,
+                                           repetition_metrics);
+    REQUIRE(escaped.size() == repetition_jobs.size(),
+            "repetition escape run did not return every episode");
+    CHECK(repetition_metrics.repetition_moves > 0);
+    auto no_escape = repetition_escape;
+    no_escape.repetition_temperature = 0.0;
+    soo::EpisodeMetrics no_escape_metrics;
+    const auto greedy_cycle =
+        soo::run_episodes(min_match, {{*min_opening, 7}}, no_escape, evaluator, no_escape_metrics);
+    REQUIRE(greedy_cycle.size() == 1, "greedy repetition run did not return one episode");
+    bool escaped_cycle = escaped[0].moves.size() != greedy_cycle[0].moves.size();
+    for (std::size_t move = 0;
+         !escaped_cycle && move < escaped[0].moves.size() && move < greedy_cycle[0].moves.size();
+         ++move) {
+        escaped_cycle =
+            escaped[0].moves[move].selected_action != greedy_cycle[0].moves[move].selected_action;
+    }
+    CHECK(escaped_cycle);
+    auto solitary_escape = repetition_escape;
+    solitary_escape.lanes = 1;
+    solitary_escape.threads = 1;
+    solitary_escape.max_batch = 1;
+    for (std::size_t index = 0; index < repetition_jobs.size(); ++index) {
+        soo::EpisodeMetrics solitary_escape_metrics;
+        const auto alone = soo::run_episodes(min_match, {repetition_jobs[index]}, solitary_escape,
+                                             evaluator, solitary_escape_metrics);
+        REQUIRE(alone.size() == 1, "solitary repetition escape omitted an episode");
+        REQUIRE(alone[0].moves.size() == escaped[index].moves.size(),
+                "grouping changed repetition escape episode length");
+        for (std::size_t move = 0; move < alone[0].moves.size(); ++move) {
+            if (alone[0].moves[move].selected_action !=
+                escaped[index].moves[move].selected_action) {
+                soo_test::fail(__FILE__, __LINE__,
+                               "grouping changed a seeded repetition escape move");
+                break;
+            }
+        }
+    }
 
     std::fprintf(stderr, "scheduler moves=%llu episodes=%zu\n",
                  static_cast<unsigned long long>(parallel.moves), first.size());

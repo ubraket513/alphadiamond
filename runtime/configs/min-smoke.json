@@ -57,7 +57,7 @@
   },
   "arena": {
     "games": 36,
-    "max_moves": 400,
+    "max_moves": 800,
     "promotion_threshold": 0.55,
     "seed": 7
   },

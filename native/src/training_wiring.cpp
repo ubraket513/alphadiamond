@@ -67,6 +67,12 @@ soo::EpisodeConfig wire_arena_episode(const ProductionConfig& config, std::size_
         .temperature_moves = 0,
         .dirichlet_alpha = config.mcts.dirichlet_alpha,
         .dirichlet_epsilon = 0.0,
+        // Promotion is greedy except when a physical position has already
+        // occurred within eight plies. Seeded temperature sampling on that
+        // move breaks the demonstrated cycle without adding search cost or
+        // making ordinary arena play stochastic.
+        .repeat_window = 8,
+        .repetition_temperature = 1.0,
         // The arena plays the phase the config declares. While a run is
         // bootstrapping, a network prior steers neither side into a camp, so
         // every arena game would reach `max_moves` and the stage would report
