@@ -10,9 +10,12 @@ initialised — with the measurements each decision rests on, and an explicit
 account of what those measurements do *not* establish.
 
 Companion documents: [soo_scratch_training.md](soo_scratch_training.md) for the
-Soo run this borrows its method from, and
+Soo run this borrows its method from,
 [repetition_trigger_config_gap.md](repetition_trigger_config_gap.md) for the
-first instance of the failure mode in §1.
+first instance of the failure mode in §1, and
+[min_arena_throughput.md](min_arena_throughput.md), which continues from §7 --
+it fixes the arena stage §6 lists as known-red, and reports the first measured
+Min iteration.
 
 ---
 
