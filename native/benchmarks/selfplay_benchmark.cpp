@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -18,8 +19,12 @@
 #include <torch/torch.h>
 
 #include "diamond_model/deployment_artifact.hpp"
+#include "diamond_model/soo_model.hpp"
+#include "diamond_orchestration/config.hpp"
 #include "diamond_pipeline/model_pool.hpp"
 #include "diamond_support/build_provenance.hpp"
+#include "diamond_support/json.hpp"
+#include "diamond_training/checkpoint.hpp"
 #include "diamond_training/device.hpp"
 #include "soo/board.hpp"
 #include "soo/selfplay.hpp"
@@ -28,7 +33,11 @@ namespace {
 
 struct Options {
     std::filesystem::path artifact = "models/soo/2.0.0";
+    bool artifact_explicit = false;
+    std::optional<std::filesystem::path> checkpoint;
+    std::optional<std::filesystem::path> config;
     std::string device = "cpu";
+    std::string precision = "fp32";
     std::size_t repetitions = 1;
     std::size_t warmups = 1;
     std::size_t lanes = 2;
@@ -85,7 +94,9 @@ Options parse_options(int argc, char** argv) {
     for (int index = 1; index < argc; ++index) {
         const std::string_view option = argv[index];
         if (option == "--help") {
-            std::cout << "usage: selfplay_benchmark [--artifact DIR] [--device cpu|cuda|cuda:N] "
+            std::cout << "usage: selfplay_benchmark [--artifact DIR | --checkpoint DIR --config FILE] "
+                         "[--device cpu|cuda|cuda:N] "
+                         "[--precision fp32|fp16|bf16] "
                          "[--lanes N] [--threads N] [--max-batch N] [--max-wait-us N] "
                          "[--simulations N] [--max-moves N] [--games N] [--seed N] "
                          "[--temperature F] [--temperature-moves N] "
@@ -96,10 +107,17 @@ Options parse_options(int argc, char** argv) {
         if (++index == argc)
             throw std::invalid_argument(std::string(option) + " requires a value");
         const std::string_view value = argv[index];
-        if (option == "--artifact")
+        if (option == "--artifact") {
             options.artifact = value;
+            options.artifact_explicit = true;
+        } else if (option == "--checkpoint")
+            options.checkpoint = value;
+        else if (option == "--config")
+            options.config = value;
         else if (option == "--device")
             options.device = value;
+        else if (option == "--precision")
+            options.precision = value;
         else if (option == "--lanes")
             options.lanes = parse_count(value, option);
         else if (option == "--threads")
@@ -133,6 +151,13 @@ Options parse_options(int argc, char** argv) {
     }
     if (options.threads > options.lanes)
         throw std::invalid_argument("threads must not exceed lanes");
+    if (options.precision != "fp32" && options.precision != "fp16" &&
+        options.precision != "bf16")
+        throw std::invalid_argument("--precision must be fp32, fp16, or bf16");
+    if (options.checkpoint.has_value() != options.config.has_value())
+        throw std::invalid_argument("--checkpoint and --config must be provided together");
+    if (options.checkpoint && options.artifact_explicit)
+        throw std::invalid_argument("--artifact and --checkpoint are mutually exclusive");
     if (options.games != 0 && options.games <= options.lanes) {
         throw std::invalid_argument(
             "--games must exceed --lanes, otherwise the job queue never engages");
@@ -151,7 +176,17 @@ Options parse_options(int argc, char** argv) {
     return options;
 }
 
-soo::Match make_match() { return soo::standard_soo_match(); }
+soo::Match make_match(bool min_model) {
+    return min_model ? soo::standard_min_match() : soo::standard_soo_match();
+}
+
+diamond_orchestration::ProductionConfig read_config(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw std::invalid_argument("cannot open config: " + path.string());
+    return diamond_orchestration::ProductionConfig::from_json(
+        diamond_support::parse_json(std::string(std::istreambuf_iterator<char>(input), {})));
+}
 
 soo::State opening(const soo::Match& match) {
     soo::State state;
@@ -189,7 +224,7 @@ struct Totals {
 };
 
 Totals run_once(const Options& options, const soo::Match& match, const soo::State& initial,
-                diamond_pipeline::ModelPool& evaluator) {
+                diamond_pipeline::ModelPool& evaluator, bool bootstrap_prior) {
     const soo::EpisodeConfig config{
         .lanes = static_cast<int>(options.lanes),
         .threads = static_cast<int>(options.threads),
@@ -201,6 +236,7 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
         .temperature_moves = static_cast<int>(options.temperature_moves),
         .dirichlet_alpha = 0.3,
         .dirichlet_epsilon = options.dirichlet_epsilon,
+        .bootstrap_prior = bootstrap_prior,
     };
     const std::size_t job_count = options.games != 0 ? options.games : options.lanes;
     std::vector<soo::EpisodeJob> jobs;
@@ -292,29 +328,69 @@ int main(int argc, char** argv) {
         torch::set_num_threads(static_cast<int>(options.threads));
         torch::set_num_interop_threads(1);
 
-        const auto artifact = diamond_model::validate_deployment_artifact(options.artifact, "soo");
-        const auto compatibility = diamond_training::Compatibility::soo(
-            artifact.model_version,
-            {.residual_blocks = artifact.residual_blocks, .width = artifact.width});
-        auto model = diamond_model::DiamondModel(artifact.width, artifact.residual_blocks,
-                                                 artifact.input_features, artifact.value_size);
-        model->load_weights(artifact.weights);
         const auto device = diamond_training::resolve_device(options.device);
-        diamond_pipeline::ModelPool evaluator(1, device);
+        diamond_training::Compatibility compatibility;
+        diamond_model::DiamondModel model;
+        std::string model_sha256;
+        std::string runtime_sha256;
+        bool min_model = false;
+        bool bootstrap_prior = false;
+        if (options.checkpoint) {
+            const auto config = read_config(*options.config);
+            min_model = config.model_name == "Min";
+            compatibility = min_model
+                                ? diamond_training::Compatibility::min(
+                                      config.model_version,
+                                      {.residual_blocks = config.network.residual_blocks,
+                                       .width = config.network.width})
+                                : diamond_training::Compatibility::soo(
+                                      config.model_version,
+                                      {.residual_blocks = config.network.residual_blocks,
+                                       .width = config.network.width});
+            model = diamond_model::DiamondModel(config.network.width,
+                                                config.network.residual_blocks,
+                                                min_model ? 6 : 4, min_model ? 3 : 1);
+            const auto checkpoint =
+                diamond_training::load_checkpoint_v2_weights(*options.checkpoint, model, device);
+            model_sha256 = checkpoint.model_digest;
+            // A native checkpoint has no separately packaged runtime tree. The
+            // executable provenance identifies the runtime; keep this SHA field
+            // stable for schema consumers and identify the source below.
+            runtime_sha256 = checkpoint.model_digest;
+            bootstrap_prior = config.self_play.bootstrap_prior !=
+                              diamond_orchestration::kBootstrapPriorNone;
+        } else {
+            const auto artifact =
+                diamond_model::validate_deployment_artifact(options.artifact, "soo");
+            compatibility = diamond_training::Compatibility::soo(
+                artifact.model_version,
+                {.residual_blocks = artifact.residual_blocks, .width = artifact.width});
+            model = diamond_model::DiamondModel(artifact.width, artifact.residual_blocks,
+                                                artifact.input_features, artifact.value_size);
+            model->load_weights(artifact.weights);
+            model_sha256 = artifact.model_sha256;
+            runtime_sha256 = artifact.runtime_sha256;
+        }
+        const auto precision = options.precision == "fp16"
+                                   ? diamond_pipeline::InferencePrecision::fp16
+                                   : options.precision == "bf16"
+                                         ? diamond_pipeline::InferencePrecision::bf16
+                                         : diamond_pipeline::InferencePrecision::fp32;
+        diamond_pipeline::ModelPool evaluator(1, device, precision);
         const auto model_key = evaluator.install(compatibility, model);
         evaluator.activate(model_key);
 
-        const soo::Match match = make_match();
+        const soo::Match match = make_match(min_model);
         const soo::State initial = opening(match);
         for (std::size_t warmup = 0; warmup < options.warmups; ++warmup)
-            (void)run_once(options, match, initial, evaluator);
+            (void)run_once(options, match, initial, evaluator, bootstrap_prior);
 
         Totals totals;
         std::vector<double> seconds;
         seconds.reserve(options.repetitions);
         for (std::size_t repetition = 0; repetition < options.repetitions; ++repetition) {
             const auto started = std::chrono::steady_clock::now();
-            Totals current = run_once(options, match, initial, evaluator);
+            Totals current = run_once(options, match, initial, evaluator, bootstrap_prior);
             seconds.push_back(
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
             accumulate(totals, std::move(current));
@@ -348,7 +424,8 @@ int main(int argc, char** argv) {
             << ",\"simulations\":" << options.simulations << ",\"max_moves\":" << options.max_moves
             << "},\"environment\":{\"requested_device\":\"" << device.requested_name
             << "\",\"canonical_device\":\"" << device.canonical_name
-            << "\",\"precision\":\"float32\",\"torch_threads\":" << torch::get_num_threads()
+            << "\",\"precision\":\"" << options.precision
+            << "\",\"torch_threads\":" << torch::get_num_threads()
             << "},\"provenance\":" << diamond_support::build_provenance_json()
             << ",\"samples_seconds\":[";
         for (std::size_t index = 0; index < seconds.size(); ++index)
@@ -357,8 +434,11 @@ int main(int argc, char** argv) {
                   << ",\"median\":" << sorted_seconds[sorted_seconds.size() / 2]
                   << ",\"max\":" << sorted_seconds.back()
                   << ",\"range\":" << sorted_seconds.back() - sorted_seconds.front()
-                  << "},\"domain\":{\"model_sha256\":\"" << artifact.model_sha256
-                  << "\",\"runtime_sha256\":\"" << artifact.runtime_sha256
+                  << "},\"domain\":{\"model_source\":\""
+                  << (options.checkpoint ? "checkpoint" : "artifact")
+                  << "\",\"model_family\":\"" << (min_model ? "Min" : "Soo")
+                  << "\",\"model_sha256\":\"" << model_sha256
+                  << "\",\"runtime_sha256\":\"" << runtime_sha256
                   << "\",\"attempted_episodes\":" << totals.attempted
                   << ",\"completed_episodes\":" << totals.completed
                   << ",\"aborted_episodes\":" << totals.aborted

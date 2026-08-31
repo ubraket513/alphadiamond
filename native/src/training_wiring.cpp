@@ -46,6 +46,65 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
     };
 }
 
+EvaluationPipelineWiring wire_evaluation_pipeline(const ProductionConfig& config) {
+    config.validate();
+    return {
+        .run_arena = config.arena.enabled,
+        .record_rating = config.arena.enabled,
+        .activate_candidate = !config.arena.enabled,
+    };
+}
+
+std::vector<std::string> validate_training_config_transition(const ProductionConfig& from,
+                                                             const ProductionConfig& to) {
+    from.validate();
+    to.validate();
+    std::vector<std::string> changed;
+    const auto note = [&changed](bool differs, const char* field) {
+        if (differs) changed.emplace_back(field);
+    };
+    note(from.runtime.precision != to.runtime.precision, "runtime.precision");
+    note(from.workers.logical_lanes != to.workers.logical_lanes,
+         "workers.logical_lanes");
+    note(from.workers.search_threads != to.workers.search_threads,
+         "workers.search_threads");
+    note(from.workers.games_per_iteration != to.workers.games_per_iteration,
+         "workers.games_per_iteration");
+    note(from.inference.max_batch_size != to.inference.max_batch_size,
+         "inference.max_batch_size");
+    note(from.inference.max_wait_us != to.inference.max_wait_us,
+         "inference.max_wait_us");
+    note(from.inference.request_queue_capacity != to.inference.request_queue_capacity,
+         "inference.request_queue_capacity");
+    note(from.inference.response_timeout_s != to.inference.response_timeout_s,
+         "inference.response_timeout_s");
+    note(from.training.train_steps_per_iteration != to.training.train_steps_per_iteration,
+         "training.train_steps_per_iteration");
+    note(from.self_play.bootstrap_prior != to.self_play.bootstrap_prior,
+         "self_play.bootstrap_prior");
+    note(from.arena.enabled != to.arena.enabled, "arena.enabled");
+
+    auto immutable_projection = to;
+    immutable_projection.runtime.precision = from.runtime.precision;
+    immutable_projection.workers.logical_lanes = from.workers.logical_lanes;
+    immutable_projection.workers.search_threads = from.workers.search_threads;
+    immutable_projection.workers.games_per_iteration = from.workers.games_per_iteration;
+    immutable_projection.inference.max_batch_size = from.inference.max_batch_size;
+    immutable_projection.inference.max_wait_us = from.inference.max_wait_us;
+    immutable_projection.inference.request_queue_capacity =
+        from.inference.request_queue_capacity;
+    immutable_projection.inference.response_timeout_s = from.inference.response_timeout_s;
+    immutable_projection.training.train_steps_per_iteration =
+        from.training.train_steps_per_iteration;
+    immutable_projection.self_play.bootstrap_prior = from.self_play.bootstrap_prior;
+    immutable_projection.arena.enabled = from.arena.enabled;
+    if (immutable_projection != from)
+        throw ConfigError("training config transition changes an immutable field");
+    if (changed.empty())
+        throw ConfigError("training config transition does not change any field");
+    return changed;
+}
+
 soo::EpisodeConfig wire_arena_episode(const ProductionConfig& config, std::size_t lanes) {
     config.validate();
     if (lanes == 0)

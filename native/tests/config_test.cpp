@@ -1,4 +1,5 @@
 #include "diamond_orchestration/config.hpp"
+#include "diamond_orchestration/training_wiring.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -8,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+using diamond_orchestration::ArenaConfig;
 using diamond_orchestration::ConfigError;
 using diamond_orchestration::InferenceConfig;
 using diamond_orchestration::MCTSConfig;
@@ -31,7 +33,8 @@ constexpr std::string_view kV1MigrationError =
     "train_steps_per_iteration, opening_suite, and promotion_statistics";
 
 void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (!condition)
+        throw std::runtime_error(message);
 }
 
 void rejects(const std::function<void()>& action, const char* message) {
@@ -59,7 +62,7 @@ JsonValue runtime_json(std::string device, std::string precision = "fp32") {
                                        {"precision", JsonValue{std::move(precision)}}}};
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -88,6 +91,21 @@ int main(int argc, char** argv) {
                                                    .weight_decay = 1e-4,
                                                    .seed = 0},
                 "training defaults changed");
+        require(ArenaConfig{} == ArenaConfig{.enabled = true,
+                                             .games = 36,
+                                             .seed = 0,
+                                             .max_moves = 2000,
+                                             .promotion_threshold = 0.55},
+                "arena defaults changed");
+
+        const JsonValue disabled_arena{JsonValue::Object{{"enabled", JsonValue{false}},
+                                                         {"games", JsonValue{int64_t{36}}},
+                                                         {"max_moves", JsonValue{int64_t{800}}},
+                                                         {"promotion_threshold", JsonValue{0.55}},
+                                                         {"seed", JsonValue{int64_t{7}}}}};
+        require(diamond_support::canonical_json(ArenaConfig::from_json(disabled_arena).to_json()) ==
+                    diamond_support::canonical_json(disabled_arena),
+                "disabled arena JSON must round trip");
         require(WorkerConfig{} == WorkerConfig{.logical_lanes = 1,
                                                .search_threads = 1,
                                                .games_per_iteration = 2,
@@ -95,9 +113,15 @@ int main(int argc, char** argv) {
                 "worker defaults changed");
         // A default configuration must itself be valid.
         WorkerConfig{}.validate();
-        rejects([] { WorkerConfig{.logical_lanes = 4, .search_threads = 1,
-                                  .games_per_iteration = 4, .retry_id = "a"}.validate(); },
-                "games equal to lanes must be rejected: the job queue never engages");
+        rejects(
+            [] {
+                WorkerConfig{.logical_lanes = 4,
+                             .search_threads = 1,
+                             .games_per_iteration = 4,
+                             .retry_id = "a"}
+                    .validate();
+            },
+            "games equal to lanes must be rejected: the job queue never engages");
         require(InferenceConfig{} == InferenceConfig{.max_batch_size = 1,
                                                      .max_wait_us = 1,
                                                      .request_queue_capacity = 1,
@@ -187,8 +211,47 @@ int main(int argc, char** argv) {
             rejects([&] { (void)RuntimeConfig::from_json(runtime_json(device)); },
                     "invalid runtime device must be rejected");
         }
+        for (const char* precision : {"fp32", "fp16", "bf16"}) {
+            const auto value = runtime_json("cuda:0", precision);
+            require(diamond_support::canonical_json(RuntimeConfig::from_json(value).to_json()) ==
+                        diamond_support::canonical_json(value),
+                    "CUDA inference precision must round trip");
+        }
         rejects([] { (void)RuntimeConfig::from_json(runtime_json("cpu", "fp16")); },
-                "unsupported precision must be rejected");
+                "reduced precision on CPU must be rejected");
+        rejects([] { (void)RuntimeConfig::from_json(runtime_json("cuda", "fp8")); },
+                "unknown precision must be rejected");
+
+        ProductionConfig transition_from;
+        transition_from.model_name = "Min";
+        transition_from.arena.games = 36;
+        transition_from.runtime = {.device = "cuda:0", .precision = "fp32"};
+        transition_from.workers = {.logical_lanes = 512,
+                                   .search_threads = 16,
+                                   .games_per_iteration = 768,
+                                   .retry_id = "attempt-0"};
+        transition_from.inference.max_batch_size = 256;
+        transition_from.inference.max_wait_us = 50;
+        transition_from.training.train_steps_per_iteration = 1024;
+        auto transition_to = transition_from;
+        transition_to.runtime.precision = "fp16";
+        transition_to.workers.games_per_iteration = 1024;
+        transition_to.inference.max_wait_us = 100;
+        transition_to.training.train_steps_per_iteration = 1408;
+        const auto changed =
+            diamond_orchestration::validate_training_config_transition(transition_from,
+                                                                       transition_to);
+        require(changed == std::vector<std::string>{"runtime.precision",
+                                                    "workers.games_per_iteration",
+                                                    "inference.max_wait_us",
+                                                    "training.train_steps_per_iteration"},
+                "training transition must report every allow-listed field in stable order");
+        auto forbidden_transition = transition_to;
+        forbidden_transition.mcts.simulations = 64;
+        rejects([&] {
+            (void)diamond_orchestration::validate_training_config_transition(
+                transition_from, forbidden_transition);
+        }, "training transition must reject search-semantics changes");
         rejects(
             [] {
                 (void)RuntimeConfig::from_json(
@@ -237,7 +300,11 @@ int main(int argc, char** argv) {
             .run_budget = RunBudgetConfig{.max_iterations = 1,
                                           .max_wall_clock_seconds = std::nullopt,
                                           .checkpoint_every_iterations = 1},
-            .arena = {.games = 4, .seed = 7, .max_moves = 2000, .promotion_threshold = 0.55},
+            .arena = {.enabled = false,
+                      .games = 4,
+                      .seed = 7,
+                      .max_moves = 2000,
+                      .promotion_threshold = 0.55},
             .opening_suite = OpeningSuiteConfig{.id = "production-openings-v1",
                                                 .version = 1,
                                                 .seed = 7,
@@ -315,24 +382,31 @@ int main(int argc, char** argv) {
                                                 {"simulations", JsonValue{int64_t{1}}}}});
             },
             "out-of-range dirichlet epsilon must be rejected");
-        rejects([&] {
-            auto invalid = std::get<JsonValue::Object>(production_json.value);
-            invalid.emplace("unknown", JsonValue{true});
-            (void)ProductionConfig::from_json(JsonValue{std::move(invalid)});
-        }, "unknown production key must be rejected");
+        rejects(
+            [&] {
+                auto invalid = std::get<JsonValue::Object>(production_json.value);
+                invalid.emplace("unknown", JsonValue{true});
+                (void)ProductionConfig::from_json(JsonValue{std::move(invalid)});
+            },
+            "unknown production key must be rejected");
 
         if (argc == 2) {
             const std::filesystem::path root = argv[1];
-            for (const char* name : {"soo-production.json", "soo-bootstrap.json",
-                                     "min-production.json", "min-bootstrap.json"}) {
+            for (const char* name :
+                 {"soo-production.json", "soo-bootstrap.json", "min-production.json",
+                  "min-production-6h.json", "min-bootstrap.json"}) {
                 std::ifstream input(root / name, std::ios::binary);
                 require(static_cast<bool>(input), "cannot open reference production config");
                 const std::string contents{std::istreambuf_iterator<char>(input), {}};
                 const JsonValue reference = diamond_support::parse_json(contents);
                 const ProductionConfig loaded = ProductionConfig::from_json(reference);
-                require(diamond_support::canonical_json(loaded.to_json()) ==
-                            diamond_support::canonical_json(reference),
-                        "reference production config must round trip");
+                const auto actual = diamond_support::canonical_json(loaded.to_json());
+                const auto expected = diamond_support::canonical_json(reference);
+                if (actual != expected)
+                    std::cerr << "expected: " << expected << "\nactual: " << actual << '\n';
+                require(
+                    actual == expected,
+                    (std::string("reference production config must round trip: ") + name).c_str());
             }
         }
     } catch (const std::exception& error) {

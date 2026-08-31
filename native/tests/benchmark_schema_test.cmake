@@ -22,6 +22,21 @@ endif()
 file(REMOVE_RECURSE "${SCRATCH}")
 file(MAKE_DIRECTORY "${SCRATCH}")
 
+execute_process(
+    COMMAND "${SELFPLAY_BENCHMARK}" --help
+    RESULT_VARIABLE selfplay_help_result
+    OUTPUT_VARIABLE selfplay_help
+    ERROR_VARIABLE selfplay_help_error)
+if(NOT selfplay_help_result EQUAL 0)
+    message(FATAL_ERROR "self-play benchmark --help failed: ${selfplay_help_error}")
+endif()
+foreach(option IN ITEMS --checkpoint --config --precision)
+    string(FIND "${selfplay_help}" "${option}" option_position)
+    if(option_position EQUAL -1)
+        message(FATAL_ERROR "self-play benchmark help is missing ${option}")
+    endif()
+endforeach()
+
 function(run_json output executable)
     execute_process(
         COMMAND "${executable}" ${ARGN}

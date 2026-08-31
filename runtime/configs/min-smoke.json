@@ -51,11 +51,12 @@
     "seed": 7
   },
   "run_budget": {
-    "max_iterations": 1,
+    "max_iterations": 2,
     "max_wall_clock_seconds": null,
     "checkpoint_every_iterations": 1
   },
   "arena": {
+    "enabled": false,
     "games": 36,
     "max_moves": 800,
     "promotion_threshold": 0.55,

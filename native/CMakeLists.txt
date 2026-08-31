@@ -58,6 +58,7 @@ target_compile_options(soo_search PRIVATE
 add_library(diamond_pipeline STATIC
     src/json.cpp
     src/replay.cpp
+    src/replay_segment.cpp
     src/replay_store.cpp
     src/training_sample.cpp
 )
@@ -106,8 +107,10 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
     diamond_add_native_test(replay_schema_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-schema-scratch")
     diamond_add_native_test(replay_store_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-store-scratch")
+    diamond_add_native_test(replay_segment_test)
     target_link_libraries(replay_schema_test PRIVATE alphadiamond::diamond_pipeline)
     target_link_libraries(replay_store_test PRIVATE alphadiamond::diamond_pipeline)
+    target_link_libraries(replay_segment_test PRIVATE alphadiamond::diamond_pipeline)
 
     add_executable(golden_manifest_test tests/golden_manifest_test.cpp)
     target_link_libraries(golden_manifest_test PRIVATE alphadiamond::diamond_pipeline)
@@ -217,6 +220,7 @@ if(DIAMOND_BUILD_LIBTORCH)
         src/report.cpp
         src/run_state.cpp
         src/schedule.cpp
+        src/training_resources.cpp
         src/training_wiring.cpp
     )
     add_library(alphadiamond::diamond_orchestration ALIAS diamond_orchestration)
@@ -238,7 +242,8 @@ if(DIAMOND_BUILD_LIBTORCH)
 
         add_executable(selfplay_benchmark benchmarks/selfplay_benchmark.cpp)
         target_link_libraries(selfplay_benchmark PRIVATE
-            alphadiamond::diamond_native_pipeline)
+            alphadiamond::diamond_native_pipeline
+            alphadiamond::diamond_orchestration)
 
         add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
         target_link_libraries(end_to_end_benchmark PRIVATE

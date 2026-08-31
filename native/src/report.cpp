@@ -138,9 +138,13 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
                                  : have_warm_start ? CommandInitialization::warm_start
                                                    : CommandInitialization::native_checkpoint;
     } else if (request.command == "resume" || request.command == "report") {
-        if (have_config || initialization_count != 0 || have_candidate || have_champion ||
-            have_opening_suite || have_runtime || have_model || have_run_id) {
-            throw CommandArgumentError(request.command + " accepts only --run-dir");
+        if ((request.command == "report" && have_config) || initialization_count != 0 ||
+            have_candidate || have_champion || have_opening_suite || have_runtime || have_model ||
+            have_run_id) {
+            throw CommandArgumentError(request.command +
+                                       (request.command == "resume"
+                                            ? " accepts only --run-dir and optional --config"
+                                            : " accepts only --run-dir"));
         }
     } else {
         if (have_config || initialization_count != 0 || !have_candidate || !have_champion ||
@@ -154,8 +158,15 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
 
 ProductionConfig load_config(const CommandRequest& request) {
     try {
-        const auto path = request.command == "train" ? request.config_path
-                                                     : request.run_dir / "resolved-config.json";
+        auto path = request.command == "train" ||
+                            (request.command == "resume" && !request.config_path.empty())
+                        ? request.config_path
+                        : request.run_dir / "resolved-config.json";
+        if ((request.command == "resume" && request.config_path.empty()) ||
+            request.command == "evaluate") {
+            const auto active = request.run_dir / "active-config.json";
+            if (std::filesystem::exists(active)) path = active;
+        }
         std::ifstream input(path, std::ios::binary);
         if (!input) {
             if (request.command == "train")
@@ -208,7 +219,7 @@ int dispatch_command(const std::vector<std::string>& arguments, const CommandSer
                     "", "ok",
                     {{"usage", Json{"train --run-dir DIR --config FILE (--scratch|--checkpoint "
                                     "DIR|--warm-start ARTIFACT); "
-                                    "resume --run-dir DIR; evaluate --run-dir DIR --candidate DIR "
+                                    "resume --run-dir DIR [--config FILE]; evaluate --run-dir DIR --candidate DIR "
                                     "--champion DIR "
                                     "--opening-suite ID; report --run-dir DIR"}}}),
                 output);

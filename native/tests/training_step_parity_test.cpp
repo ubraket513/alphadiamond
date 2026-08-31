@@ -117,7 +117,10 @@ void check_model_device(const diamond_model::DiamondModel& model, const torch::D
 }
 
 void check_optimizer_device(const torch::optim::AdamW& optimizer, const torch::Device& device) {
-    REQUIRE(optimizer.state().size() == optimizer.size(), "AdamW state coverage");
+    std::size_t parameter_count = 0;
+    for (const auto& group : optimizer.param_groups())
+        parameter_count += group.params().size();
+    REQUIRE(optimizer.state().size() == parameter_count, "AdamW state coverage");
     for (const auto& entry : optimizer.state()) {
         const auto* state = dynamic_cast<const torch::optim::AdamWParamState*>(entry.second.get());
         REQUIRE(state != nullptr, "AdamW state type");
