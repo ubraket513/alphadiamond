@@ -431,6 +431,21 @@ Array training_metrics_json(const std::vector<diamond_training::TrainingMetrics>
     return values;
 }
 
+Object visit_target_json(const soo::VisitTargetSummary& summary) {
+    return Object{
+        {"rows", Json{static_cast<int64_t>(summary.rows)}},
+        {"legal_actions_mean", Json{summary.legal_actions_mean}},
+        {"entropy_mean", Json{summary.entropy_mean}},
+        {"entropy_p50", Json{summary.entropy_p50}},
+        {"entropy_p90", Json{summary.entropy_p90}},
+        {"normalized_entropy_mean", Json{summary.normalized_entropy_mean}},
+        {"max_probability_mean", Json{summary.max_probability_mean}},
+        {"top3_mass_mean", Json{summary.top3_mass_mean}},
+        {"effective_actions_mean", Json{summary.effective_actions_mean}},
+        {"zero_visit_fraction_mean", Json{summary.zero_visit_fraction_mean}},
+    };
+}
+
 diamond_pipeline::IterationRequest iteration_job(const ProductionConfig& config,
                                                  const diamond_orchestration::RunState& state,
                                                  const std::string& operation,
@@ -841,7 +856,7 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             write_json(
                 per_iteration / "selfplay.metrics.json",
                 Json{Object{
-                    {"schema_version", Json{int64_t{1}}},
+                    {"schema_version", Json{int64_t{2}}},
                     {"operation_id", Json{operation}},
                     {"iteration", Json{static_cast<int64_t>(iteration)}},
                     {"search",
@@ -865,6 +880,10 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                                  {"batch_p50", Json{static_cast<int64_t>(m.batch_p50)}},
                                  {"batch_p90", Json{static_cast<int64_t>(m.batch_p90)}},
                                  {"batch_max", Json{static_cast<int64_t>(m.batch_max)}}}}},
+                    {"search_targets",
+                     Json{Object{{"all", Json{visit_target_json(m.all_targets)}},
+                                 {"completed", Json{visit_target_json(m.completed_targets)}},
+                                 {"aborted", Json{visit_target_json(m.aborted_targets)}}}}},
                     {"games",
                      Json{Object{
                          {"requested", Json{static_cast<int64_t>(result.episodes.size())}},

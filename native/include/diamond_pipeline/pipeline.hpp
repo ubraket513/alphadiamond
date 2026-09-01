@@ -13,6 +13,7 @@
 #include "diamond_pipeline/model_pool.hpp"
 #include "diamond_pipeline/replay_store.hpp"
 #include "diamond_training/trainer.hpp"
+#include "soo/search_target_metrics.hpp"
 #include "soo/selfplay.hpp"
 
 namespace diamond_pipeline {
@@ -84,6 +85,10 @@ struct SelfPlayMetrics {
     uint64_t completed_moves_p90 = 0;
     uint64_t completed_moves_p99 = 0;
     uint64_t completed_moves_max = 0;
+
+    soo::VisitTargetSummary all_targets;
+    soo::VisitTargetSummary completed_targets;
+    soo::VisitTargetSummary aborted_targets;
 };
 
 // One aborted game, with what it takes to tell a retained block from a

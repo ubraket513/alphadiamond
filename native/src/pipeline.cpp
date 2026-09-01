@@ -229,6 +229,20 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
     soo::EpisodeMetrics metrics;
     const auto episodes =
         soo::run_episodes(request.match, request.jobs, request.selfplay, models, metrics);
+    std::vector<soo::VisitTargetObservation> all_targets;
+    std::vector<soo::VisitTargetObservation> completed_targets;
+    std::vector<soo::VisitTargetObservation> aborted_targets;
+    for (const auto& episode : episodes) {
+        auto& bucket = episode.completed ? completed_targets : aborted_targets;
+        for (const auto& move : episode.moves) {
+            const auto row = soo::inspect_visit_target(move.visit_counts);
+            all_targets.push_back(row);
+            bucket.push_back(row);
+        }
+    }
+    result.metrics.all_targets = soo::summarize_visit_targets(all_targets);
+    result.metrics.completed_targets = soo::summarize_visit_targets(completed_targets);
+    result.metrics.aborted_targets = soo::summarize_visit_targets(aborted_targets);
     result.episodes.reserve(episodes.size());
     for (std::size_t index = 0; index < episodes.size(); ++index) {
         if (stop.stop_requested())

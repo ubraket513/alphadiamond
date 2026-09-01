@@ -63,7 +63,7 @@ JsonValue::Object report_object(const std::filesystem::path& path) {
 int main(int argc, char** argv) {
     REQUIRE(argc == 3, "usage: cli_contract_test <scratch> <alphadiamond-train>");
     const auto scratch = std::filesystem::path(argv[1]);
-    (void)argv[2];
+    const auto train_binary = std::filesystem::path(argv[2]);
     std::filesystem::remove_all(scratch);
     std::filesystem::create_directories(scratch);
     const auto config = write_config(scratch);
@@ -322,5 +322,35 @@ int main(int argc, char** argv) {
     CHECK_EQ(std::get<std::string>(cuda_report.at("status").value), std::string("error"));
     CHECK_EQ(std::get<std::string>(cuda_report.at("error").value),
              std::string("runtime.device cuda requires CUDA, but no CUDA device is available"));
+
+    auto smoke_config = ProductionConfig{};
+    smoke_config.runtime.device = "cpu";
+    smoke_config.workers.games_per_iteration = 2;
+    smoke_config.workers.logical_lanes = 1;
+    smoke_config.workers.search_threads = 1;
+    smoke_config.inference.max_batch_size = 1;
+    smoke_config.inference.max_wait_us = 1;
+    smoke_config.mcts.simulations = 1;
+    smoke_config.self_play.bootstrap_prior = "canonical-target-vacancy-distance-v2";
+    smoke_config.self_play.max_moves = 500;
+    smoke_config.training.batch_size = 1;
+    smoke_config.training.train_steps_per_iteration = 1;
+    smoke_config.run_budget.max_iterations = 1;
+    smoke_config.arena.enabled = false;
+    const auto smoke_config_path = scratch / "sidecar-smoke.json";
+    {
+        std::ofstream output(smoke_config_path, std::ios::binary | std::ios::trunc);
+        output << diamond_support::canonical_json(smoke_config.to_json());
+    }
+    const auto smoke_run = scratch / "soo" / "sidecar-run";
+    const std::string smoke_command = "\"" + train_binary.string() + "\" train --run-dir \"" +
+                                      smoke_run.string() + "\" --config \"" +
+                                      smoke_config_path.string() + "\" --scratch";
+    CHECK_EQ(std::system(smoke_command.c_str()), 0);
+    const auto sidecar = report_object(smoke_run / "iterations" / "0" / "selfplay.metrics.json");
+    CHECK_EQ(std::get<int64_t>(sidecar.at("schema_version").value), int64_t{2});
+    const auto& search_targets = std::get<JsonValue::Object>(sidecar.at("search_targets").value);
+    const auto& all_targets = std::get<JsonValue::Object>(search_targets.at("all").value);
+    CHECK(std::get<int64_t>(all_targets.at("rows").value) > 0);
     return soo_test::report("cli_contract_test");
 }
