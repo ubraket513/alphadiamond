@@ -30,7 +30,9 @@ execute_process(
 if(NOT selfplay_help_result EQUAL 0)
     message(FATAL_ERROR "self-play benchmark --help failed: ${selfplay_help_error}")
 endif()
-foreach(option IN ITEMS --checkpoint --config --precision)
+foreach(option IN ITEMS --checkpoint --config --precision --bootstrap-prior
+        --simulations-late --repeat-window --max-game-seconds --diagnostic-roots
+        --diagnostic-batch)
     string(FIND "${selfplay_help}" "${option}" option_position)
     if(option_position EQUAL -1)
         message(FATAL_ERROR "self-play benchmark help is missing ${option}")
@@ -120,7 +122,8 @@ endif()
 run_json(selfplay_json "${SELFPLAY_BENCHMARK}"
     --artifact "${MODEL_ARTIFACT}" --device cpu --lanes 2 --threads 1
     --max-batch 2 --max-wait-us 200 --simulations 1 --max-moves 2
-    --warmups 0 --repetitions 1 --scratch "${SCRATCH}/selfplay")
+    --warmups 0 --repetitions 1 --diagnostic-roots 1 --diagnostic-batch 1
+    --scratch "${SCRATCH}/selfplay")
 check_common("${selfplay_json}" selfplay)
 string(JSON selfplay_model_sha GET "${selfplay_json}" domain model_sha256)
 string(JSON selfplay_runtime_sha GET "${selfplay_json}" domain runtime_sha256)
@@ -130,12 +133,20 @@ string(JSON aborted GET "${selfplay_json}" domain aborted_episodes)
 string(JSON evaluations GET "${selfplay_json}" domain evaluations)
 string(JSON batches GET "${selfplay_json}" domain batches)
 string(JSON batch_max GET "${selfplay_json}" domain batch_max)
+string(JSON diagnostic_rows GET "${selfplay_json}" domain policy_fit sampled_roots)
+string(JSON legal_mass GET "${selfplay_json}" domain policy_fit legal_probability_mass_mean)
+string(JSON full_kl GET "${selfplay_json}" domain policy_fit full_kl_mean)
+string(JSON legal_kl GET "${selfplay_json}" domain policy_fit legal_kl_mean)
 check_sha256("${selfplay_model_sha}" "self-play model digest")
 check_sha256("${selfplay_runtime_sha}" "self-play runtime digest")
 math(EXPR accounted "${completed} + ${aborted}")
 if(NOT attempted EQUAL 2 OR NOT accounted EQUAL attempted OR evaluations LESS 1
    OR batches LESS 1 OR batch_max GREATER 2)
     message(FATAL_ERROR "self-play benchmark accounting mismatch")
+endif()
+if(NOT diagnostic_rows EQUAL 1 OR legal_mass LESS_EQUAL 0 OR legal_mass GREATER 1
+   OR full_kl LESS -0.0000000001 OR legal_kl LESS -0.0000000001)
+    message(FATAL_ERROR "self-play policy diagnostics mismatch")
 endif()
 
 run_json(end_to_end_json "${END_TO_END_BENCHMARK}"

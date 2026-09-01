@@ -58,6 +58,7 @@ target_compile_options(soo_search PRIVATE
 
 add_library(diamond_pipeline STATIC
     src/json.cpp
+    src/policy_diagnostics.cpp
     src/replay.cpp
     src/replay_segment.cpp
     src/replay_store.cpp
@@ -105,6 +106,7 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(budget_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(batcher_test)
+    diamond_add_native_test(policy_diagnostics_test)
     diamond_add_native_test(search_target_metrics_test)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
     diamond_add_native_test(replay_schema_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-schema-scratch")
@@ -113,6 +115,7 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     target_link_libraries(replay_schema_test PRIVATE alphadiamond::diamond_pipeline)
     target_link_libraries(replay_store_test PRIVATE alphadiamond::diamond_pipeline)
     target_link_libraries(replay_segment_test PRIVATE alphadiamond::diamond_pipeline)
+    target_link_libraries(policy_diagnostics_test PRIVATE alphadiamond::diamond_pipeline)
 
     add_executable(golden_manifest_test tests/golden_manifest_test.cpp)
     target_link_libraries(golden_manifest_test PRIVATE alphadiamond::diamond_pipeline)
