@@ -594,9 +594,10 @@ void validate_checkpoint_context(const diamond_training::CheckpointInfo& saved,
     try {
         const auto saved_config = ProductionConfig::from_json(
             diamond_support::parse_json(saved.provenance->resolved_config_bytes));
-        legacy_semantic_match = saved_config == config && saved.provenance->protocol_ids_json ==
-                                                              diamond_support::canonical_json(
-                                                                  Json{protocol_ids(saved_config)});
+        legacy_semantic_match =
+            (saved_config == config || (predecessor && saved_config == *predecessor)) &&
+            saved.provenance->protocol_ids_json ==
+                diamond_support::canonical_json(Json{protocol_ids(saved_config)});
     } catch (const std::exception&) {
         legacy_semantic_match = false;
     }
