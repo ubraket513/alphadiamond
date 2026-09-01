@@ -4,11 +4,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <chrono>
 #include <exception>
 #include <condition_variable>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -157,6 +160,47 @@ void DummyBatchEvaluator::evaluate(std::vector<BatchItem>& batch) {
     if (latency_ms_ > 0.0) {
         std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(latency_ms_));
     }
+}
+
+std::vector<double> blend_legal_priors(const std::vector<double>& vacancy,
+                                       const std::vector<double>& network, double weight) {
+    if (!std::isfinite(weight) || weight < 0.0 || weight > 1.0)
+        throw std::invalid_argument("bootstrap prior weight must be finite and in [0, 1]");
+    if (vacancy.empty() || vacancy.size() != network.size())
+        throw std::invalid_argument("prior vectors must have the same positive legal-action width");
+
+    const auto normalized = [](const std::vector<double>& values, const char* name) {
+        double sum = 0.0;
+        for (const double value : values) {
+            if (!std::isfinite(value) || value < 0.0)
+                throw std::invalid_argument(std::string(name) +
+                                            " prior must contain finite non-negative values");
+            sum += value;
+        }
+        if (!std::isfinite(sum) || sum <= 0.0)
+            throw std::invalid_argument(std::string(name) +
+                                        " prior must have positive finite mass");
+        std::vector<double> result;
+        result.reserve(values.size());
+        for (const double value : values)
+            result.push_back(value / sum);
+        return result;
+    };
+
+    const auto vacancy_normalized = normalized(vacancy, "vacancy");
+    const auto network_normalized = normalized(network, "network");
+    std::vector<double> mixed(vacancy.size());
+    double mixed_sum = 0.0;
+    for (std::size_t index = 0; index < mixed.size(); ++index) {
+        mixed[index] =
+            weight * vacancy_normalized[index] + (1.0 - weight) * network_normalized[index];
+        mixed_sum += mixed[index];
+    }
+    if (!std::isfinite(mixed_sum) || mixed_sum <= 0.0)
+        throw std::invalid_argument("blended prior must have positive finite mass");
+    for (double& value : mixed)
+        value /= mixed_sum;
+    return mixed;
 }
 
 SchedulerMetrics run_scheduler(const Match& match, const State& opening,
@@ -468,6 +512,9 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     if (config.max_batch < 1) throw std::invalid_argument("max_batch must be positive");
     if (config.repetition_temperature < 0.0)
         throw std::invalid_argument("repetition_temperature must not be negative");
+    if (!std::isfinite(config.bootstrap_prior_weight) || config.bootstrap_prior_weight < 0.0 ||
+        config.bootstrap_prior_weight > 1.0)
+        throw std::invalid_argument("bootstrap_prior_weight must be finite and in [0, 1]");
 
     MCTSConfig search_config;
     search_config.simulations = config.simulations;
@@ -809,8 +856,13 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 const double* values = lane.session.value_width() == 1
                                            ? &lane.outcome.value
                                            : lane.outcome.values.data();
-                lane.session.supply(
-                    config.bootstrap_prior ? lane.bootstrap_priors : lane.outcome.priors, values);
+                if (config.bootstrap_prior) {
+                    lane.bootstrap_priors = blend_legal_priors(
+                        lane.bootstrap_priors, lane.outcome.priors, config.bootstrap_prior_weight);
+                    lane.session.supply(lane.bootstrap_priors, values);
+                } else {
+                    lane.session.supply(lane.outcome.priors, values);
+                }
             }
             ready.push_many(batch);
         }

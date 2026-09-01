@@ -254,7 +254,11 @@ struct EpisodeConfig {
     // coordinates, where the acting seat's target is always canonical z-, so it
     // is seat-agnostic and applies to Min exactly as it does to Soo.
     bool bootstrap_prior = false;
+    double bootstrap_prior_weight = 1.0;
 };
+
+std::vector<double> blend_legal_priors(const std::vector<double>& vacancy,
+                                       const std::vector<double>& network, double weight);
 
 struct EpisodeMetrics {
     uint64_t evaluations = 0;

@@ -36,7 +36,8 @@ soo::EpisodeConfig wire_arena_episode(const ProductionConfig& config, std::size_
 // optimizer semantics, MCTS budget, and protocol fields remain immutable;
 // only measured throughput controls and the explicit bootstrap/Arena phase
 // switches may change. Returns changed field names in stable audit order.
-std::vector<std::string> validate_training_config_transition(const ProductionConfig& from,
-                                                             const ProductionConfig& to);
+std::vector<std::string>
+validate_training_config_transition(const ProductionConfig& from, const ProductionConfig& to,
+                                    std::string_view rollback_failed_gate = {});
 
 } // namespace diamond_orchestration

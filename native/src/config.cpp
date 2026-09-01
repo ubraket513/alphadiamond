@@ -298,6 +298,9 @@ void SelfPlayConfig::validate() const {
         throw ConfigError("self_play.temperature must be a non-negative finite number");
     if (!bootstrap_prior_is_valid(bootstrap_prior))
         throw ConfigError("self_play.bootstrap_prior must be a supported bootstrap prior");
+    if (!std::isfinite(bootstrap_prior_weight) || bootstrap_prior_weight < 0.0 ||
+        bootstrap_prior_weight > 1.0)
+        throw ConfigError("self_play.bootstrap_prior_weight must be finite and in [0, 1]");
     if (max_game_seconds && (!std::isfinite(*max_game_seconds) || *max_game_seconds <= 0))
         throw ConfigError("self_play.max_game_seconds must be a positive finite number or null");
 }
@@ -305,6 +308,7 @@ void SelfPlayConfig::validate() const {
 Json SelfPlayConfig::to_json() const {
     validate();
     return Json{Object{{"bootstrap_prior", Json{bootstrap_prior}},
+                       {"bootstrap_prior_weight", Json{bootstrap_prior_weight}},
                        {"max_game_seconds", optional_json(max_game_seconds)},
                        {"max_moves", Json{max_moves}},
                        {"seed", Json{json_integer(seed, "self_play.seed")}},
@@ -314,10 +318,10 @@ Json SelfPlayConfig::to_json() const {
 
 SelfPlayConfig SelfPlayConfig::from_json(const Json& value) {
     const Object& input = object(value, "self_play");
-    require_exact_keys(input,
-                       {"bootstrap_prior", "max_game_seconds", "max_moves", "seed", "temperature",
-                        "temperature_moves"},
-                       "self_play");
+    require_keys(input,
+                 {"bootstrap_prior", "max_game_seconds", "max_moves", "seed", "temperature",
+                  "temperature_moves"},
+                 {"bootstrap_prior_weight"}, "self_play");
     SelfPlayConfig result{
         .max_moves = integer(field(input, "max_moves", "self_play"), "self_play.max_moves"),
         .temperature_moves =
@@ -328,6 +332,10 @@ SelfPlayConfig SelfPlayConfig::from_json(const Json& value) {
             string(field(input, "bootstrap_prior", "self_play"), "self_play.bootstrap_prior"),
         .max_game_seconds = optional_number(field(input, "max_game_seconds", "self_play"),
                                             "self_play.max_game_seconds")};
+    result.bootstrap_prior_weight =
+        input.contains("bootstrap_prior_weight")
+            ? number(input.at("bootstrap_prior_weight"), "self_play.bootstrap_prior_weight")
+            : (result.bootstrap_prior == kBootstrapPriorNone ? 0.0 : 1.0);
     result.validate();
     return result;
 }

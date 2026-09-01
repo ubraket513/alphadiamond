@@ -217,8 +217,11 @@ int main(int argc, char** argv) {
     CHECK(!wiring.selfplay.bootstrap_prior);
     auto bootstrap_config = wiring_config;
     bootstrap_config.self_play.bootstrap_prior = "canonical-target-vacancy-distance-v2";
-    CHECK(
-        diamond_orchestration::wire_training_iteration(bootstrap_config).selfplay.bootstrap_prior);
+    bootstrap_config.self_play.bootstrap_prior_weight = 0.5;
+    const auto bootstrap_wiring =
+        diamond_orchestration::wire_training_iteration(bootstrap_config).selfplay;
+    CHECK(bootstrap_wiring.bootstrap_prior);
+    CHECK_EQ(bootstrap_wiring.bootstrap_prior_weight, 0.5);
     auto explicit_none = wiring_config;
     explicit_none.self_play.bootstrap_prior =
         std::string(diamond_orchestration::kBootstrapPriorNone);
@@ -234,7 +237,9 @@ int main(int argc, char** argv) {
     // was: the arena stays correct and only its completion rate and its cost
     // move. Both sides take the same prior, so the comparison stays symmetric.
     CHECK(!diamond_orchestration::wire_arena_episode(wiring_config, 4).bootstrap_prior);
-    CHECK(diamond_orchestration::wire_arena_episode(bootstrap_config, 4).bootstrap_prior);
+    const auto bootstrap_arena = diamond_orchestration::wire_arena_episode(bootstrap_config, 4);
+    CHECK(bootstrap_arena.bootstrap_prior);
+    CHECK_EQ(bootstrap_arena.bootstrap_prior_weight, 0.5);
 
     // Lanes are the size of the group of games being played together, and
     // threads and batch cannot usefully exceed it: synchronous MCTS allows one

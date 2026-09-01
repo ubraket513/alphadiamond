@@ -72,6 +72,7 @@ struct SelfPlayConfig final {
     double temperature = 1.0;
     uint64_t seed = 0;
     std::string bootstrap_prior = std::string(kBootstrapPriorNone);
+    double bootstrap_prior_weight = 1.0;
     std::optional<double> max_game_seconds;
 
     void validate() const;

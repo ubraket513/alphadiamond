@@ -9,8 +9,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <limits>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.hpp"
@@ -208,6 +211,62 @@ int main(int argc, char** argv) {
             break;
     }
     CHECK(bootstrap_changed_play);
+
+    const auto same_play = [](const std::vector<soo::Episode>& lhs,
+                              const std::vector<soo::Episode>& rhs) {
+        if (lhs.size() != rhs.size())
+            return false;
+        for (std::size_t game = 0; game < lhs.size(); ++game) {
+            if (lhs[game].move_count != rhs[game].move_count ||
+                lhs[game].moves.size() != rhs[game].moves.size())
+                return false;
+            for (std::size_t move = 0; move < lhs[game].moves.size(); ++move) {
+                if (lhs[game].moves[move].selected_action != rhs[game].moves[move].selected_action)
+                    return false;
+            }
+        }
+        return true;
+    };
+    auto vacancy_endpoint = bootstrapped;
+    vacancy_endpoint.bootstrap_prior_weight = 1.0;
+    soo::EpisodeMetrics vacancy_endpoint_metrics;
+    CHECK(same_play(with_prior, soo::run_episodes(match, jobs, vacancy_endpoint, evaluator,
+                                                  vacancy_endpoint_metrics)));
+    auto network_endpoint = bootstrapped;
+    network_endpoint.bootstrap_prior_weight = 0.0;
+    soo::EpisodeMetrics network_endpoint_metrics;
+    CHECK(same_play(first, soo::run_episodes(match, jobs, network_endpoint, evaluator,
+                                             network_endpoint_metrics)));
+
+    const auto midpoint = soo::blend_legal_priors({2.0, 6.0}, {3.0, 1.0}, 0.5);
+    REQUIRE(midpoint.size() == 2, "prior blend changed the legal-action width");
+    CHECK_EQ(midpoint[0], 0.5);
+    CHECK_EQ(midpoint[1], 0.5);
+    for (const double invalid : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::infinity()}) {
+        bool rejected = false;
+        try {
+            (void)soo::blend_legal_priors({1.0}, {1.0}, invalid);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+    }
+    for (const auto& invalid :
+         {std::pair<std::vector<double>, std::vector<double>>{{}, {}},
+          std::pair<std::vector<double>, std::vector<double>>{{1.0}, {1.0, 2.0}},
+          std::pair<std::vector<double>, std::vector<double>>{{0.0}, {1.0}},
+          std::pair<std::vector<double>, std::vector<double>>{{-1.0}, {1.0}},
+          std::pair<std::vector<double>, std::vector<double>>{
+              {1.0}, {std::numeric_limits<double>::infinity()}}}) {
+        bool rejected = false;
+        try {
+            (void)soo::blend_legal_priors(invalid.first, invalid.second, 0.5);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        CHECK(rejected);
+    }
 
     // Playing games together must not change them.
     //

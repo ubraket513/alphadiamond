@@ -281,7 +281,8 @@ int dominant_cycle_period(const std::vector<uint64_t>& tail, int longest = 32) {
 }
 
 Totals run_once(const Options& options, const soo::Match& match, const soo::State& initial,
-                diamond_pipeline::ModelPool& evaluator, bool bootstrap_prior) {
+                diamond_pipeline::ModelPool& evaluator, bool bootstrap_prior,
+                double bootstrap_prior_weight) {
     const soo::EpisodeConfig config{
         .lanes = static_cast<int>(options.lanes),
         .threads = static_cast<int>(options.threads),
@@ -300,6 +301,7 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
         .simulations_late = static_cast<int>(options.simulations_late.value_or(0)),
         .repeat_window = static_cast<int>(options.repeat_window.value_or(0)),
         .bootstrap_prior = bootstrap_prior,
+        .bootstrap_prior_weight = bootstrap_prior_weight,
     };
     const std::size_t job_count = options.games != 0 ? options.games : options.lanes;
     std::vector<soo::EpisodeJob> jobs;
@@ -492,6 +494,7 @@ int main(int argc, char** argv) {
         std::string runtime_sha256;
         bool min_model = false;
         bool bootstrap_prior = false;
+        double bootstrap_prior_weight = 0.0;
         if (options.checkpoint) {
             const auto config = read_config(*options.config);
             min_model = config.model_name == "Min";
@@ -516,6 +519,7 @@ int main(int argc, char** argv) {
             runtime_sha256 = checkpoint.model_digest;
             bootstrap_prior = config.self_play.bootstrap_prior !=
                               diamond_orchestration::kBootstrapPriorNone;
+            bootstrap_prior_weight = config.self_play.bootstrap_prior_weight;
             if (!options.simulations_late)
                 options.simulations_late = config.mcts.simulations_late;
             if (!options.repeat_window)
@@ -534,10 +538,14 @@ int main(int argc, char** argv) {
             model_sha256 = artifact.model_sha256;
             runtime_sha256 = artifact.runtime_sha256;
         }
-        if (options.bootstrap_prior == "vacancy")
+        if (options.bootstrap_prior == "vacancy") {
             bootstrap_prior = true;
-        if (options.bootstrap_prior == "none")
+            bootstrap_prior_weight = 1.0;
+        }
+        if (options.bootstrap_prior == "none") {
             bootstrap_prior = false;
+            bootstrap_prior_weight = 0.0;
+        }
         if (options.repeat_window.value_or(0) > 0 && options.simulations_late.value_or(0) == 0)
             throw std::invalid_argument("--repeat-window requires non-zero --simulations-late");
         const auto precision = options.precision == "fp16"
@@ -552,14 +560,16 @@ int main(int argc, char** argv) {
         const soo::Match match = make_match(min_model);
         const soo::State initial = opening(match);
         for (std::size_t warmup = 0; warmup < options.warmups; ++warmup)
-            (void)run_once(options, match, initial, evaluator, bootstrap_prior);
+            (void)run_once(options, match, initial, evaluator, bootstrap_prior,
+                           bootstrap_prior_weight);
 
         Totals totals;
         std::vector<double> seconds;
         seconds.reserve(options.repetitions);
         for (std::size_t repetition = 0; repetition < options.repetitions; ++repetition) {
             const auto started = std::chrono::steady_clock::now();
-            Totals current = run_once(options, match, initial, evaluator, bootstrap_prior);
+            Totals current = run_once(options, match, initial, evaluator, bootstrap_prior,
+                                      bootstrap_prior_weight);
             seconds.push_back(
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
             accumulate(totals, std::move(current));
@@ -600,7 +610,8 @@ int main(int argc, char** argv) {
             << ",\"simulations_late\":" << options.simulations_late.value_or(0)
             << ",\"repeat_window\":" << options.repeat_window.value_or(0)
             << ",\"max_game_seconds\":" << options.max_game_seconds.value_or(0.0)
-            << ",\"bootstrap_prior\":\"" << options.bootstrap_prior << "\""
+            << ",\"bootstrap_prior\":\"" << options.bootstrap_prior
+            << "\",\"bootstrap_prior_weight\":" << bootstrap_prior_weight
             << ",\"diagnostic_roots\":" << options.diagnostic_roots
             << ",\"diagnostic_batch\":" << options.diagnostic_batch
             << ",\"max_moves\":" << options.max_moves

@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -176,6 +177,7 @@ int main(int argc, char** argv) {
 
         const JsonValue self_play{
             JsonValue::Object{{"bootstrap_prior", JsonValue{std::string("none")}},
+                              {"bootstrap_prior_weight", JsonValue{0.0}},
                               {"max_game_seconds", JsonValue{nullptr}},
                               {"max_moves", JsonValue{int64_t{20}}},
                               {"seed", JsonValue{int64_t{7}}},
@@ -184,6 +186,26 @@ int main(int argc, char** argv) {
         require(diamond_support::canonical_json(SelfPlayConfig::from_json(self_play).to_json()) ==
                     diamond_support::canonical_json(self_play),
                 "self-play JSON must round trip");
+        auto legacy_self_play_object = std::get<JsonValue::Object>(self_play.value);
+        legacy_self_play_object.erase("bootstrap_prior_weight");
+        const auto legacy_none = SelfPlayConfig::from_json(JsonValue{legacy_self_play_object});
+        require(legacy_none.bootstrap_prior_weight == 0.0,
+                "legacy network-prior config must resolve to weight zero");
+        legacy_self_play_object["bootstrap_prior"] =
+            JsonValue{std::string("canonical-target-vacancy-distance-v2")};
+        const auto legacy_vacancy = SelfPlayConfig::from_json(JsonValue{legacy_self_play_object});
+        require(legacy_vacancy.bootstrap_prior_weight == 1.0,
+                "legacy vacancy-prior config must resolve to weight one");
+        require(std::get<JsonValue::Object>(legacy_vacancy.to_json().value)
+                    .contains("bootstrap_prior_weight"),
+                "resolved self-play config must always serialize the prior weight");
+        for (const double invalid : {-0.1, 1.1, std::numeric_limits<double>::quiet_NaN(),
+                                     std::numeric_limits<double>::infinity()}) {
+            auto invalid_self_play = std::get<JsonValue::Object>(self_play.value);
+            invalid_self_play["bootstrap_prior_weight"] = JsonValue{invalid};
+            rejects([&] { (void)SelfPlayConfig::from_json(JsonValue{invalid_self_play}); },
+                    "invalid bootstrap prior weight must be rejected");
+        }
 
         const JsonValue replay{JsonValue::Object{{"capacity", JsonValue{int64_t{32}}},
                                                  {"seed", JsonValue{int64_t{7}}}}};
@@ -252,6 +274,26 @@ int main(int argc, char** argv) {
             (void)diamond_orchestration::validate_training_config_transition(
                 transition_from, forbidden_transition);
         }, "training transition must reject search-semantics changes");
+        auto anneal_from = transition_from;
+        anneal_from.self_play.bootstrap_prior =
+            std::string(diamond_orchestration::kCanonicalTargetVacancyDistanceV2);
+        anneal_from.self_play.bootstrap_prior_weight = 1.0;
+        auto anneal_to = anneal_from;
+        anneal_to.self_play.bootstrap_prior_weight = 0.75;
+        require(
+            diamond_orchestration::validate_training_config_transition(anneal_from, anneal_to) ==
+                std::vector<std::string>{"self_play.bootstrap_prior_weight"},
+            "a durable transition may decrease bootstrap prior weight");
+        rejects(
+            [&] {
+                (void)diamond_orchestration::validate_training_config_transition(anneal_to,
+                                                                                 anneal_from);
+            },
+            "bootstrap prior weight increase must require an explicit rollback record");
+        require(diamond_orchestration::validate_training_config_transition(
+                    anneal_to, anneal_from, "completion_below_97_percent") ==
+                    std::vector<std::string>{"self_play.bootstrap_prior_weight"},
+                "a named failed gate must authorize rollback to a higher prior weight");
         rejects(
             [] {
                 (void)RuntimeConfig::from_json(
@@ -401,7 +443,13 @@ int main(int argc, char** argv) {
                 const JsonValue reference = diamond_support::parse_json(contents);
                 const ProductionConfig loaded = ProductionConfig::from_json(reference);
                 const auto actual = diamond_support::canonical_json(loaded.to_json());
-                const auto expected = diamond_support::canonical_json(reference);
+                auto normalized_reference = reference;
+                auto& normalized_root = std::get<JsonValue::Object>(normalized_reference.value);
+                auto& normalized_self_play =
+                    std::get<JsonValue::Object>(normalized_root.at("self_play").value);
+                normalized_self_play.try_emplace(
+                    "bootstrap_prior_weight", JsonValue{loaded.self_play.bootstrap_prior_weight});
+                const auto expected = diamond_support::canonical_json(normalized_reference);
                 if (actual != expected)
                     std::cerr << "expected: " << expected << "\nactual: " << actual << '\n';
                 require(

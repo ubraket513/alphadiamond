@@ -39,6 +39,7 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
                     native_int(config.mcts.simulations_late, "mcts.simulations_late"),
                 .repeat_window = native_int(config.mcts.repeat_window, "mcts.repeat_window"),
                 .bootstrap_prior = config.self_play.bootstrap_prior != kBootstrapPriorNone,
+                .bootstrap_prior_weight = config.self_play.bootstrap_prior_weight,
             },
         .games_per_iteration = static_cast<std::size_t>(config.workers.games_per_iteration),
         .training_batch_size = static_cast<std::size_t>(config.training.batch_size),
@@ -55,8 +56,9 @@ EvaluationPipelineWiring wire_evaluation_pipeline(const ProductionConfig& config
     };
 }
 
-std::vector<std::string> validate_training_config_transition(const ProductionConfig& from,
-                                                             const ProductionConfig& to) {
+std::vector<std::string>
+validate_training_config_transition(const ProductionConfig& from, const ProductionConfig& to,
+                                    std::string_view rollback_failed_gate) {
     from.validate();
     to.validate();
     std::vector<std::string> changed;
@@ -82,6 +84,8 @@ std::vector<std::string> validate_training_config_transition(const ProductionCon
          "training.train_steps_per_iteration");
     note(from.self_play.bootstrap_prior != to.self_play.bootstrap_prior,
          "self_play.bootstrap_prior");
+    note(from.self_play.bootstrap_prior_weight != to.self_play.bootstrap_prior_weight,
+         "self_play.bootstrap_prior_weight");
     note(from.arena.enabled != to.arena.enabled, "arena.enabled");
 
     auto immutable_projection = to;
@@ -97,9 +101,14 @@ std::vector<std::string> validate_training_config_transition(const ProductionCon
     immutable_projection.training.train_steps_per_iteration =
         from.training.train_steps_per_iteration;
     immutable_projection.self_play.bootstrap_prior = from.self_play.bootstrap_prior;
+    immutable_projection.self_play.bootstrap_prior_weight = from.self_play.bootstrap_prior_weight;
     immutable_projection.arena.enabled = from.arena.enabled;
     if (immutable_projection != from)
         throw ConfigError("training config transition changes an immutable field");
+    if (to.self_play.bootstrap_prior_weight > from.self_play.bootstrap_prior_weight &&
+        rollback_failed_gate.empty())
+        throw ConfigError(
+            "increasing self_play.bootstrap_prior_weight requires a named failed gate");
     if (changed.empty())
         throw ConfigError("training config transition does not change any field");
     return changed;
@@ -141,6 +150,7 @@ soo::EpisodeConfig wire_arena_episode(const ProductionConfig& config, std::size_
         // differs between candidate and champion at that point. Removing the
         // prior from the config removes it from here.
         .bootstrap_prior = config.self_play.bootstrap_prior != kBootstrapPriorNone,
+        .bootstrap_prior_weight = config.self_play.bootstrap_prior_weight,
     };
 }
 
