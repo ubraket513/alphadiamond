@@ -39,6 +39,88 @@ def metric(row: dict, *path: str) -> float:
     return float(value)
 
 
+def completion(row: dict) -> float:
+    attempted = metric(row, "domain", "attempted_episodes")
+    return metric(row, "domain", "completed_episodes") / attempted if attempted else 0.0
+
+
+def smoke_qualifiers(rows: dict[str, dict]) -> list[str]:
+    base = rows["a0-128"]
+    base_completion = completion(base)
+    base_repeat = metric(base, "domain", "repetition", "repeat_within_8_fraction_mean")
+    base_cycles = metric(base, "domain", "repetition", "cycling_games")
+    qualifiers = []
+    for name, row in rows.items():
+        if not name.startswith("a0-"):
+            continue
+        qualifies = (
+            completion(row) >= 0.50
+            or completion(row) >= base_completion + 0.10
+            or metric(row, "domain", "repetition", "repeat_within_8_fraction_mean")
+            <= 0.50 * base_repeat
+            or metric(row, "domain", "repetition", "cycling_games") <= 0.50 * base_cycles
+        )
+        if qualifies:
+            qualifiers.append(name)
+    return sorted(qualifiers)
+
+
+def illegal_mass_dominated(row: dict) -> bool:
+    policy = row["domain"]["policy_fit"]
+    return (
+        policy["legal_kl_mean"] <= 0.10
+        and policy["full_kl_mean"] >= policy["legal_kl_mean"] + 0.50
+        and policy["legal_probability_mass_mean"] <= 0.6065306597
+    )
+
+
+def deeper_search_helps(rows: dict[str, dict]) -> bool:
+    base = rows["a0-128"]
+    for name in ("a0-256", "a0-400"):
+        if name not in rows:
+            continue
+        row = rows[name]
+        completion_gate = completion(row) >= 0.90 or completion(row) >= completion(base) + 0.10
+        repeat_gate = metric(row, "domain", "repetition", "repeat_within_8_fraction_mean") <= (
+            0.70 * metric(base, "domain", "repetition", "repeat_within_8_fraction_mean")
+        )
+        cycling_gate = metric(row, "domain", "repetition", "cycling_games") <= metric(
+            base, "domain", "repetition", "cycling_games"
+        )
+        legal_gate = metric(row, "domain", "policy_fit", "legal_kl_mean") <= (
+            1.10 * metric(base, "domain", "policy_fit", "legal_kl_mean")
+        )
+        deadline_gate = metric(row, "domain", "abort_reasons", "max_game_seconds") <= metric(
+            base, "domain", "abort_reasons", "max_game_seconds"
+        )
+        if completion_gate and repeat_gate and cycling_gate and legal_gate and deadline_gate:
+            return True
+    return False
+
+
+def adaptive_search_wins(rows: dict[str, dict]) -> bool:
+    for suffix in ("256", "400"):
+        adaptive = rows.get(f"a0-adaptive-{suffix}")
+        constant = rows.get(f"a0-{suffix}")
+        if adaptive is None or constant is None:
+            continue
+        constant_completion = completion(constant)
+        completion_gate = completion(adaptive) >= max(0.0, constant_completion - 0.05)
+        moves_gate = metric(adaptive, "domain", "moves_p90") <= 1.10 * metric(
+            constant, "domain", "moves_p90"
+        )
+        repeat_gate = metric(adaptive, "domain", "repetition", "repeat_within_8_fraction_mean") <= (
+            1.10 * metric(constant, "domain", "repetition", "repeat_within_8_fraction_mean")
+        )
+        boost_gate = metric(adaptive, "domain", "boosted_fraction") <= 0.15
+        throughput_gate = metric(adaptive, "domain", "samples_per_hour") >= 1.25 * metric(
+            constant, "domain", "samples_per_hour"
+        )
+        if completion_gate and moves_gate and repeat_gate and boost_gate and throughput_gate:
+            return True
+    return False
+
+
 def render_scale(name: str, rows: dict[str, dict]) -> list[str]:
     lines = [f"## {name}", ""]
     lines += [
@@ -90,6 +172,16 @@ def render_scale(name: str, rows: dict[str, dict]) -> list[str]:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        fixture = {
+            "domain": {
+                "attempted_episodes": 32,
+                "completed_episodes": 0,
+                "repetition": {"repeat_within_8_fraction_mean": 0, "cycling_games": 0},
+            }
+        }
+        assert smoke_qualifiers({"a0-128": fixture, "a0-256": fixture}) == ["a0-128", "a0-256"]
+        return 0
     if len(sys.argv) != 3:
         raise SystemExit("usage: summarize_min_serial_search.py INPUT_DIR OUTPUT_MD")
     source, destination = Path(sys.argv[1]), Path(sys.argv[2])
@@ -101,18 +193,41 @@ def main() -> int:
     for name, rows in scales.items():
         lines.extend(render_scale(name, rows))
     smoke = scales.get("smoke", {})
-    a0_rows = {name: row for name, row in smoke.items() if name.startswith("a0-")}
-    any_a0_completed = any(row["domain"]["completed_episodes"] for row in a0_rows.values())
-    adaptive_triggered = any(
-        row["domain"]["boosted_fraction"] > 0 for name, row in a0_rows.items() if "adaptive" in name
-    )
-    decision = "FULL_SWEEP_REQUIRED" if any_a0_completed else "NO_DEEPER_SEARCH_BENEFIT"
+    qualifiers = smoke_qualifiers(smoke) if smoke else []
+    full = scales.get("full", {})
+    full_required = bool(qualifiers)
+    full_complete = bool(full) and set(smoke) <= set(full)
+    dominated = sorted(name for name, row in (full or smoke).items() if illegal_mass_dominated(row))
+    deeper = deeper_search_helps(full) if full_complete else False
+    adaptive = adaptive_search_wins(full) if full_complete else False
+    if full_required and not full_complete:
+        decision = "FULL_SWEEP_REQUIRED"
+        selected = "PENDING_FULL_SWEEP"
+    elif adaptive:
+        decision = "ADAPTIVE_SEARCH_WINS"
+        selected = "B_ADOPT_ADAPTIVE_SERIAL_SEARCH"
+    elif deeper:
+        expensive = any(
+            metric(full[name], "summary_seconds", "median")
+            >= 1.5 * metric(full["a0-128"], "summary_seconds", "median")
+            for name in ("a0-256", "a0-400")
+        )
+        selected = "C_AUTHORIZE_PARALLEL_MCTS" if expensive else "B_ADOPT_STRONGER_SERIAL_SEARCH"
+        decision = "DEEPER_SEARCH_HELPS"
+    else:
+        decision = "NO_DEEPER_SEARCH_BENEFIT"
+        selected = "D_AUTHORIZE_VACANCY_PRIOR_ANNEALING"
     lines += [
         "## Decision classification",
         "",
         f"`{decision}`",
         "",
-        f"Smoke A0 completion observed: `{str(any_a0_completed).lower()}`. Adaptive trigger observed: `{str(adaptive_triggered).lower()}`.",
+        f"Smoke qualifiers (literal gate, including zero baselines): `{', '.join(qualifiers) or 'none'}`.",
+        f"Full matrix complete: `{str(full_complete).lower()}`.",
+        f"Illegal-mass-dominated arms: `{', '.join(dominated) or 'none'}`.",
+        f"Deeper search helps: `{str(deeper).lower()}`. Adaptive search wins: `{str(adaptive).lower()}`.",
+        f"Selected ordered branch: `{selected}`.",
+        "Min remains B0 until the final acceptance gate passes.",
         "The summarizer reports evidence only and does not alter code or configuration.",
         "",
     ]

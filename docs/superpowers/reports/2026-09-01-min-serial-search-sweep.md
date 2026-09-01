@@ -1,5 +1,14 @@
 # Min serial-search sweep — 2026-09-01
 
+## full
+
+| arm | completion | aborts max/deadline/other | moves p50/p90/p99 | revisit | repeat<=8 | max revisits | cycling | samples/h | eval/s | batch mean/p50/p90 | target H | norm H | full/legal KL | legal mass | top1 | boosted | wall s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| b0-128 | 100.0% | 0/0/0 | 118/148/221 | 0.00724393 | 0.00658207 | 1.50781 | 0 | 1.34907e+06 | 47775.2 | 58.232/76/115 | 2.99628 | 0.787677 | 3.06168/0.821748 | 0.11216 | 0.0285645 | 0 | 83.436 |
+
+### Comparisons
+
+
 ## smoke
 
 | arm | completion | aborts max/deadline/other | moves p50/p90/p99 | revisit | repeat<=8 | max revisits | cycling | samples/h | eval/s | batch mean/p50/p90 | target H | norm H | full/legal KL | legal mass | top1 | boosted | wall s |
@@ -29,22 +38,12 @@
 
 ## Decision classification
 
-`NO_DEEPER_SEARCH_BENEFIT`
+`FULL_SWEEP_REQUIRED`
 
-Smoke A0 completion observed: `false`. Adaptive trigger observed: `false`.
+Smoke qualifiers (literal gate, including zero baselines): `a0-128, a0-256, a0-400, a0-adaptive-256, a0-adaptive-400`.
+Full matrix complete: `false`.
+Illegal-mass-dominated arms: `none`.
+Deeper search helps: `false`. Adaptive search wins: `false`.
+Selected ordered branch: `PENDING_FULL_SWEEP`.
+Min remains B0 until the final acceptance gate passes.
 The summarizer reports evidence only and does not alter code or configuration.
-
-## Task 10 gate application
-
-The A0-256 and A0-400 arms are `ILLEGAL_MASS_DOMINATED`: legal KL is
-`0.0871268`/`0.0814674` (at most 0.10), full KL is
-`2.18100`/`2.19659` (more than legal KL + 0.50), and legal probability mass is
-`0.126187`/`0.123776` (below `exp(-0.50)`). The reported full-action policy loss
-therefore overstates the remaining legal-policy mismatch.
-
-`DEEPER_SEARCH_HELPS` is false: neither constant 256 nor 400 completed a game,
-and both introduced 32/32 deadline aborts. `ADAPTIVE_SEARCH_WINS` is false:
-both adaptive arms had `boosted_fraction=0`, completed 0/32, and reproduced the
-base 128 behavior. The selected ordered decision-table branch is D, gated
-vacancy-prior annealing. Parallel MCTS and direct A0 acceptance are rejected.
-Min remains B0.
