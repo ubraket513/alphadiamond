@@ -54,6 +54,7 @@ struct CommandRequest final {
     std::filesystem::path champion_path;
     std::string opening_suite_id;
     std::optional<uint64_t> max_additional_iterations;
+    std::string rollback_failed_gate;
     CommandInitialization initialization = CommandInitialization::none;
 };
 

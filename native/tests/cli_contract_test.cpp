@@ -95,16 +95,20 @@ int main(int argc, char** argv) {
     auto bounded_resume = command("resume", scratch, config);
     bounded_resume.emplace_back("--max-additional-iterations");
     bounded_resume.emplace_back("1");
+    bounded_resume.emplace_back("--rollback-failed-gate");
+    bounded_resume.emplace_back("max_moves_completion_below_97_percent");
     const CommandService bounded_service = [&](const CommandRequest& request,
                                                const ProductionConfig&) {
         CHECK_EQ(request.max_additional_iterations, std::optional<uint64_t>{1});
+        CHECK_EQ(request.rollback_failed_gate,
+                 std::string{"max_moves_completion_below_97_percent"});
         return JsonValue::Object{};
     };
     std::ostringstream bounded_output;
     CHECK_EQ(
         diamond_orchestration::dispatch_command(bounded_resume, bounded_service, bounded_output),
         diamond_orchestration::kExitOk);
-    bounded_resume.back() = "0";
+    bounded_resume[bounded_resume.size() - 3] = "0";
     std::ostringstream invalid_bound_output;
     CHECK_EQ(diamond_orchestration::dispatch_command(bounded_resume, bounded_service,
                                                      invalid_bound_output),

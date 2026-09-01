@@ -1504,7 +1504,8 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
                     throw CommandArtifactError(
                         "resume config does not match the active run config");
                 const auto changed =
-                    diamond_orchestration::validate_training_config_transition(previous, config);
+                    diamond_orchestration::validate_training_config_transition(
+                        previous, config, request.rollback_failed_gate);
                 if (resumed_state->stage() != RunStage::self_play &&
                     resumed_state->stage() != RunStage::complete)
                     throw CommandArtifactError(
@@ -1528,6 +1529,8 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
                                         Json{diamond_support::sha256(
                                             diamond_support::canonical_json(previous.to_json()))}},
                                        {"iteration", Json{transition_iteration}},
+                                       {"rollback_failed_gate",
+                                        Json{request.rollback_failed_gate}},
                                        {"to", canonical_config},
                                        {"to_sha256", Json{config_sha256}}}});
                 write_json(predecessor_config_path, previous.to_json());

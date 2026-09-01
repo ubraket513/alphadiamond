@@ -54,6 +54,7 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
     bool have_scratch = false, have_candidate = false, have_champion = false;
     bool have_opening_suite = false;
     bool have_max_additional_iterations = false;
+    bool have_rollback_failed_gate = false;
     for (std::size_t index = 1; index < arguments.size(); ++index) {
         const auto& option = arguments[index];
         if (option == "--run-dir") {
@@ -111,6 +112,11 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
             request.max_additional_iterations =
                 positive_count(required_value(arguments, index, option), option);
             have_max_additional_iterations = true;
+        } else if (option == "--rollback-failed-gate") {
+            if (have_rollback_failed_gate)
+                throw CommandArgumentError("duplicate argument --rollback-failed-gate");
+            request.rollback_failed_gate = required_value(arguments, index, option);
+            have_rollback_failed_gate = true;
         } else {
             throw CommandArgumentError("unrecognized argument: " + option);
         }
@@ -154,7 +160,8 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
                                  : have_warm_start ? CommandInitialization::warm_start
                                                    : CommandInitialization::native_checkpoint;
     } else if (request.command == "resume" || request.command == "report") {
-        if ((request.command == "report" && (have_config || have_max_additional_iterations)) ||
+        if ((request.command == "report" &&
+             (have_config || have_max_additional_iterations || have_rollback_failed_gate)) ||
             initialization_count != 0 || have_candidate || have_champion || have_opening_suite ||
             have_runtime || have_model || have_run_id) {
             throw CommandArgumentError(request.command +
@@ -163,7 +170,8 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
                                             : " accepts only --run-dir"));
         }
     } else {
-        if (have_config || have_max_additional_iterations || initialization_count != 0 ||
+        if (have_config || have_max_additional_iterations || have_rollback_failed_gate ||
+            initialization_count != 0 ||
             !have_candidate || !have_champion || !have_opening_suite || have_runtime ||
             have_model || have_run_id) {
             throw CommandArgumentError(
@@ -236,7 +244,8 @@ int dispatch_command(const std::vector<std::string>& arguments, const CommandSer
                     "", "ok",
                     {{"usage", Json{"train --run-dir DIR --config FILE (--scratch|--checkpoint "
                                     "DIR|--warm-start ARTIFACT); "
-                                    "resume --run-dir DIR [--config FILE]; evaluate --run-dir DIR --candidate DIR "
+                                    "resume --run-dir DIR [--config FILE] [--max-additional-iterations N] "
+                                    "[--rollback-failed-gate NAME]; evaluate --run-dir DIR --candidate DIR "
                                     "--champion DIR "
                                     "--opening-suite ID; report --run-dir DIR"}}}),
                 output);
