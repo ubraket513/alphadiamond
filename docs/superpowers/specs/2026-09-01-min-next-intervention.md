@@ -17,29 +17,31 @@ Min remains B0 until the final two-checkpoint A0 acceptance gate passes.
 - Learner: finite for 256 steps; policy source/destination gradient means
   `8.97e-5`/`8.36e-5`; relative-update means `3.18e-6`/`2.88e-6`;
   held-out full KL `3.07686`; start-to-end policy KL `2.83e-11`.
-- B0 smoke completion at 128/256/400 simulations: `32/32`, `32/32`, `32/32`.
-- A0 smoke completion at 128/256/400 simulations: `0/32`, `0/32`, `0/32`.
-- A0 adaptive-256/adaptive-400 completion: `0/32`, `0/32`.
-- A0 aborts: 128 and both adaptive arms hit the 800-move limit in all 32
-  games; constant 256 and 400 hit the 180-second deadline in all 32 games.
-- Adaptive boosted fraction: `0` for both arms. The repetition trigger captured
-  no extra search and therefore cannot be adopted.
-- A0 legal KL: `0.103219` at 128, `0.0871268` at 256, `0.0814674` at 400.
-- A0 legal probability mass: `0.124412`, `0.126187`, `0.123776`.
+- B0 full-sweep completion at 128/256/400 simulations: `256/256` for every arm.
+  Median wall times were `83.436`, `136.960`, and `217.188` seconds.
+- A0 full-sweep completion at 128/256/400 simulations: `0/256` for every arm.
+  A0 adaptive-256/adaptive-400 completion was also `0/256`.
+- A0 aborts: 128 and both adaptive arms hit the 800-move limit in all 256
+  games; constant 256 and 400 hit the 180-second deadline in all 256 games.
+- Adaptive boosted fraction was `0.00000976563` for both arms. The repetition
+  trigger affected only two moves across 204,800 moves per arm and therefore
+  cannot be adopted.
+- A0 legal KL: `0.104071` at 128, `0.0864906` at 256, `0.0808324` at 400.
+- A0 legal probability mass: `0.125646`, `0.124227`, `0.122423`.
 - A0 full KL exceeds legal KL by more than `0.50` nat at every arm; the 256
   and 400 arms satisfy the complete `ILLEGAL_MASS_DOMINATED` gate. The existing
   full policy-loss plateau must not be described as proof that legal policy fit
   is stalled.
 
-The smoke invocation requested 32 lanes for 32 games, but the benchmark
-correctly rejects `games <= lanes` because no job queue is exercised. The runner
-used 16 lanes for all arms, preserving identical games and seeds while producing
-two production-style queue waves.
+The full sweep used 256 games, 128 lanes, seed `20260901`, FP32, and the same
+checkpoint and config for every arm. Its eight JSON files are under
+`$MIN_A0_EXP/results/serial-search/full`; the deterministic repository report
+contains the complete metric table and comparisons.
 
 ## Rejected branches
 
-- **Adaptive serial search:** rejected because `boosted_fraction=0` and completion
-  stayed 0%; it was behaviorally identical to A0-128.
+- **Adaptive serial search:** rejected because `boosted_fraction=0.00000976563`
+  and completion stayed 0%; it was behaviorally identical to A0-128.
 - **Stronger constant serial search:** rejected because 256/400 reduced legal KL
   but did not complete any game and converted move-limit aborts into deadline
   aborts. `DEEPER_SEARCH_HELPS` is false.
