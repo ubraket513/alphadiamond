@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${1:-} == --self-test ]]; then
+  output=$(MIN_A0_ENV=/dev/null \
+    MIN_A0_EXP=/tmp/min-a0-sweep-self-test \
+    MIN_A0_CHECKPOINT=/checkpoint \
+    MIN_A0_CONFIG=/config \
+    MIN_A0_SELFPLAY_BIN=/selfplay_benchmark \
+    "$0" --dry-run smoke 2>/dev/null)
+  [[ $(grep -c '^/selfplay_benchmark ' <<<"$output") -eq 8 ]]
+  [[ $(grep -c -- '--seed 20260901 ' <<<"$output") -eq 8 ]]
+  [[ $(grep -c -- '--bootstrap-prior vacancy ' <<<"$output") -eq 3 ]]
+  [[ $(grep -c -- '--simulations-late [1-9]' <<<"$output") -eq 2 ]]
+  printf 'serial-search dry-run contract: PASS\n'
+  exit 0
+fi
+
 source "${MIN_A0_ENV:-/workspace/alphadiamond-experiments/min-v1.0.1/env.sh}"
 BIN=${MIN_A0_SELFPLAY_BIN:-/workspace/alphadiamond-min-a0/build/native-training/native/selfplay_benchmark}
 OUT=${MIN_A0_SWEEP_OUT:-$MIN_A0_EXP/results/serial-search}
@@ -19,7 +34,9 @@ if [[ ${1:-} == --dry-run ]]; then
   dry_run=true
   scale=${2:-smoke}
 fi
-mkdir -p "$OUT/$scale"
+if ! $dry_run; then
+  mkdir -p "$OUT/$scale"
+fi
 
 common=(
   --checkpoint "$MIN_A0_CHECKPOINT"
