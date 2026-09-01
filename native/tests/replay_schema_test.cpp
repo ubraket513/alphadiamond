@@ -44,25 +44,27 @@ int main(int argc, char** argv) {
             diamond_pipeline::ReplayStore store(root, compatibility, 8, 3);
             CHECK_EQ(store.ingest(games), 2U);
         }
-        diamond_pipeline::ReplayStore reopened(root, compatibility, 8, 3);
-        const auto rows = reopened.sample(2, 3);
-        REQUIRE(rows.size() == 2, "reopened sample count");
-        // Drawing the whole pool must yield exactly the stored rows.  Their
-        // order is a property of the sampling seed, not of the stored
-        // contents, so the contract is on the set of actions.
-        CHECK_EQ(rows[0].canonical_player_ids[0], 1);
-        CHECK_EQ(rows[1].canonical_player_ids[0], 1);
-        const auto first = rows[0].sparse_policy[0].first;
-        const auto second = rows[1].sparse_policy[0].first;
-        CHECK(std::min(first, second) == 4 && std::max(first, second) == 8);
+        {
+            diamond_pipeline::ReplayStore reopened(root, compatibility, 8, 3);
+            const auto rows = reopened.sample(2, 3);
+            REQUIRE(rows.size() == 2, "reopened sample count");
+            // Drawing the whole pool must yield exactly the stored rows.  Their
+            // order is a property of the sampling seed, not of the stored
+            // contents, so the contract is on the set of actions.
+            CHECK_EQ(rows[0].canonical_player_ids[0], 1);
+            CHECK_EQ(rows[1].canonical_player_ids[0], 1);
+            const auto first = rows[0].sparse_policy[0].first;
+            const auto second = rows[1].sparse_policy[0].first;
+            CHECK(std::min(first, second) == 4 && std::max(first, second) == 8);
 
-        const auto manifest_path = reopened.manifest_path();
-        std::ifstream manifest(manifest_path, std::ios::binary);
-        const std::string text{std::istreambuf_iterator<char>(manifest), {}};
-        CHECK(text.find("\"schema_version\":4") != std::string::npos ||
-              text.find("\"schema_version\":5") != std::string::npos);
-        for (const auto* retired : {"selection_transaction", "ingest_transaction", "\"rng\""})
-            CHECK(text.find(retired) == std::string::npos);
+            const auto manifest_path = reopened.manifest_path();
+            std::ifstream manifest(manifest_path, std::ios::binary);
+            const std::string text{std::istreambuf_iterator<char>(manifest), {}};
+            CHECK(text.find("\"schema_version\":4") != std::string::npos ||
+                  text.find("\"schema_version\":5") != std::string::npos);
+            for (const auto* retired : {"selection_transaction", "ingest_transaction", "\"rng\""})
+                CHECK(text.find(retired) == std::string::npos);
+        }
 
         // A schema this build no longer supports must be refused, not guessed at.
         const auto stale = scratch / "stale";
