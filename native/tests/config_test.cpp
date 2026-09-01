@@ -90,8 +90,21 @@ int main(int argc, char** argv) {
                                                    .train_steps_per_iteration = 1,
                                                    .learning_rate = 1e-3,
                                                    .weight_decay = 1e-4,
-                                                   .seed = 0},
+                                                   .seed = 0,
+                                                   .policy_loss_domain = "full"},
                 "training defaults changed");
+        const JsonValue legacy_training{JsonValue::Object{
+            {"batch_size", JsonValue{int64_t{128}}},
+            {"learning_rate", JsonValue{1e-3}},
+            {"seed", JsonValue{int64_t{0}}},
+            {"train_steps_per_iteration", JsonValue{int64_t{1}}},
+            {"weight_decay", JsonValue{1e-4}}}};
+        require(TrainingConfig::from_json(legacy_training).policy_loss_domain == "full",
+                "legacy training config must default to full policy loss");
+        auto legal_training = TrainingConfig{};
+        legal_training.policy_loss_domain = "legal";
+        require(TrainingConfig::from_json(legal_training.to_json()) == legal_training,
+                "legal policy loss domain must round trip");
         require(ArenaConfig{} == ArenaConfig{.enabled = true,
                                              .games = 36,
                                              .seed = 0,
@@ -216,6 +229,7 @@ int main(int argc, char** argv) {
         const JsonValue training{
             JsonValue::Object{{"batch_size", JsonValue{int64_t{4}}},
                               {"learning_rate", JsonValue{0.001}},
+                              {"policy_loss_domain", JsonValue{"full"}},
                               {"seed", JsonValue{int64_t{7}}},
                               {"train_steps_per_iteration", JsonValue{int64_t{2}}},
                               {"weight_decay", JsonValue{0.0}}}};
@@ -278,6 +292,12 @@ int main(int argc, char** argv) {
         anneal_from.self_play.bootstrap_prior =
             std::string(diamond_orchestration::kCanonicalTargetVacancyDistanceV2);
         anneal_from.self_play.bootstrap_prior_weight = 1.0;
+        auto learner_fix = anneal_from;
+        learner_fix.training.policy_loss_domain = "legal";
+        require(diamond_orchestration::validate_training_config_transition(anneal_from,
+                                                                            learner_fix) ==
+                    std::vector<std::string>{"training.policy_loss_domain"},
+                "a durable transition may enable legal policy loss");
         auto anneal_to = anneal_from;
         anneal_to.self_play.bootstrap_prior_weight = 0.75;
         require(

@@ -297,6 +297,30 @@ void check_validation(const std::filesystem::path& root) {
                            "Min value width");
 }
 
+void check_legal_policy_loss_domain(const std::filesystem::path& root) {
+    auto sample = samples_for(root, "min").front();
+    int32_t unvisited_legal_action = 0;
+    while (std::ranges::any_of(sample.sparse_policy, [&](const auto& target) {
+        return target.first == unvisited_legal_action;
+    })) {
+        ++unvisited_legal_action;
+    }
+    sample.sparse_policy.emplace_back(unvisited_legal_action, 0.0F);
+
+    const auto compatibility = compatibility_for("min");
+    auto full_model = load_model(root, "min");
+    auto legal_model = load_model(root, "min");
+    diamond_training::Trainer full_trainer(full_model, compatibility, parity_config(), cpu_device());
+    auto legal_config = parity_config();
+    legal_config.policy_loss_domain = diamond_training::PolicyLossDomain::legal;
+    diamond_training::Trainer legal_trainer(legal_model, compatibility, legal_config, cpu_device());
+
+    const auto full_metrics = full_trainer.train(std::span(&sample, 1));
+    const auto legal_metrics = legal_trainer.train(std::span(&sample, 1));
+    CHECK(legal_metrics.policy_loss < full_metrics.policy_loss);
+    CHECK(std::isfinite(legal_metrics.policy_loss));
+}
+
 void check_invalid_is_transactional(const std::filesystem::path& root) {
     auto model = load_model(root, "soo");
     diamond_training::Trainer trainer(model, compatibility_for("soo"), parity_config(),
@@ -552,6 +576,7 @@ int main(int argc, char** argv) {
         return soo_test::report("training_step_parity_test_cuda");
     }
     check_validation(root);
+    check_legal_policy_loss_domain(root);
     check_invalid_is_transactional(root);
     check_snapshot_isolation(root);
     check_parity(root, "soo");

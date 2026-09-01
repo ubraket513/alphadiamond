@@ -463,6 +463,13 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     std::vector<float> policy_buffer(
         checked_product(batch_count, static_cast<size_t>(kActionCount), "training policy buffer"),
         0.0F);
+    std::vector<uint8_t> legal_policy_buffer;
+    if (config_.policy_loss_domain == PolicyLossDomain::legal) {
+        legal_policy_buffer.resize(
+            checked_product(batch_count, static_cast<size_t>(kActionCount),
+                            "training legal policy buffer"),
+            false);
+    }
     std::vector<float> value_buffer(
         checked_product(batch_count, value_count, "training value buffer"));
 
@@ -474,8 +481,10 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
         std::memcpy(value_buffer.data() + batch_offset * value_count, sample.value_target.data(),
                     value_count * sizeof(float));
         for (const auto& [action, probability] : sample.sparse_policy) {
-            policy_buffer[batch_offset * static_cast<size_t>(kActionCount) +
-                          static_cast<size_t>(action)] = probability;
+            const auto policy_offset = batch_offset * static_cast<size_t>(kActionCount) +
+                                       static_cast<size_t>(action);
+            policy_buffer[policy_offset] = probability;
+            if (!legal_policy_buffer.empty()) legal_policy_buffer[policy_offset] = true;
         }
     }
 
@@ -484,6 +493,12 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
         feature_buffer.data(), {batch_size, kHoleCount, input_features}, host_options);
     const auto host_policy_targets =
         torch::from_blob(policy_buffer.data(), {batch_size, kActionCount}, host_options);
+    torch::Tensor host_legal_policy;
+    if (!legal_policy_buffer.empty()) {
+        const auto byte_options = torch::TensorOptions().dtype(torch::kBool).device(torch::kCPU);
+        host_legal_policy = torch::from_blob(legal_policy_buffer.data(),
+                                             {batch_size, kActionCount}, byte_options);
+    }
     const auto host_value_targets =
         torch::from_blob(value_buffer.data(), {batch_size, value_size}, host_options);
     if (!host_features.is_contiguous() || !host_policy_targets.is_contiguous() ||
@@ -515,6 +530,9 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     const auto h2d_start = StepClock::now();
     auto features = host_features.to(device_.torch_device);
     auto policy_targets = host_policy_targets.to(device_.torch_device);
+    auto legal_policy = host_legal_policy.defined()
+                            ? host_legal_policy.to(device_.torch_device)
+                            : torch::Tensor{};
     auto value_targets = host_value_targets.to(device_.torch_device);
     const auto h2d_end = StepClock::now();
     if (events)
@@ -534,7 +552,14 @@ TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
         predicted_values.sizes() != torch::IntArrayRef({batch_size, value_size})) {
         throw std::invalid_argument("learner output shape mismatch");
     }
-    auto policy_loss = -(policy_targets * torch::log_softmax(policy_logits, 1)).sum(1).mean();
+    auto policy_log_probabilities = config_.policy_loss_domain == PolicyLossDomain::legal
+                                        ? torch::log_softmax(
+                                              policy_logits.masked_fill(legal_policy.logical_not(),
+                                                                        -std::numeric_limits<float>::infinity()),
+                                              1)
+                                              .masked_fill(legal_policy.logical_not(), 0.0)
+                                        : torch::log_softmax(policy_logits, 1);
+    auto policy_loss = -(policy_targets * policy_log_probabilities).sum(1).mean();
     auto value_loss = torch::mse_loss(predicted_values, value_targets);
     auto total_loss = policy_loss + value_loss;
     const std::array forward_tensors{policy_loss, value_loss, total_loss};

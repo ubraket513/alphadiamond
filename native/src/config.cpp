@@ -442,12 +442,15 @@ void TrainingConfig::validate() const {
         throw ConfigError("training.learning_rate must be a positive finite number");
     if (!std::isfinite(weight_decay) || weight_decay < 0)
         throw ConfigError("training.weight_decay must be a non-negative finite number");
+    if (policy_loss_domain != "full" && policy_loss_domain != "legal")
+        throw ConfigError("training.policy_loss_domain must be full or legal");
 }
 
 Json TrainingConfig::to_json() const {
     validate();
     return Json{Object{{"batch_size", Json{batch_size}},
                        {"learning_rate", Json{learning_rate}},
+                       {"policy_loss_domain", Json{policy_loss_domain}},
                        {"seed", Json{json_integer(seed, "training.seed")}},
                        {"train_steps_per_iteration", Json{train_steps_per_iteration}},
                        {"weight_decay", Json{weight_decay}}}};
@@ -455,9 +458,10 @@ Json TrainingConfig::to_json() const {
 
 TrainingConfig TrainingConfig::from_json(const Json& value) {
     const Object& input = object(value, "training");
-    require_exact_keys(
-        input, {"batch_size", "learning_rate", "seed", "train_steps_per_iteration", "weight_decay"},
-        "training");
+    require_keys(input,
+                 {"batch_size", "learning_rate", "seed", "train_steps_per_iteration",
+                  "weight_decay"},
+                 {"policy_loss_domain"}, "training");
     TrainingConfig result{
         .batch_size = integer(field(input, "batch_size", "training"), "training.batch_size"),
         .train_steps_per_iteration = integer(field(input, "train_steps_per_iteration", "training"),
@@ -465,7 +469,11 @@ TrainingConfig TrainingConfig::from_json(const Json& value) {
         .learning_rate =
             number(field(input, "learning_rate", "training"), "training.learning_rate"),
         .weight_decay = number(field(input, "weight_decay", "training"), "training.weight_decay"),
-        .seed = non_negative_seed(field(input, "seed", "training"), "training.seed")};
+        .seed = non_negative_seed(field(input, "seed", "training"), "training.seed"),
+        .policy_loss_domain = input.contains("policy_loss_domain")
+                                  ? string(field(input, "policy_loss_domain", "training"),
+                                           "training.policy_loss_domain")
+                                  : "full"};
     result.validate();
     return result;
 }

@@ -1,11 +1,23 @@
 #include "diamond_orchestration/coordinator.hpp"
 
 #include <array>
+#include <limits>
 #include <utility>
 
 #include "diamond_support/json.hpp"
 
 namespace diamond_orchestration {
+
+uint64_t additional_iteration_limit(const RunState& state, uint64_t additional_iterations) {
+    const auto iteration = std::get<int64_t>(state.payload().at("iteration").value);
+    if (iteration < 0) throw CoordinatorError("run iteration must be non-negative");
+    const auto current = static_cast<uint64_t>(iteration);
+    const uint64_t first = current + (state.stage() == RunStage::complete ? 1 : 0);
+    if (additional_iterations > std::numeric_limits<uint64_t>::max() - first)
+        throw CoordinatorError("additional iteration limit overflows");
+    return first + additional_iterations;
+}
+
 namespace {
 
 using Json = diamond_support::JsonValue;

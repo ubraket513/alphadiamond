@@ -123,6 +123,7 @@ struct TrainingConfig final {
     double learning_rate = 1e-3;
     double weight_decay = 1e-4;
     uint64_t seed = 0;
+    std::string policy_loss_domain = "full";
 
     void validate() const;
     diamond_support::JsonValue to_json() const;

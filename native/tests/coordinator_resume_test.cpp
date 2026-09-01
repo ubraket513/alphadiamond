@@ -150,5 +150,7 @@ int main(int argc, char** argv) {
     CHECK_EQ(bounded_operations.size(), std::size_t{18});
     CHECK_EQ(std::set<std::string>(bounded_operations.begin(), bounded_operations.end()).size(),
              bounded_operations.size());
+    CHECK_EQ(diamond_orchestration::additional_iteration_limit(bounded_initial, 1), uint64_t{1});
+    CHECK_EQ(diamond_orchestration::additional_iteration_limit(two_iterations, 1), uint64_t{3});
     return soo_test::report("coordinator_resume_test");
 }

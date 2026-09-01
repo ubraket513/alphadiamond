@@ -44,6 +44,7 @@ TrainingIterationWiring wire_training_iteration(const ProductionConfig& config) 
         .games_per_iteration = static_cast<std::size_t>(config.workers.games_per_iteration),
         .training_batch_size = static_cast<std::size_t>(config.training.batch_size),
         .training_steps = static_cast<std::size_t>(config.training.train_steps_per_iteration),
+        .policy_loss_domain = config.training.policy_loss_domain,
     };
 }
 
@@ -82,6 +83,8 @@ validate_training_config_transition(const ProductionConfig& from, const Producti
          "inference.response_timeout_s");
     note(from.training.train_steps_per_iteration != to.training.train_steps_per_iteration,
          "training.train_steps_per_iteration");
+    note(from.training.policy_loss_domain != to.training.policy_loss_domain,
+         "training.policy_loss_domain");
     note(from.self_play.bootstrap_prior != to.self_play.bootstrap_prior,
          "self_play.bootstrap_prior");
     note(from.self_play.bootstrap_prior_weight != to.self_play.bootstrap_prior_weight,
@@ -100,6 +103,7 @@ validate_training_config_transition(const ProductionConfig& from, const Producti
     immutable_projection.inference.response_timeout_s = from.inference.response_timeout_s;
     immutable_projection.training.train_steps_per_iteration =
         from.training.train_steps_per_iteration;
+    immutable_projection.training.policy_loss_domain = from.training.policy_loss_domain;
     immutable_projection.self_play.bootstrap_prior = from.self_play.bootstrap_prior;
     immutable_projection.self_play.bootstrap_prior_weight = from.self_play.bootstrap_prior_weight;
     immutable_projection.arena.enabled = from.arena.enabled;

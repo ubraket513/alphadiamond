@@ -206,6 +206,9 @@ int main(int argc, char** argv) {
     CHECK_EQ(wiring.games_per_iteration, std::size_t{9});
     CHECK_EQ(wiring.training_batch_size, std::size_t{3});
     CHECK_EQ(wiring.training_steps, std::size_t{2});
+    wiring_config.training.policy_loss_domain = "legal";
+    CHECK_EQ(diamond_orchestration::wire_training_iteration(wiring_config).policy_loss_domain,
+             std::string{"legal"});
 
     // The repetition trigger reached self-play only if it is forwarded here.
     // It was implemented in the engine and measured as the best search-budget

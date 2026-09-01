@@ -24,9 +24,9 @@ TrainingSample sample_from_move(const soo::EpisodeMove& move, const soo::Episode
     if (visits == 0 || move.root_actions.size() != move.visit_counts.size())
         throw PipelineError("self-play emitted an invalid sparse visit policy");
     for (std::size_t i = 0; i < move.root_actions.size(); ++i) {
-        if (move.visit_counts[i] != 0)
-            sample.sparse_policy.emplace_back(move.root_actions[i],
-                static_cast<float>(static_cast<double>(move.visit_counts[i]) / visits));
+        sample.sparse_policy.emplace_back(
+            move.root_actions[i],
+            static_cast<float>(static_cast<double>(move.visit_counts[i]) / visits));
     }
     if (compatibility.player_count == 2) {
         if (episode.finish_order.empty() || sample.canonical_player_ids.empty())

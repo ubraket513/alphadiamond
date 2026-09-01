@@ -14,6 +14,7 @@ struct TrainingIterationWiring final {
     std::size_t games_per_iteration = 0;
     std::size_t training_batch_size = 0;
     std::size_t training_steps = 0;
+    std::string policy_loss_domain = "full";
 };
 
 struct EvaluationPipelineWiring final {

@@ -795,7 +795,10 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
         auto native_model = model(config);
         diamond_training::Trainer trainer(
             native_model, compatibility,
-            {config.training.learning_rate, config.training.weight_decay}, device);
+            {config.training.learning_rate, config.training.weight_decay,
+             config.training.policy_loss_domain == "legal"
+                 ? diamond_training::PolicyLossDomain::legal
+                 : diamond_training::PolicyLossDomain::full}, device);
         const auto source =
             load_iteration_source(request, config, iteration, trainer, device, predecessor);
         std::filesystem::path champion;
@@ -841,7 +844,10 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             auto native_model = model(config);
             diamond_training::Trainer trainer(
                 native_model, compatibility,
-                {config.training.learning_rate, config.training.weight_decay}, device);
+                {config.training.learning_rate, config.training.weight_decay,
+                 config.training.policy_loss_domain == "legal"
+                     ? diamond_training::PolicyLossDomain::legal
+                     : diamond_training::PolicyLossDomain::full}, device);
             (void)load_actor_checkpoint(request, config, state, trainer, device, predecessor);
             diamond_pipeline::ModelPool models(1, device, actor_precision(config));
             const auto key = models.install(compatibility, trainer.learner());
@@ -1039,7 +1045,10 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
         auto native_model = model(config);
         diamond_training::Trainer trainer(
             native_model, compatibility,
-            {config.training.learning_rate, config.training.weight_decay}, device);
+            {config.training.learning_rate, config.training.weight_decay,
+             config.training.policy_loss_domain == "legal"
+                 ? diamond_training::PolicyLossDomain::legal
+                 : diamond_training::PolicyLossDomain::full}, device);
         source = load_iteration_source(request, config, iteration, trainer, device, predecessor);
         // Only the branch that actually trains needs the samples.  A resumed
         // TRAIN reloads the staged checkpoint and just checks the manifest
@@ -1122,7 +1131,10 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
         auto native_model = model(config);
         diamond_training::Trainer trainer(
             native_model, compatibility,
-            {config.training.learning_rate, config.training.weight_decay}, device);
+            {config.training.learning_rate, config.training.weight_decay,
+             config.training.policy_loss_domain == "legal"
+                 ? diamond_training::PolicyLossDomain::legal
+                 : diamond_training::PolicyLossDomain::full}, device);
         diamond_training::CheckpointInfo saved;
         try {
             // Provenance validation reads the manifest digest and nothing else.
@@ -1560,13 +1572,13 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
         });
     std::optional<uint64_t> max_iterations;
     if (request.max_additional_iterations) {
-        const auto current_iteration =
-            static_cast<uint64_t>(std::get<int64_t>(initial.payload().at("iteration").value));
-        if (*request.max_additional_iterations >
-            std::numeric_limits<uint64_t>::max() - current_iteration)
+        try {
+            max_iterations = diamond_orchestration::additional_iteration_limit(
+                initial, *request.max_additional_iterations);
+        } catch (const diamond_orchestration::CoordinatorError&) {
             throw diamond_orchestration::CommandArgumentError(
                 "--max-additional-iterations overflows the run budget");
-        max_iterations = current_iteration + *request.max_additional_iterations;
+        }
     } else if (config.run_budget.max_iterations) {
         max_iterations = static_cast<uint64_t>(*config.run_budget.max_iterations);
     }

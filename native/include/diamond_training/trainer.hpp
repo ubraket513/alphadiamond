@@ -12,9 +12,15 @@
 
 namespace diamond_training {
 
+enum class PolicyLossDomain {
+    full,
+    legal,
+};
+
 struct TrainingConfig {
     double learning_rate;
     double weight_decay;
+    PolicyLossDomain policy_loss_domain = PolicyLossDomain::full;
 };
 
 struct TrainingMetrics {

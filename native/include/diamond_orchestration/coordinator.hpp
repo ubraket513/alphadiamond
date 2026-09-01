@@ -11,6 +11,8 @@
 
 namespace diamond_orchestration {
 
+uint64_t additional_iteration_limit(const RunState& state, uint64_t additional_iterations);
+
 class CoordinatorError : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
