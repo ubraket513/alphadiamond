@@ -113,8 +113,10 @@ def adaptive_search_wins(rows: dict[str, dict]) -> bool:
             1.10 * metric(constant, "domain", "repetition", "repeat_within_8_fraction_mean")
         )
         boost_gate = metric(adaptive, "domain", "boosted_fraction") <= 0.15
-        throughput_gate = metric(adaptive, "domain", "samples_per_hour") >= 1.25 * metric(
-            constant, "domain", "samples_per_hour"
+        constant_throughput = metric(constant, "domain", "samples_per_hour")
+        adaptive_throughput = metric(adaptive, "domain", "samples_per_hour")
+        throughput_gate = (
+            constant_throughput > 0.0 and adaptive_throughput >= 1.25 * constant_throughput
         )
         if completion_gate and moves_gate and repeat_gate and boost_gate and throughput_gate:
             return True
@@ -181,6 +183,19 @@ def main() -> int:
             }
         }
         assert smoke_qualifiers({"a0-128": fixture, "a0-256": fixture}) == ["a0-128", "a0-256"]
+        adaptive_fixture = {
+            "domain": {
+                "attempted_episodes": 32,
+                "completed_episodes": 0,
+                "moves_p90": 800,
+                "samples_per_hour": 0,
+                "boosted_fraction": 0,
+                "repetition": {"repeat_within_8_fraction_mean": 0, "cycling_games": 0},
+            }
+        }
+        assert not adaptive_search_wins(
+            {"a0-256": adaptive_fixture, "a0-adaptive-256": adaptive_fixture}
+        )
         return 0
     if len(sys.argv) != 3:
         raise SystemExit("usage: summarize_min_serial_search.py INPUT_DIR OUTPUT_MD")
