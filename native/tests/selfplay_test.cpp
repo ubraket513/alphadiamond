@@ -298,6 +298,23 @@ int main(int argc, char** argv) {
     const auto greedy_cycle =
         soo::run_episodes(min_match, {{*min_opening, 7}}, no_escape, evaluator, no_escape_metrics);
     REQUIRE(greedy_cycle.size() == 1, "greedy repetition run did not return one episode");
+
+    auto baseline_budget = no_escape;
+    baseline_budget.repeat_window = 0;
+    baseline_budget.simulations_late = 0;
+    soo::EpisodeMetrics baseline_budget_metrics;
+    const auto baseline_budget_episodes = soo::run_episodes(
+        min_match, repetition_jobs, baseline_budget, evaluator, baseline_budget_metrics);
+    auto adaptive_budget = baseline_budget;
+    adaptive_budget.repeat_window = 8;
+    adaptive_budget.simulations_late = 9;
+    soo::EpisodeMetrics adaptive_budget_metrics;
+    const auto adaptive_budget_episodes = soo::run_episodes(
+        min_match, repetition_jobs, adaptive_budget, evaluator, adaptive_budget_metrics);
+    CHECK(adaptive_budget_metrics.boosted_moves > 0);
+    CHECK(adaptive_budget_metrics.evaluations > baseline_budget_metrics.evaluations);
+    CHECK_EQ(adaptive_budget_episodes.size(), baseline_budget_episodes.size());
+
     bool escaped_cycle = escaped[0].moves.size() != greedy_cycle[0].moves.size();
     for (std::size_t move = 0;
          !escaped_cycle && move < escaped[0].moves.size() && move < greedy_cycle[0].moves.size();

@@ -146,6 +146,8 @@ string(JSON aborted GET "${selfplay_json}" domain aborted_episodes)
 string(JSON evaluations GET "${selfplay_json}" domain evaluations)
 string(JSON batches GET "${selfplay_json}" domain batches)
 string(JSON batch_max GET "${selfplay_json}" domain batch_max)
+string(JSON boosted_moves GET "${selfplay_json}" domain boosted_moves)
+string(JSON boosted_fraction GET "${selfplay_json}" domain boosted_fraction)
 string(JSON diagnostic_rows GET "${selfplay_json}" domain policy_fit sampled_roots)
 string(JSON legal_mass GET "${selfplay_json}" domain policy_fit legal_probability_mass_mean)
 string(JSON full_kl GET "${selfplay_json}" domain policy_fit full_kl_mean)
@@ -154,7 +156,8 @@ check_sha256("${selfplay_model_sha}" "self-play model digest")
 check_sha256("${selfplay_runtime_sha}" "self-play runtime digest")
 math(EXPR accounted "${completed} + ${aborted}")
 if(NOT attempted EQUAL 2 OR NOT accounted EQUAL attempted OR evaluations LESS 1
-   OR batches LESS 1 OR batch_max GREATER 2)
+   OR batches LESS 1 OR batch_max GREATER 2 OR NOT boosted_moves EQUAL 0
+   OR NOT boosted_fraction EQUAL 0)
     message(FATAL_ERROR "self-play benchmark accounting mismatch")
 endif()
 if(NOT diagnostic_rows EQUAL 1 OR legal_mass LESS_EQUAL 0 OR legal_mass GREATER 1

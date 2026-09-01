@@ -241,6 +241,7 @@ struct Totals {
     uint64_t evaluations = 0;
     uint64_t batches = 0;
     uint64_t moves = 0;
+    uint64_t boosted_moves = 0;
     double wall_seconds = 0.0;
     double evaluator_seconds = 0.0;
     double collation_seconds = 0.0;
@@ -316,6 +317,7 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
     totals.evaluations = metrics.evaluations;
     totals.batches = metrics.batches;
     totals.moves = metrics.moves;
+    totals.boosted_moves = metrics.boosted_moves;
     totals.wall_seconds = metrics.wall_seconds;
     totals.evaluator_seconds = metrics.evaluator_seconds;
     totals.collation_seconds = stage.collation_seconds;
@@ -369,6 +371,7 @@ void accumulate(Totals& destination, Totals source) {
     destination.evaluations += source.evaluations;
     destination.batches += source.batches;
     destination.moves += source.moves;
+    destination.boosted_moves += source.boosted_moves;
     destination.wall_seconds += source.wall_seconds;
     destination.evaluator_seconds += source.evaluator_seconds;
     destination.collation_seconds += source.collation_seconds;
@@ -651,7 +654,10 @@ int main(int argc, char** argv) {
             << ",\"moves_p50\":" << percentile(totals.move_counts, 0.50)
             << ",\"moves_p90\":" << percentile(totals.move_counts, 0.90)
             << ",\"moves_p99\":" << percentile(totals.move_counts, 0.99)
-            << ",\"evaluations\":" << totals.evaluations << ",\"batches\":" << totals.batches
+            << ",\"evaluations\":" << totals.evaluations
+            << ",\"boosted_moves\":" << totals.boosted_moves << ",\"boosted_fraction\":"
+            << ratio(static_cast<double>(totals.boosted_moves), static_cast<double>(totals.moves))
+            << ",\"batches\":" << totals.batches
             << ",\"evaluations_per_second\":"
             << ratio(static_cast<double>(totals.evaluations), totals.wall_seconds)
             << ",\"batches_per_second\":"
