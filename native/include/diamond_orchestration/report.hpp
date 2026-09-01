@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <iosfwd>
 #include <stdexcept>
 #include <string>
@@ -52,6 +53,7 @@ struct CommandRequest final {
     std::filesystem::path candidate_path;
     std::filesystem::path champion_path;
     std::string opening_suite_id;
+    std::optional<uint64_t> max_additional_iterations;
     CommandInitialization initialization = CommandInitialization::none;
 };
 

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -1548,8 +1549,17 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
                                  predecessor_config ? &*predecessor_config : nullptr);
         });
     std::optional<uint64_t> max_iterations;
-    if (config.run_budget.max_iterations)
+    if (request.max_additional_iterations) {
+        const auto current_iteration =
+            static_cast<uint64_t>(std::get<int64_t>(initial.payload().at("iteration").value));
+        if (*request.max_additional_iterations >
+            std::numeric_limits<uint64_t>::max() - current_iteration)
+            throw diamond_orchestration::CommandArgumentError(
+                "--max-additional-iterations overflows the run budget");
+        max_iterations = current_iteration + *request.max_additional_iterations;
+    } else if (config.run_budget.max_iterations) {
         max_iterations = static_cast<uint64_t>(*config.run_budget.max_iterations);
+    }
     std::optional<std::chrono::steady_clock::time_point> deadline;
     if (config.run_budget.max_wall_clock_seconds) {
         deadline = std::chrono::steady_clock::now() +

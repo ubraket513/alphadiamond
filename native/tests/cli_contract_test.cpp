@@ -92,6 +92,24 @@ int main(int argc, char** argv) {
     }
     CHECK_EQ(calls.size(), std::size_t{4});
 
+    auto bounded_resume = command("resume", scratch, config);
+    bounded_resume.emplace_back("--max-additional-iterations");
+    bounded_resume.emplace_back("1");
+    const CommandService bounded_service = [&](const CommandRequest& request,
+                                               const ProductionConfig&) {
+        CHECK_EQ(request.max_additional_iterations, std::optional<uint64_t>{1});
+        return JsonValue::Object{};
+    };
+    std::ostringstream bounded_output;
+    CHECK_EQ(
+        diamond_orchestration::dispatch_command(bounded_resume, bounded_service, bounded_output),
+        diamond_orchestration::kExitOk);
+    bounded_resume.back() = "0";
+    std::ostringstream invalid_bound_output;
+    CHECK_EQ(diamond_orchestration::dispatch_command(bounded_resume, bounded_service,
+                                                     invalid_bound_output),
+             diamond_orchestration::kExitArgumentError);
+
     auto active_config = ProductionConfig{};
     active_config.model_version = "active-transition";
     {
