@@ -82,6 +82,14 @@ diamond_orchestration::ProductionConfig read_config(const std::filesystem::path&
     const std::string text{std::istreambuf_iterator<char>(in), {}};
     return diamond_orchestration::ProductionConfig::from_json(diamond_support::parse_json(text));
 }
+std::filesystem::path replay_root(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path / "manifest.json")) return path;
+    const auto family = path.parent_path();
+    const auto schema = family.parent_path();
+    if (schema.filename() != "persistent-replay-v2")
+        throw std::invalid_argument("replay namespace is not persistent-replay-v2");
+    return schema.parent_path();
+}
 Object metrics(const diamond_pipeline::HeldOutMetrics& m) {
     return {{"target_entropy", Json{m.target_entropy}},
             {"full_cross_entropy", Json{m.full_cross_entropy}},
@@ -108,7 +116,8 @@ int main(int argc, char** argv) {
                                           device);
         const auto checkpoint = diamond_training::load_checkpoint_v3(
             o.checkpoint, trainer, device, diamond_training::CheckpointLoadIntent::exact_resume);
-        const diamond_pipeline::ReplayStore replay(o.replay, compatibility, config.replay.capacity,
+        const diamond_pipeline::ReplayStore replay(replay_root(o.replay), compatibility,
+                                                   config.replay.capacity,
                                                    config.replay.seed,
                                                    diamond_pipeline::ReplayContents::full);
         const auto result =
