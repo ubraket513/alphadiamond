@@ -119,7 +119,8 @@ int main(int argc, char** argv) {
         const diamond_pipeline::ReplayStore replay(replay_root(o.replay), compatibility,
                                                    config.replay.capacity,
                                                    config.replay.seed,
-                                                   diamond_pipeline::ReplayContents::full);
+                                                   diamond_pipeline::ReplayContents::full,
+                                                   diamond_pipeline::ReplayOpenMode::must_exist);
         const auto result =
             diamond_pipeline::run_min_learning_diagnostic(trainer, replay,
                                                           {.iteration = o.iteration,

@@ -81,6 +81,18 @@ int main(int argc, char** argv) {
     remove_tree(scratch, cleanup_error);
     REQUIRE(!cleanup_error, "remove scratch before replay test");
     std::filesystem::create_directories(scratch);
+    const auto missing_read_only = scratch / "missing-read-only";
+    bool missing_threw = false;
+    try {
+        diamond_pipeline::ReplayStore missing(
+            missing_read_only, compatibility, 8, 3, diamond_pipeline::ReplayContents::full,
+            diamond_pipeline::ReplayOpenMode::must_exist);
+    } catch (const std::runtime_error&) {
+        missing_threw = true;
+    }
+    CHECK(missing_threw);
+    CHECK(!std::filesystem::exists(missing_read_only));
+
     CHECK_EQ(diamond_support::sha256(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     CHECK_EQ(diamond_support::sha256("abc"),
              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");

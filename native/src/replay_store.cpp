@@ -385,7 +385,7 @@ struct ReplayStore::Impl {
 };
 
 ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility, size_t capacity,
-                         uint64_t seed, ReplayContents contents)
+                         uint64_t seed, ReplayContents contents, ReplayOpenMode open_mode)
     : impl_(std::make_unique<Impl>()) {
     if (capacity == 0) throw std::invalid_argument("replay capacity must be positive");
     impl_->compatibility = std::move(compatibility);
@@ -399,6 +399,8 @@ ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility
                             impl_->compatibility.family() / compatibility_digest;
     impl_->manifest_path = impl_->namespace_path / "manifest.json";
     if (!std::filesystem::exists(impl_->manifest_path)) {
+        if (open_mode == ReplayOpenMode::must_exist)
+            throw std::runtime_error("replay manifest does not exist");
         impl_->write_manifest();
         return;
     }

@@ -37,11 +37,13 @@ uint64_t replay_sampling_seed(uint64_t replay_seed, uint64_t iteration, uint64_t
 // index. Reading 1M samples back out of JSON to hash one file was costing ~100 s
 // per stage, three times per training iteration.
 enum class ReplayContents { full, metadata_only };
+enum class ReplayOpenMode { create_if_missing, must_exist };
 
 class ReplayStore {
   public:
     ReplayStore(std::filesystem::path root, Compatibility compatibility, std::size_t capacity,
-                uint64_t seed, ReplayContents contents = ReplayContents::full);
+                uint64_t seed, ReplayContents contents = ReplayContents::full,
+                ReplayOpenMode open_mode = ReplayOpenMode::create_if_missing);
     std::size_t ingest(std::span<const Episode> episodes);
     ReplayIngestReport ingest_iteration(std::span<const Episode> episodes);
     std::size_t size() const noexcept;
