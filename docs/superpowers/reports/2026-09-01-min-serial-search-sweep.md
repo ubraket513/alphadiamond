@@ -33,3 +33,18 @@
 
 Smoke A0 completion observed: `false`. Adaptive trigger observed: `false`.
 The summarizer reports evidence only and does not alter code or configuration.
+
+## Task 10 gate application
+
+The A0-256 and A0-400 arms are `ILLEGAL_MASS_DOMINATED`: legal KL is
+`0.0871268`/`0.0814674` (at most 0.10), full KL is
+`2.18100`/`2.19659` (more than legal KL + 0.50), and legal probability mass is
+`0.126187`/`0.123776` (below `exp(-0.50)`). The reported full-action policy loss
+therefore overstates the remaining legal-policy mismatch.
+
+`DEEPER_SEARCH_HELPS` is false: neither constant 256 nor 400 completed a game,
+and both introduced 32/32 deadline aborts. `ADAPTIVE_SEARCH_WINS` is false:
+both adaptive arms had `boosted_fraction=0`, completed 0/32, and reproduced the
+base 128 behavior. The selected ordered decision-table branch is D, gated
+vacancy-prior annealing. Parallel MCTS and direct A0 acceptance are rejected.
+Min remains B0.
