@@ -16,6 +16,7 @@ set(SOO_SEARCH_SOURCES
     src/mcts.cpp
     src/mcts3p.cpp
     src/profile.cpp
+    src/search_target_metrics.cpp
     src/selfplay.cpp
 )
 
@@ -104,6 +105,7 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(budget_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(batcher_test)
+    diamond_add_native_test(search_target_metrics_test)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
     diamond_add_native_test(replay_schema_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-schema-scratch")
     diamond_add_native_test(replay_store_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-store-scratch")
