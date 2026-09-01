@@ -155,6 +155,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     add_library(diamond_training STATIC
         src/checkpoint.cpp
         src/device.cpp
+        src/parameter_diagnostics.cpp
         src/training_sample.cpp
         src/trainer.cpp
     )
@@ -196,6 +197,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     # The direct native self-play -> replay -> training path is deliberately
     # separate from the schema-only replay library: it owns LibTorch models.
     add_library(diamond_native_pipeline STATIC
+        src/learning_diagnostic.cpp
         src/model_pool.cpp
         src/pipeline.cpp
     )
@@ -250,13 +252,17 @@ if(DIAMOND_BUILD_LIBTORCH)
             alphadiamond::diamond_native_pipeline
             alphadiamond::diamond_orchestration)
 
+        add_executable(min_learning_diagnostic benchmarks/min_learning_diagnostic.cpp)
+        target_link_libraries(min_learning_diagnostic PRIVATE
+            alphadiamond::diamond_native_pipeline alphadiamond::diamond_orchestration)
+
         add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
         target_link_libraries(end_to_end_benchmark PRIVATE
             alphadiamond::diamond_native_pipeline)
 
         foreach(benchmark IN ITEMS
                 training_step_benchmark checkpoint_benchmark replay_benchmark
-                selfplay_benchmark end_to_end_benchmark)
+                selfplay_benchmark min_learning_diagnostic end_to_end_benchmark)
             target_compile_features(${benchmark} PRIVATE cxx_std_20)
         endforeach()
     endif()
@@ -446,13 +452,30 @@ if(DIAMOND_BUILD_LIBTORCH)
             target_compile_options(training_step_parity_test PRIVATE /bigobj)
         endif()
 
-        add_executable(min_value_head_init_test tests/min_value_head_init_test.cpp)
+    add_executable(min_value_head_init_test tests/min_value_head_init_test.cpp)
         target_link_libraries(min_value_head_init_test PRIVATE alphadiamond::diamond_training)
         target_include_directories(min_value_head_init_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
         target_compile_features(min_value_head_init_test PRIVATE cxx_std_20)
         target_compile_definitions(min_value_head_init_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
         add_test(NAME min_value_head_init_test COMMAND min_value_head_init_test)
-        set_tests_properties(min_value_head_init_test PROPERTIES LABELS training)
+    set_tests_properties(min_value_head_init_test PROPERTIES LABELS training)
+
+    add_executable(parameter_diagnostics_test tests/parameter_diagnostics_test.cpp)
+    target_link_libraries(parameter_diagnostics_test PRIVATE alphadiamond::diamond_training)
+    target_include_directories(parameter_diagnostics_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+    target_compile_features(parameter_diagnostics_test PRIVATE cxx_std_20)
+    target_compile_definitions(parameter_diagnostics_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    add_test(NAME parameter_diagnostics_test COMMAND parameter_diagnostics_test)
+    set_tests_properties(parameter_diagnostics_test PROPERTIES LABELS training)
+
+    add_executable(min_learning_diagnostic_test tests/min_learning_diagnostic_test.cpp)
+    target_link_libraries(min_learning_diagnostic_test PRIVATE alphadiamond::diamond_native_pipeline)
+    target_include_directories(min_learning_diagnostic_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+    target_compile_features(min_learning_diagnostic_test PRIVATE cxx_std_20)
+    target_compile_definitions(min_learning_diagnostic_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    add_test(NAME min_learning_diagnostic_test COMMAND min_learning_diagnostic_test
+             "${CMAKE_CURRENT_BINARY_DIR}/min-learning-diagnostic-scratch")
+    set_tests_properties(min_learning_diagnostic_test PROPERTIES LABELS training)
         if(MSVC)
             target_compile_options(min_value_head_init_test PRIVATE /bigobj)
         endif()
@@ -625,6 +648,7 @@ if(DIAMOND_BUILD_LIBTORCH)
                     -DCHECKPOINT_BENCHMARK=$<TARGET_FILE:checkpoint_benchmark>
                     -DREPLAY_BENCHMARK=$<TARGET_FILE:replay_benchmark>
                     -DSELFPLAY_BENCHMARK=$<TARGET_FILE:selfplay_benchmark>
+                    -DMIN_LEARNING_DIAGNOSTIC=$<TARGET_FILE:min_learning_diagnostic>
                     -DEND_TO_END_BENCHMARK=$<TARGET_FILE:end_to_end_benchmark>
                     -DMODEL_ARTIFACT=${PROJECT_SOURCE_DIR}/models/soo/2.0.0
                     -DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/benchmark-schema-scratch

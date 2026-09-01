@@ -8,6 +8,19 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
+execute_process(COMMAND "${MIN_LEARNING_DIAGNOSTIC}" --help
+    RESULT_VARIABLE learning_help_result OUTPUT_VARIABLE learning_help ERROR_VARIABLE learning_help_error)
+if(NOT learning_help_result EQUAL 0)
+    message(FATAL_ERROR "Min learning diagnostic --help failed: ${learning_help_error}")
+endif()
+foreach(option IN ITEMS --checkpoint --config --replay --device --iteration --steps
+        --batch-size --eval-samples --eval-batch --log-every --seed --out)
+    string(FIND "${learning_help}" "${option}" option_position)
+    if(option_position EQUAL -1)
+        message(FATAL_ERROR "Min learning diagnostic help is missing ${option}")
+    endif()
+endforeach()
+
 foreach(executable IN ITEMS
         TRAINING_BENCHMARK CHECKPOINT_BENCHMARK REPLAY_BENCHMARK
         SELFPLAY_BENCHMARK END_TO_END_BENCHMARK)
