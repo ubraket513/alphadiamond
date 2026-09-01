@@ -113,7 +113,11 @@ int main(int argc, char** argv) {
             diamond_model::DiamondModel(config.network.width, config.network.residual_blocks, 6, 3);
         diamond_training::Trainer trainer(model, compatibility,
                                           {.learning_rate = config.training.learning_rate,
-                                           .weight_decay = config.training.weight_decay},
+                                           .weight_decay = config.training.weight_decay,
+                                           .policy_loss_domain =
+                                               config.training.policy_loss_domain == "legal"
+                                                   ? diamond_training::PolicyLossDomain::legal
+                                                   : diamond_training::PolicyLossDomain::full},
                                           device);
         const auto checkpoint = diamond_training::load_checkpoint_v3(
             o.checkpoint, trainer, device, diamond_training::CheckpointLoadIntent::exact_resume);
