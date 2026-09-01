@@ -657,8 +657,7 @@ int main(int argc, char** argv) {
             << ",\"evaluations\":" << totals.evaluations
             << ",\"boosted_moves\":" << totals.boosted_moves << ",\"boosted_fraction\":"
             << ratio(static_cast<double>(totals.boosted_moves), static_cast<double>(totals.moves))
-            << ",\"batches\":" << totals.batches
-            << ",\"evaluations_per_second\":"
+            << ",\"batches\":" << totals.batches << ",\"evaluations_per_second\":"
             << ratio(static_cast<double>(totals.evaluations), totals.wall_seconds)
             << ",\"batches_per_second\":"
             << ratio(static_cast<double>(totals.batches), totals.wall_seconds) << ",\"batch_mean\":"

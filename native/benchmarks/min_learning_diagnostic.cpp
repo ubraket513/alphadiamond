@@ -83,7 +83,8 @@ diamond_orchestration::ProductionConfig read_config(const std::filesystem::path&
     return diamond_orchestration::ProductionConfig::from_json(diamond_support::parse_json(text));
 }
 std::filesystem::path replay_root(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path / "manifest.json")) return path;
+    if (!std::filesystem::exists(path / "manifest.json"))
+        return path;
     const auto family = path.parent_path();
     const auto schema = family.parent_path();
     if (schema.filename() != "persistent-replay-v2")
@@ -116,11 +117,9 @@ int main(int argc, char** argv) {
                                           device);
         const auto checkpoint = diamond_training::load_checkpoint_v3(
             o.checkpoint, trainer, device, diamond_training::CheckpointLoadIntent::exact_resume);
-        const diamond_pipeline::ReplayStore replay(replay_root(o.replay), compatibility,
-                                                   config.replay.capacity,
-                                                   config.replay.seed,
-                                                   diamond_pipeline::ReplayContents::full,
-                                                   diamond_pipeline::ReplayOpenMode::must_exist);
+        const diamond_pipeline::ReplayStore replay(
+            replay_root(o.replay), compatibility, config.replay.capacity, config.replay.seed,
+            diamond_pipeline::ReplayContents::full, diamond_pipeline::ReplayOpenMode::must_exist);
         const auto result =
             diamond_pipeline::run_min_learning_diagnostic(trainer, replay,
                                                           {.iteration = o.iteration,

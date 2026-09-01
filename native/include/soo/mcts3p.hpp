@@ -55,7 +55,8 @@ class SearchSession3P {
     void begin(const State& state, double temperature);
     void reseed(uint64_t seed) { rng_.reseed(seed); }
     void set_simulations(int simulations) {
-        if (simulations <= 0) throw std::invalid_argument("simulations must be positive");
+        if (simulations <= 0)
+            throw std::invalid_argument("simulations must be positive");
         config_.simulations = simulations;
     }
 

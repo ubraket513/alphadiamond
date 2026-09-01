@@ -84,9 +84,9 @@ int main(int argc, char** argv) {
     const auto missing_read_only = scratch / "missing-read-only";
     bool missing_threw = false;
     try {
-        diamond_pipeline::ReplayStore missing(
-            missing_read_only, compatibility, 8, 3, diamond_pipeline::ReplayContents::full,
-            diamond_pipeline::ReplayOpenMode::must_exist);
+        diamond_pipeline::ReplayStore missing(missing_read_only, compatibility, 8, 3,
+                                              diamond_pipeline::ReplayContents::full,
+                                              diamond_pipeline::ReplayOpenMode::must_exist);
     } catch (const std::runtime_error&) {
         missing_threw = true;
     }
