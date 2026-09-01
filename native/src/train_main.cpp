@@ -1505,10 +1505,13 @@ Object train(const CommandRequest& request, const ProductionConfig& config, bool
                         "resume config does not match the active run config");
                 const auto changed =
                     diamond_orchestration::validate_training_config_transition(previous, config);
-                if (resumed_state->stage() != RunStage::self_play)
+                if (resumed_state->stage() != RunStage::self_play &&
+                    resumed_state->stage() != RunStage::complete)
                     throw CommandArtifactError(
                         "training config transition requires a durable SELF_PLAY boundary");
-                const auto transition_iteration = iteration_number(*resumed_state);
+                const auto transition_iteration =
+                    iteration_number(*resumed_state) +
+                    (resumed_state->stage() == RunStage::complete ? 1 : 0);
                 if (std::filesystem::exists(
                         stage_report_path(request, transition_iteration, RunStage::self_play)))
                     throw CommandArtifactError(
