@@ -43,3 +43,32 @@ model_step=27776
 optimizer_restored=true
 valid=true
 ```
+
+## PR 1 verification and scope
+
+- Base SHA: `589d6b452242f2a7d96a3277af76fec54582326d`
+- Verified implementation head SHA: `51ce9d2a4cd76090c99cd293b122648d6fbb13fe`
+- Native training suite: 43/43 tests passed.
+- Frozen serial-search verification: `mcts3p_golden_test`, `mcts_golden_test`, and
+  `selfplay_test` all passed with their existing golden digests and trajectories.
+
+The self-play benchmark now reports `search_targets` (`rows`,
+`legal_actions_mean`, `entropy_mean`, `entropy_p50`, `entropy_p90`,
+`normalized_entropy_mean`, `max_probability_mean`, `top3_mass_mean`,
+`effective_actions_mean`, and `zero_visit_fraction_mean`) and `policy_fit`
+(`sampled_roots`, target entropy, full/legal cross-entropy and KL, legal
+probability mass, and full/legal top-1 agreement). Self-play sidecars use schema
+version 2 and include per-episode `search_targets` summaries.
+
+The new Min learning-diagnostic JSON uses schema version 1. Its preamble records
+checkpoint step/model digest, replay size/manifest digest, config path, device,
+iteration, requested training/evaluation sizes, seed, and build provenance. It
+then records initial/final held-out target entropy, full-action cross-entropy and
+KL, top-1 agreement, and value MSE; retained training steps with loss and eight
+parameter-group parameter/gradient/update norms; and policy, logit, value,
+agreement, cross-entropy, and value-MSE drift.
+
+This PR is observability-only. It changes no configuration defaults, search
+selection, replay bytes, checkpoint bytes, optimizer behavior, or production run
+state. The diagnostic trains only an in-memory model loaded from copied artifacts
+and never ingests, prunes, saves, or resumes the production replay/checkpoint.
