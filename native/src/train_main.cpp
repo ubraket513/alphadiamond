@@ -590,7 +590,17 @@ void validate_checkpoint_context(const diamond_training::CheckpointInfo& saved,
             diamond_support::canonical_json(predecessor->to_json()) &&
         saved.provenance->protocol_ids_json ==
             diamond_support::canonical_json(Json{protocol_ids(*predecessor)});
-    if (!current_matches && !predecessor_matches) {
+    bool legacy_semantic_match = false;
+    try {
+        const auto saved_config = ProductionConfig::from_json(
+            diamond_support::parse_json(saved.provenance->resolved_config_bytes));
+        legacy_semantic_match = saved_config == config && saved.provenance->protocol_ids_json ==
+                                                              diamond_support::canonical_json(
+                                                                  Json{protocol_ids(saved_config)});
+    } catch (const std::exception&) {
+        legacy_semantic_match = false;
+    }
+    if (!current_matches && !predecessor_matches && !legacy_semantic_match) {
         throw CommandArtifactError("native checkpoint config or protocol provenance mismatch");
     }
     if (replay_sha256 && saved.provenance->replay_manifest_sha256 != *replay_sha256)

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -259,6 +260,7 @@ struct Totals {
     double repeat_within_8_fraction_total = 0.0;
     double max_revisits_total = 0.0;
     uint64_t cycling_games = 0;
+    std::array<uint64_t, 4> first_finisher_counts{}; // indexed by player id
 };
 
 int dominant_cycle_period(const std::vector<uint64_t>& tail, int longest = 32) {
@@ -332,6 +334,9 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
     totals.batch_sizes = std::move(metrics.batch_sizes);
     for (const soo::Episode& episode : episodes) {
         totals.completed += episode.completed ? 1 : 0;
+        if (episode.completed && !episode.finish_order.empty() &&
+            episode.finish_order.front() < totals.first_finisher_counts.size())
+            ++totals.first_finisher_counts[episode.finish_order.front()];
         totals.aborted += episode.completed ? 0 : 1;
         totals.completed_samples += episode.completed ? episode.moves.size() : 0;
         totals.move_counts.push_back(static_cast<uint32_t>(episode.move_count));
@@ -396,6 +401,8 @@ void accumulate(Totals& destination, Totals source) {
     destination.repeat_within_8_fraction_total += source.repeat_within_8_fraction_total;
     destination.max_revisits_total += source.max_revisits_total;
     destination.cycling_games += source.cycling_games;
+    for (std::size_t player = 1; player < destination.first_finisher_counts.size(); ++player)
+        destination.first_finisher_counts[player] += source.first_finisher_counts[player];
 }
 
 struct PolicyTotals {
@@ -638,6 +645,8 @@ int main(int argc, char** argv) {
             << ",\"max_game_seconds\":" << totals.deadline_aborts
             << ",\"other\":" << totals.other_aborts
             << "},\"completed_samples\":" << totals.completed_samples
+            << ",\"first_finisher_counts\":[" << totals.first_finisher_counts[1] << ','
+            << totals.first_finisher_counts[2] << ',' << totals.first_finisher_counts[3] << ']'
             << ",\"search_targets\":{\"rows\":" << search_targets.rows
             << ",\"legal_actions_mean\":" << search_targets.legal_actions_mean
             << ",\"entropy_mean\":" << search_targets.entropy_mean
