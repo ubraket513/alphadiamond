@@ -103,17 +103,18 @@ Options parse_options(int argc, char** argv) {
     for (int index = 1; index < argc; ++index) {
         const std::string_view option = argv[index];
         if (option == "--help") {
-            std::cout << "usage: selfplay_benchmark [--artifact DIR | --checkpoint DIR --config FILE] "
-                         "[--device cpu|cuda|cuda:N] "
-                         "[--precision fp32|fp16|bf16] "
-                         "[--lanes N] [--threads N] [--max-batch N] [--max-wait-us N] "
-                         "[--simulations N] [--max-moves N] [--games N] [--seed N] "
-                         "[--bootstrap-prior config|vacancy|none] [--simulations-late N] "
-                         "[--repeat-window N] [--max-game-seconds F] "
-                         "[--diagnostic-roots N] [--diagnostic-batch N] "
-                         "[--temperature F] [--temperature-moves N] "
-                         "[--dirichlet-epsilon F] [--warmups N] [--repetitions N] "
-                         "[--scratch PATH]\n";
+            std::cout
+                << "usage: selfplay_benchmark [--artifact DIR | --checkpoint DIR --config FILE] "
+                   "[--device cpu|cuda|cuda:N] "
+                   "[--precision fp32|fp16|bf16] "
+                   "[--lanes N] [--threads N] [--max-batch N] [--max-wait-us N] "
+                   "[--simulations N] [--max-moves N] [--games N] [--seed N] "
+                   "[--bootstrap-prior config|vacancy|none] [--simulations-late N] "
+                   "[--repeat-window N] [--max-game-seconds F] "
+                   "[--diagnostic-roots N] [--diagnostic-batch N] "
+                   "[--temperature F] [--temperature-moves N] "
+                   "[--dirichlet-epsilon F] [--warmups N] [--repetitions N] "
+                   "[--scratch PATH]\n";
             std::exit(0);
         }
         if (++index == argc)
@@ -261,7 +262,8 @@ struct Totals {
 
 int dominant_cycle_period(const std::vector<uint64_t>& tail, int longest = 32) {
     const auto size = static_cast<int>(tail.size());
-    if (size < 4) return 0;
+    if (size < 4)
+        return 0;
     for (int period = 1; period <= longest && period * 4 <= size; ++period) {
         bool periodic = true;
         for (int back = 0; back < period * 3 && periodic; ++back) {
@@ -271,7 +273,8 @@ int dominant_cycle_period(const std::vector<uint64_t>& tail, int longest = 32) {
                 tail[static_cast<std::size_t>(here)] != tail[static_cast<std::size_t>(previous)])
                 periodic = false;
         }
-        if (periodic) return period;
+        if (periodic)
+            return period;
     }
     return 0;
 }
@@ -340,7 +343,8 @@ Totals run_once(const Options& options, const soo::Match& match, const soo::Stat
             ++totals.cycling_games;
         for (const auto& move : episode.moves) {
             totals.search_targets.push_back(soo::inspect_visit_target(move.visit_counts));
-            if (options.diagnostic_roots > 0) totals.diagnostic_moves.push_back(move);
+            if (options.diagnostic_roots > 0)
+                totals.diagnostic_moves.push_back(move);
         }
         if (!episode.completed) {
             if (episode.move_limit_exceeded)
@@ -378,10 +382,11 @@ void accumulate(Totals& destination, Totals source) {
                                    source.batch_sizes.end());
     destination.move_counts.insert(destination.move_counts.end(), source.move_counts.begin(),
                                    source.move_counts.end());
-    destination.search_targets.insert(destination.search_targets.end(), source.search_targets.begin(),
-                                      source.search_targets.end());
+    destination.search_targets.insert(destination.search_targets.end(),
+                                      source.search_targets.begin(), source.search_targets.end());
     destination.diagnostic_moves.insert(destination.diagnostic_moves.end(),
-                                        source.diagnostic_moves.begin(), source.diagnostic_moves.end());
+                                        source.diagnostic_moves.begin(),
+                                        source.diagnostic_moves.end());
     destination.revisit_fraction_total += source.revisit_fraction_total;
     destination.repeat_within_8_fraction_total += source.repeat_within_8_fraction_total;
     destination.max_revisits_total += source.max_revisits_total;
@@ -403,12 +408,14 @@ PolicyTotals diagnose_roots(std::vector<soo::EpisodeMove> moves, std::size_t lim
                             std::size_t batch_size, uint64_t seed,
                             diamond_model::DiamondModel& model,
                             const diamond_training::ResolvedDevice& device) {
-    if (limit == 0 || moves.empty()) return {};
+    if (limit == 0 || moves.empty())
+        return {};
     std::mt19937_64 random(seed);
     for (std::size_t index = limit; index < moves.size(); ++index) {
         std::uniform_int_distribution<std::size_t> choose(0, index);
         const std::size_t selected = choose(random);
-        if (selected < limit) moves[selected] = std::move(moves[index]);
+        if (selected < limit)
+            moves[selected] = std::move(moves[index]);
     }
     moves.resize(std::min(limit, moves.size()));
     model->to(device.torch_device, torch::kFloat32);
@@ -506,8 +513,10 @@ int main(int argc, char** argv) {
             runtime_sha256 = checkpoint.model_digest;
             bootstrap_prior = config.self_play.bootstrap_prior !=
                               diamond_orchestration::kBootstrapPriorNone;
-            if (!options.simulations_late) options.simulations_late = config.mcts.simulations_late;
-            if (!options.repeat_window) options.repeat_window = config.mcts.repeat_window;
+            if (!options.simulations_late)
+                options.simulations_late = config.mcts.simulations_late;
+            if (!options.repeat_window)
+                options.repeat_window = config.mcts.repeat_window;
             if (!options.max_game_seconds)
                 options.max_game_seconds = config.self_play.max_game_seconds;
         } else {
@@ -522,8 +531,10 @@ int main(int argc, char** argv) {
             model_sha256 = artifact.model_sha256;
             runtime_sha256 = artifact.runtime_sha256;
         }
-        if (options.bootstrap_prior == "vacancy") bootstrap_prior = true;
-        if (options.bootstrap_prior == "none") bootstrap_prior = false;
+        if (options.bootstrap_prior == "vacancy")
+            bootstrap_prior = true;
+        if (options.bootstrap_prior == "none")
+            bootstrap_prior = false;
         if (options.repeat_window.value_or(0) > 0 && options.simulations_late.value_or(0) == 0)
             throw std::invalid_argument("--repeat-window requires non-zero --simulations-late");
         const auto precision = options.precision == "fp16"
@@ -564,9 +575,9 @@ int main(int argc, char** argv) {
         for (const double value : seconds)
             measured_seconds += value;
         const auto search_targets = soo::summarize_visit_targets(totals.search_targets);
-        const auto policy = diagnose_roots(std::move(totals.diagnostic_moves),
-                                           options.diagnostic_roots, options.diagnostic_batch,
-                                           options.seed, model, device);
+        const auto policy =
+            diagnose_roots(std::move(totals.diagnostic_moves), options.diagnostic_roots,
+                           options.diagnostic_batch, options.seed, model, device);
         const double policy_rows = static_cast<double>(policy.rows);
         const double episode_count = static_cast<double>(totals.attempted);
 
@@ -591,85 +602,79 @@ int main(int argc, char** argv) {
             << ",\"diagnostic_batch\":" << options.diagnostic_batch
             << ",\"max_moves\":" << options.max_moves
             << "},\"environment\":{\"requested_device\":\"" << device.requested_name
-            << "\",\"canonical_device\":\"" << device.canonical_name
-            << "\",\"precision\":\"" << options.precision
-            << "\",\"torch_threads\":" << torch::get_num_threads()
+            << "\",\"canonical_device\":\"" << device.canonical_name << "\",\"precision\":\""
+            << options.precision << "\",\"torch_threads\":" << torch::get_num_threads()
             << "},\"provenance\":" << diamond_support::build_provenance_json()
             << ",\"samples_seconds\":[";
         for (std::size_t index = 0; index < seconds.size(); ++index)
             std::cout << (index ? "," : "") << seconds[index];
-        std::cout << "],\"summary_seconds\":{\"min\":" << sorted_seconds.front()
-                  << ",\"median\":" << sorted_seconds[sorted_seconds.size() / 2]
-                  << ",\"max\":" << sorted_seconds.back()
-                  << ",\"range\":" << sorted_seconds.back() - sorted_seconds.front()
-                  << "},\"domain\":{\"model_source\":\""
-                  << (options.checkpoint ? "checkpoint" : "artifact")
-                  << "\",\"model_family\":\"" << (min_model ? "Min" : "Soo")
-                  << "\",\"model_sha256\":\"" << model_sha256
-                  << "\",\"runtime_sha256\":\"" << runtime_sha256
-                  << "\",\"attempted_episodes\":" << totals.attempted
-                  << ",\"completed_episodes\":" << totals.completed
-                  << ",\"aborted_episodes\":" << totals.aborted
-                  << ",\"abort_reasons\":{\"max_moves\":" << totals.max_move_aborts
-                  << ",\"max_game_seconds\":" << totals.deadline_aborts
-                  << ",\"other\":" << totals.other_aborts
-                  << "},\"completed_samples\":" << totals.completed_samples
-                  << ",\"search_targets\":{\"rows\":" << search_targets.rows
-                  << ",\"legal_actions_mean\":" << search_targets.legal_actions_mean
-                  << ",\"entropy_mean\":" << search_targets.entropy_mean
-                  << ",\"entropy_p50\":" << search_targets.entropy_p50
-                  << ",\"entropy_p90\":" << search_targets.entropy_p90
-                  << ",\"normalized_entropy_mean\":" << search_targets.normalized_entropy_mean
-                  << ",\"max_probability_mean\":" << search_targets.max_probability_mean
-                  << ",\"top3_mass_mean\":" << search_targets.top3_mass_mean
-                  << ",\"effective_actions_mean\":" << search_targets.effective_actions_mean
-                  << ",\"zero_visit_fraction_mean\":" << search_targets.zero_visit_fraction_mean
-                  << "},\"policy_fit\":{\"sampled_roots\":" << policy.rows
-                  << ",\"target_entropy_mean\":" << ratio(policy.target_entropy, policy_rows)
-                  << ",\"full_cross_entropy_mean\":" << ratio(policy.full_cross_entropy, policy_rows)
-                  << ",\"legal_cross_entropy_mean\":" << ratio(policy.legal_cross_entropy, policy_rows)
-                  << ",\"full_kl_mean\":" << ratio(policy.full_kl, policy_rows)
-                  << ",\"legal_kl_mean\":" << ratio(policy.legal_kl, policy_rows)
-                  << ",\"legal_probability_mass_mean\":" << ratio(policy.legal_mass, policy_rows)
-                  << ",\"top1_agreement\":"
-                  << ratio(static_cast<double>(policy.top1_agrees), policy_rows)
-                  << "},\"repetition\":{\"revisit_fraction_mean\":"
-                  << ratio(totals.revisit_fraction_total, episode_count)
-                  << ",\"repeat_within_8_fraction_mean\":"
-                  << ratio(totals.repeat_within_8_fraction_total, episode_count)
-                  << ",\"max_revisits_mean\":"
-                  << ratio(totals.max_revisits_total, episode_count)
-                  << ",\"cycling_games\":" << totals.cycling_games << "}"
-                  << ",\"moves\":" << totals.moves
-                  << ",\"moves_p50\":" << percentile(totals.move_counts, 0.50)
-                  << ",\"moves_p90\":" << percentile(totals.move_counts, 0.90)
-                  << ",\"moves_p99\":" << percentile(totals.move_counts, 0.99)
-                  << ",\"evaluations\":" << totals.evaluations << ",\"batches\":" << totals.batches
-                  << ",\"evaluations_per_second\":"
-                  << ratio(static_cast<double>(totals.evaluations), totals.wall_seconds)
-                  << ",\"batches_per_second\":"
-                  << ratio(static_cast<double>(totals.batches), totals.wall_seconds)
-                  << ",\"batch_mean\":"
-                  << ratio(static_cast<double>(total_batch_rows),
-                           static_cast<double>(totals.batch_sizes.size()))
-                  << ",\"batch_p50\":" << percentile(totals.batch_sizes, 0.50)
-                  << ",\"batch_p90\":" << percentile(totals.batch_sizes, 0.90)
-                  << ",\"batch_max\":" << max_batch << ",\"evaluator_busy_fraction\":"
-                  << ratio(totals.evaluator_seconds, totals.wall_seconds)
-                  << ",\"search_worker_busy_fraction\":"
-                  << ratio(totals.worker_busy_seconds,
-                           totals.wall_seconds * static_cast<double>(options.threads))
-                  << ",\"samples_per_hour\":"
-                  << ratio(static_cast<double>(totals.completed_samples) * 3600.0, measured_seconds)
-                  // Where the evaluator's time actually went. evaluator_busy
-                  // above is the sum of all six, so a high value does not by
-                  // itself mean the GPU is saturated.
-                  << ",\"evaluator_stage_seconds\":{"
-                  << "\"collation\":" << totals.collation_seconds
-                  << ",\"h2d\":" << totals.h2d_seconds << ",\"forward\":" << totals.forward_seconds
-                  << ",\"policy_postprocess\":" << totals.postprocess_seconds
-                  << ",\"d2h\":" << totals.d2h_seconds << ",\"scatter\":" << totals.scatter_seconds
-                  << "}" << "}}\n";
+        std::cout
+            << "],\"summary_seconds\":{\"min\":" << sorted_seconds.front()
+            << ",\"median\":" << sorted_seconds[sorted_seconds.size() / 2]
+            << ",\"max\":" << sorted_seconds.back()
+            << ",\"range\":" << sorted_seconds.back() - sorted_seconds.front()
+            << "},\"domain\":{\"model_source\":\""
+            << (options.checkpoint ? "checkpoint" : "artifact") << "\",\"model_family\":\""
+            << (min_model ? "Min" : "Soo") << "\",\"model_sha256\":\"" << model_sha256
+            << "\",\"runtime_sha256\":\"" << runtime_sha256
+            << "\",\"attempted_episodes\":" << totals.attempted
+            << ",\"completed_episodes\":" << totals.completed
+            << ",\"aborted_episodes\":" << totals.aborted
+            << ",\"abort_reasons\":{\"max_moves\":" << totals.max_move_aborts
+            << ",\"max_game_seconds\":" << totals.deadline_aborts
+            << ",\"other\":" << totals.other_aborts
+            << "},\"completed_samples\":" << totals.completed_samples
+            << ",\"search_targets\":{\"rows\":" << search_targets.rows
+            << ",\"legal_actions_mean\":" << search_targets.legal_actions_mean
+            << ",\"entropy_mean\":" << search_targets.entropy_mean
+            << ",\"entropy_p50\":" << search_targets.entropy_p50
+            << ",\"entropy_p90\":" << search_targets.entropy_p90
+            << ",\"normalized_entropy_mean\":" << search_targets.normalized_entropy_mean
+            << ",\"max_probability_mean\":" << search_targets.max_probability_mean
+            << ",\"top3_mass_mean\":" << search_targets.top3_mass_mean
+            << ",\"effective_actions_mean\":" << search_targets.effective_actions_mean
+            << ",\"zero_visit_fraction_mean\":" << search_targets.zero_visit_fraction_mean
+            << "},\"policy_fit\":{\"sampled_roots\":" << policy.rows
+            << ",\"target_entropy_mean\":" << ratio(policy.target_entropy, policy_rows)
+            << ",\"full_cross_entropy_mean\":" << ratio(policy.full_cross_entropy, policy_rows)
+            << ",\"legal_cross_entropy_mean\":" << ratio(policy.legal_cross_entropy, policy_rows)
+            << ",\"full_kl_mean\":" << ratio(policy.full_kl, policy_rows)
+            << ",\"legal_kl_mean\":" << ratio(policy.legal_kl, policy_rows)
+            << ",\"legal_probability_mass_mean\":" << ratio(policy.legal_mass, policy_rows)
+            << ",\"top1_agreement\":" << ratio(static_cast<double>(policy.top1_agrees), policy_rows)
+            << "},\"repetition\":{\"revisit_fraction_mean\":"
+            << ratio(totals.revisit_fraction_total, episode_count)
+            << ",\"repeat_within_8_fraction_mean\":"
+            << ratio(totals.repeat_within_8_fraction_total, episode_count)
+            << ",\"max_revisits_mean\":" << ratio(totals.max_revisits_total, episode_count)
+            << ",\"cycling_games\":" << totals.cycling_games << "}" << ",\"moves\":" << totals.moves
+            << ",\"moves_p50\":" << percentile(totals.move_counts, 0.50)
+            << ",\"moves_p90\":" << percentile(totals.move_counts, 0.90)
+            << ",\"moves_p99\":" << percentile(totals.move_counts, 0.99)
+            << ",\"evaluations\":" << totals.evaluations << ",\"batches\":" << totals.batches
+            << ",\"evaluations_per_second\":"
+            << ratio(static_cast<double>(totals.evaluations), totals.wall_seconds)
+            << ",\"batches_per_second\":"
+            << ratio(static_cast<double>(totals.batches), totals.wall_seconds) << ",\"batch_mean\":"
+            << ratio(static_cast<double>(total_batch_rows),
+                     static_cast<double>(totals.batch_sizes.size()))
+            << ",\"batch_p50\":" << percentile(totals.batch_sizes, 0.50)
+            << ",\"batch_p90\":" << percentile(totals.batch_sizes, 0.90)
+            << ",\"batch_max\":" << max_batch << ",\"evaluator_busy_fraction\":"
+            << ratio(totals.evaluator_seconds, totals.wall_seconds)
+            << ",\"search_worker_busy_fraction\":"
+            << ratio(totals.worker_busy_seconds,
+                     totals.wall_seconds * static_cast<double>(options.threads))
+            << ",\"samples_per_hour\":"
+            << ratio(static_cast<double>(totals.completed_samples) * 3600.0, measured_seconds)
+            // Where the evaluator's time actually went. evaluator_busy
+            // above is the sum of all six, so a high value does not by
+            // itself mean the GPU is saturated.
+            << ",\"evaluator_stage_seconds\":{" << "\"collation\":" << totals.collation_seconds
+            << ",\"h2d\":" << totals.h2d_seconds << ",\"forward\":" << totals.forward_seconds
+            << ",\"policy_postprocess\":" << totals.postprocess_seconds
+            << ",\"d2h\":" << totals.d2h_seconds << ",\"scatter\":" << totals.scatter_seconds << "}"
+            << "}}\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "selfplay_benchmark: " << error.what() << '\n';
