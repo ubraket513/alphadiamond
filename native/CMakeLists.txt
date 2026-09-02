@@ -257,13 +257,18 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_link_libraries(min_learning_diagnostic PRIVATE
             alphadiamond::diamond_native_pipeline alphadiamond::diamond_orchestration)
 
+        add_executable(min_vacancy_realizability benchmarks/min_vacancy_realizability.cpp)
+        target_link_libraries(min_vacancy_realizability PRIVATE
+            alphadiamond::diamond_native_pipeline alphadiamond::diamond_orchestration)
+
         add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
         target_link_libraries(end_to_end_benchmark PRIVATE
             alphadiamond::diamond_native_pipeline)
 
         foreach(benchmark IN ITEMS
                 training_step_benchmark checkpoint_benchmark replay_benchmark
-                selfplay_benchmark min_learning_diagnostic end_to_end_benchmark)
+                selfplay_benchmark min_learning_diagnostic min_vacancy_realizability
+                end_to_end_benchmark)
             target_compile_features(${benchmark} PRIVATE cxx_std_20)
         endforeach()
     endif()
@@ -296,7 +301,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     if(DIAMOND_BUILD_BENCHMARKS)
         foreach(benchmark IN ITEMS
                 training_step_benchmark checkpoint_benchmark replay_benchmark
-                selfplay_benchmark end_to_end_benchmark)
+                selfplay_benchmark min_vacancy_realizability end_to_end_benchmark)
             target_compile_definitions(${benchmark} PRIVATE
                 DIAMOND_SOURCE_GIT_COMMIT="${DIAMOND_SOURCE_GIT_COMMIT}"
                 DIAMOND_SOURCE_DIRTY=${DIAMOND_SOURCE_DIRTY})
@@ -651,7 +656,7 @@ if(DIAMOND_BUILD_LIBTORCH)
                 LABELS "cuda;training")
         endif()
         if(DIAMOND_BUILD_BENCHMARKS)
-            add_test(NAME benchmark_schema_test
+        add_test(NAME benchmark_schema_test
                 COMMAND ${CMAKE_COMMAND}
                     -DTRAINING_BENCHMARK=$<TARGET_FILE:training_step_benchmark>
                     -DCHECKPOINT_BENCHMARK=$<TARGET_FILE:checkpoint_benchmark>
@@ -663,6 +668,12 @@ if(DIAMOND_BUILD_LIBTORCH)
                     -DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/benchmark-schema-scratch
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_schema_test.cmake)
             set_tests_properties(benchmark_schema_test PROPERTIES LABELS benchmark)
+
+            add_test(NAME min_vacancy_realizability_cli_test
+                COMMAND ${CMAKE_COMMAND}
+                    -DMIN_VACANCY_REALIZABILITY=${CMAKE_CURRENT_BINARY_DIR}/min_vacancy_realizability
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/min_vacancy_realizability_cli_test.cmake)
+            set_tests_properties(min_vacancy_realizability_cli_test PROPERTIES LABELS benchmark)
         endif()
         if(WIN32)
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
