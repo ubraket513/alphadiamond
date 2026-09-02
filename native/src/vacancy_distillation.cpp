@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "soo/action.hpp"
@@ -207,6 +208,10 @@ run_vacancy_distillation(diamond_training::Trainer& trainer,
         const bool trainable = config.arm == DistillationArm::policy_head ? policy : !value;
         parameter.value().set_requires_grad(trainable);
     }
+    std::unordered_map<std::string, torch::Tensor> trainable_before;
+    for (const auto& parameter : trainer.model()->named_parameters())
+        if (parameter.value().requires_grad())
+            trainable_before.emplace(parameter.key(), parameter.value().detach().clone());
 
     auto initial = evaluate(trainer, held_out_samples, config.evaluation_batch);
     trainer.model()->train();
@@ -237,7 +242,20 @@ run_vacancy_distillation(diamond_training::Trainer& trainer,
             policy_kl += before * std::log(before / final.probabilities[row][index]);
         }
     policy_kl /= static_cast<double>(initial.probabilities.size());
-    return {.initial = initial.metrics, .final = final.metrics, .policy_kl = policy_kl};
+    double update_squared = 0.0;
+    for (const auto& parameter : trainer.model()->named_parameters()) {
+        const auto found = trainable_before.find(parameter.key());
+        if (found != trainable_before.end())
+            update_squared += (parameter.value().detach() - found->second)
+                                  .to(torch::kFloat64)
+                                  .pow(2)
+                                  .sum()
+                                  .item<double>();
+    }
+    return {.initial = initial.metrics,
+            .final = final.metrics,
+            .policy_kl = policy_kl,
+            .trainable_update_l2 = std::sqrt(update_squared)};
 }
 
 } // namespace diamond_pipeline

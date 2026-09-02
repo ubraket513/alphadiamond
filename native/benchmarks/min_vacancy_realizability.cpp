@@ -223,6 +223,7 @@ int main(int argc, char** argv) {
                       {"initial", Json{metrics(result.initial)}},
                       {"final", Json{metrics(result.final)}},
                       {"policy_kl", Json{result.policy_kl}},
+                      {"trainable_update_l2", Json{result.trainable_update_l2}},
                       {"output_model_sha256", saved ? Json{saved->model_digest} : Json{nullptr}}};
         std::ofstream output(options.out, std::ios::binary | std::ios::trunc);
         if (!output)
