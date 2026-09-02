@@ -16,6 +16,7 @@ dist/
 .ruff_cache/
 /runs/
 /artifacts/
+/.worktrees/
 
 # Training run output: checkpoints, replay and ledgers stay out of Git.
 # The step-80 checkpoint below is the one exception: CI's Gate D asserts its
