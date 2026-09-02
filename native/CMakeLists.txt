@@ -200,6 +200,7 @@ if(DIAMOND_BUILD_LIBTORCH)
         src/learning_diagnostic.cpp
         src/model_pool.cpp
         src/pipeline.cpp
+        src/vacancy_distillation.cpp
     )
     add_library(alphadiamond::diamond_native_pipeline ALIAS diamond_native_pipeline)
     target_link_libraries(diamond_native_pipeline PUBLIC
@@ -476,6 +477,14 @@ if(DIAMOND_BUILD_LIBTORCH)
     add_test(NAME min_learning_diagnostic_test COMMAND min_learning_diagnostic_test
              "${CMAKE_CURRENT_BINARY_DIR}/min-learning-diagnostic-scratch")
     set_tests_properties(min_learning_diagnostic_test PROPERTIES LABELS training)
+
+    add_executable(vacancy_distillation_test tests/vacancy_distillation_test.cpp)
+    target_link_libraries(vacancy_distillation_test PRIVATE alphadiamond::diamond_native_pipeline)
+    target_include_directories(vacancy_distillation_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+    target_compile_features(vacancy_distillation_test PRIVATE cxx_std_20)
+    target_compile_definitions(vacancy_distillation_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    add_test(NAME vacancy_distillation_test COMMAND vacancy_distillation_test)
+    set_tests_properties(vacancy_distillation_test PROPERTIES LABELS training)
         if(MSVC)
             target_compile_options(min_value_head_init_test PRIVATE /bigobj)
         endif()
