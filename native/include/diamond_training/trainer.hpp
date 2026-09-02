@@ -82,13 +82,21 @@ class Trainer {
             const ResolvedDevice& device);
 
     TrainingMetrics train(std::span<const TrainingSample> samples);
-    uint64_t training_step() const { return training_step_; }
-    const Compatibility& compatibility() const { return compatibility_; }
-    const TrainingConfig& config() const { return config_; }
+    uint64_t training_step() const {
+        return training_step_;
+    }
+    const Compatibility& compatibility() const {
+        return compatibility_;
+    }
+    const TrainingConfig& config() const {
+        return config_;
+    }
     const ResolvedDevice& device() const {
         return device_;
     }
-    diamond_model::DiamondModel& model() { return model_; }
+    diamond_model::DiamondModel& model() {
+        return model_;
+    }
     const diamond_model::DiamondModel& model() const {
         return model_;
     }
@@ -99,7 +107,9 @@ class Trainer {
         return model_;
     }
     diamond_model::DiamondModel candidate_snapshot() const;
-    torch::optim::AdamW& optimizer() { return optimizer_; }
+    torch::optim::AdamW& optimizer() {
+        return optimizer_;
+    }
     void record_external_optimizer_step();
     void restore_checkpoint_state(TrainingConfig config, uint64_t training_step) {
         config_ = config;
@@ -115,4 +125,4 @@ class Trainer {
     uint64_t training_step_ = 0;
 };
 
-}  // namespace diamond_training
+} // namespace diamond_training

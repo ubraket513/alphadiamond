@@ -93,12 +93,12 @@ int main(int argc, char** argv) {
                                                    .seed = 0,
                                                    .policy_loss_domain = "full"},
                 "training defaults changed");
-        const JsonValue legacy_training{JsonValue::Object{
-            {"batch_size", JsonValue{int64_t{128}}},
-            {"learning_rate", JsonValue{1e-3}},
-            {"seed", JsonValue{int64_t{0}}},
-            {"train_steps_per_iteration", JsonValue{int64_t{1}}},
-            {"weight_decay", JsonValue{1e-4}}}};
+        const JsonValue legacy_training{
+            JsonValue::Object{{"batch_size", JsonValue{int64_t{128}}},
+                              {"learning_rate", JsonValue{1e-3}},
+                              {"seed", JsonValue{int64_t{0}}},
+                              {"train_steps_per_iteration", JsonValue{int64_t{1}}},
+                              {"weight_decay", JsonValue{1e-4}}}};
         require(TrainingConfig::from_json(legacy_training).policy_loss_domain == "full",
                 "legacy training config must default to full policy loss");
         auto legal_training = TrainingConfig{};
@@ -274,9 +274,8 @@ int main(int argc, char** argv) {
         transition_to.workers.games_per_iteration = 1024;
         transition_to.inference.max_wait_us = 100;
         transition_to.training.train_steps_per_iteration = 1408;
-        const auto changed =
-            diamond_orchestration::validate_training_config_transition(transition_from,
-                                                                       transition_to);
+        const auto changed = diamond_orchestration::validate_training_config_transition(
+            transition_from, transition_to);
         require(changed == std::vector<std::string>{"runtime.precision",
                                                     "workers.games_per_iteration",
                                                     "inference.max_wait_us",
@@ -284,20 +283,22 @@ int main(int argc, char** argv) {
                 "training transition must report every allow-listed field in stable order");
         auto forbidden_transition = transition_to;
         forbidden_transition.mcts.simulations = 64;
-        rejects([&] {
-            (void)diamond_orchestration::validate_training_config_transition(
-                transition_from, forbidden_transition);
-        }, "training transition must reject search-semantics changes");
+        rejects(
+            [&] {
+                (void)diamond_orchestration::validate_training_config_transition(
+                    transition_from, forbidden_transition);
+            },
+            "training transition must reject search-semantics changes");
         auto anneal_from = transition_from;
         anneal_from.self_play.bootstrap_prior =
             std::string(diamond_orchestration::kCanonicalTargetVacancyDistanceV2);
         anneal_from.self_play.bootstrap_prior_weight = 1.0;
         auto learner_fix = anneal_from;
         learner_fix.training.policy_loss_domain = "legal";
-        require(diamond_orchestration::validate_training_config_transition(anneal_from,
-                                                                            learner_fix) ==
-                    std::vector<std::string>{"training.policy_loss_domain"},
-                "a durable transition may enable legal policy loss");
+        require(
+            diamond_orchestration::validate_training_config_transition(anneal_from, learner_fix) ==
+                std::vector<std::string>{"training.policy_loss_domain"},
+            "a durable transition may enable legal policy loss");
         auto anneal_to = anneal_from;
         anneal_to.self_play.bootstrap_prior_weight = 0.75;
         require(
@@ -456,8 +457,7 @@ int main(int argc, char** argv) {
             const std::filesystem::path root = argv[1];
             for (const char* name :
                  {"soo-production.json", "soo-bootstrap.json", "min-production.json",
-                  "min-production-6h.json", "min-bootstrap.json",
-                  "min-anneal-alpha050-v1.json"}) {
+                  "min-production-6h.json", "min-bootstrap.json", "min-anneal-alpha050-v1.json"}) {
                 std::ifstream input(root / name, std::ios::binary);
                 require(static_cast<bool>(input), "cannot open reference production config");
                 const std::string contents{std::istreambuf_iterator<char>(input), {}};

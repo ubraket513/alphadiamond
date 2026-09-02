@@ -45,10 +45,10 @@ struct VacancyDistillationResult {
     double policy_kl = 0.0;
 };
 
-VacancyDistillationResult run_vacancy_distillation(
-    diamond_training::Trainer& trainer,
-    std::span<const diamond_training::TrainingSample> training_samples,
-    std::span<const diamond_training::TrainingSample> held_out_samples,
-    const VacancyDistillationConfig& config);
+VacancyDistillationResult
+run_vacancy_distillation(diamond_training::Trainer& trainer,
+                         std::span<const diamond_training::TrainingSample> training_samples,
+                         std::span<const diamond_training::TrainingSample> held_out_samples,
+                         const VacancyDistillationConfig& config);
 
 } // namespace diamond_pipeline

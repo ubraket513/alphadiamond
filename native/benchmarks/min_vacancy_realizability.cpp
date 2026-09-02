@@ -48,12 +48,11 @@ uint64_t count(std::string_view value, std::string_view name) {
 
 Options parse(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
-        std::cout
-            << "usage: min_vacancy_realizability --checkpoint DIR --config FILE --replay DIR "
-               "--arm head|full --device cpu|cuda|cuda:N --steps N --batch-size N "
-               "--eval-samples N --eval-batch N --seed N --expected-source-commit SHA "
-               "--expected-config-sha256 SHA --expected-model-sha256 SHA --out FILE "
-               "[--checkpoint-out DIR]\n";
+        std::cout << "usage: min_vacancy_realizability --checkpoint DIR --config FILE --replay DIR "
+                     "--arm head|full --device cpu|cuda|cuda:N --steps N --batch-size N "
+                     "--eval-samples N --eval-batch N --seed N --expected-source-commit SHA "
+                     "--expected-config-sha256 SHA --expected-model-sha256 SHA --out FILE "
+                     "[--checkpoint-out DIR]\n";
         std::exit(0);
     }
     Options result;
@@ -62,22 +61,38 @@ Options parse(int argc, char** argv) {
         if (++index == argc)
             throw std::invalid_argument(key + " requires a value");
         const std::string value = argv[index];
-        if (key == "--checkpoint") result.checkpoint = value;
-        else if (key == "--config") result.config = value;
-        else if (key == "--replay") result.replay = value;
-        else if (key == "--arm") result.arm = value;
-        else if (key == "--device") result.device = value;
-        else if (key == "--steps") result.steps = count(value, key);
-        else if (key == "--batch-size") result.batch_size = count(value, key);
-        else if (key == "--eval-samples") result.eval_samples = count(value, key);
-        else if (key == "--eval-batch") result.eval_batch = count(value, key);
-        else if (key == "--seed") result.seed = count(value, key);
-        else if (key == "--expected-source-commit") result.expected_source_commit = value;
-        else if (key == "--expected-config-sha256") result.expected_config_sha256 = value;
-        else if (key == "--expected-model-sha256") result.expected_model_sha256 = value;
-        else if (key == "--out") result.out = value;
-        else if (key == "--checkpoint-out") result.checkpoint_out = value;
-        else throw std::invalid_argument("unknown argument: " + key);
+        if (key == "--checkpoint")
+            result.checkpoint = value;
+        else if (key == "--config")
+            result.config = value;
+        else if (key == "--replay")
+            result.replay = value;
+        else if (key == "--arm")
+            result.arm = value;
+        else if (key == "--device")
+            result.device = value;
+        else if (key == "--steps")
+            result.steps = count(value, key);
+        else if (key == "--batch-size")
+            result.batch_size = count(value, key);
+        else if (key == "--eval-samples")
+            result.eval_samples = count(value, key);
+        else if (key == "--eval-batch")
+            result.eval_batch = count(value, key);
+        else if (key == "--seed")
+            result.seed = count(value, key);
+        else if (key == "--expected-source-commit")
+            result.expected_source_commit = value;
+        else if (key == "--expected-config-sha256")
+            result.expected_config_sha256 = value;
+        else if (key == "--expected-model-sha256")
+            result.expected_model_sha256 = value;
+        else if (key == "--out")
+            result.out = value;
+        else if (key == "--checkpoint-out")
+            result.checkpoint_out = value;
+        else
+            throw std::invalid_argument("unknown argument: " + key);
     }
     if (result.arm != "head" && result.arm != "full")
         throw std::invalid_argument("arm must be head or full");
@@ -120,9 +135,11 @@ Object metrics(const diamond_pipeline::VacancyMetrics& value) {
 int main(int argc, char** argv) {
     try {
         const auto options = parse(argc, argv);
-        const auto provenance = diamond_support::parse_json(diamond_support::build_provenance_json());
+        const auto provenance =
+            diamond_support::parse_json(diamond_support::build_provenance_json());
         const auto& provenance_object = std::get<Object>(provenance.value);
-        const auto source_commit = std::get<std::string>(provenance_object.at("source_commit").value);
+        const auto source_commit =
+            std::get<std::string>(provenance_object.at("source_commit").value);
         if (source_commit != options.expected_source_commit)
             throw std::runtime_error("source commit mismatch");
         const auto* dirty = std::get_if<bool>(&provenance_object.at("dirty").value);
@@ -142,8 +159,8 @@ int main(int argc, char** argv) {
         const auto compatibility = diamond_training::Compatibility::min(
             config.model_version,
             {.residual_blocks = config.network.residual_blocks, .width = config.network.width});
-        auto model = diamond_model::DiamondModel(config.network.width,
-                                                 config.network.residual_blocks, 6, 3);
+        auto model =
+            diamond_model::DiamondModel(config.network.width, config.network.residual_blocks, 6, 3);
         diamond_training::Trainer trainer(
             model, compatibility,
             {.learning_rate = config.training.learning_rate,
@@ -151,19 +168,21 @@ int main(int argc, char** argv) {
              .policy_loss_domain = diamond_training::PolicyLossDomain::legal},
             device);
         const auto checkpoint = diamond_training::load_checkpoint_v3(
-            options.checkpoint, trainer, device, diamond_training::CheckpointLoadIntent::exact_resume);
+            options.checkpoint, trainer, device,
+            diamond_training::CheckpointLoadIntent::exact_resume);
         if (checkpoint.model_digest != options.expected_model_sha256)
             throw std::runtime_error("checkpoint model digest mismatch");
 
         const diamond_pipeline::ReplayStore replay(
             replay_root(options.replay), compatibility, config.replay.capacity, config.replay.seed,
             diamond_pipeline::ReplayContents::full, diamond_pipeline::ReplayOpenMode::must_exist);
-        const auto training_samples = replay.sample(options.batch_size * options.steps, options.seed);
+        const auto training_samples =
+            replay.sample(options.batch_size * options.steps, options.seed);
         const auto held_out = replay.sample(options.eval_samples, options.seed ^ 0xd1a69057ULL);
         const auto result = diamond_pipeline::run_vacancy_distillation(
             trainer, training_samples, held_out,
             {.arm = options.arm == "head" ? diamond_pipeline::DistillationArm::policy_head
-                                           : diamond_pipeline::DistillationArm::trunk_policy,
+                                          : diamond_pipeline::DistillationArm::trunk_policy,
              .steps = options.steps,
              .batch_size = options.batch_size,
              .evaluation_batch = options.eval_batch});

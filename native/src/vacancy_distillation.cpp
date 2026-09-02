@@ -35,30 +35,29 @@ torch::Tensor feature_tensor(std::span<const diamond_training::TrainingSample> s
         .to(device);
 }
 
-std::pair<torch::Tensor, torch::Tensor> teacher_tensors(
-    std::span<const diamond_training::TrainingSample> samples, torch::Device device) {
+std::pair<torch::Tensor, torch::Tensor>
+teacher_tensors(std::span<const diamond_training::TrainingSample> samples, torch::Device device) {
     std::vector<float> probabilities(samples.size() * soo::kActionSize, 0.0F);
     std::vector<uint8_t> legal(samples.size() * soo::kActionSize, false);
     for (std::size_t row = 0; row < samples.size(); ++row) {
         const auto target = vacancy_target(samples[row]);
         for (std::size_t index = 0; index < target.actions.size(); ++index) {
-            const auto offset = row * soo::kActionSize +
-                                static_cast<std::size_t>(target.actions[index]);
+            const auto offset =
+                row * soo::kActionSize + static_cast<std::size_t>(target.actions[index]);
             probabilities[offset] = static_cast<float>(target.probabilities[index]);
             legal[offset] = true;
         }
     }
-    auto targets = torch::from_blob(
-                       probabilities.data(),
-                       {static_cast<int64_t>(samples.size()), soo::kActionSize},
-                       torch::TensorOptions().dtype(torch::kFloat32))
+    auto targets = torch::from_blob(probabilities.data(),
+                                    {static_cast<int64_t>(samples.size()), soo::kActionSize},
+                                    torch::TensorOptions().dtype(torch::kFloat32))
                        .clone()
                        .to(device);
-    auto mask = torch::from_blob(legal.data(),
-                                 {static_cast<int64_t>(samples.size()), soo::kActionSize},
-                                 torch::TensorOptions().dtype(torch::kBool))
-                    .clone()
-                    .to(device);
+    auto mask =
+        torch::from_blob(legal.data(), {static_cast<int64_t>(samples.size()), soo::kActionSize},
+                         torch::TensorOptions().dtype(torch::kBool))
+            .clone()
+            .to(device);
     return {targets, mask};
 }
 
@@ -77,8 +76,8 @@ Evaluation evaluate(diamond_training::Trainer& trainer,
     for (std::size_t begin = 0; begin < samples.size(); begin += batch_size) {
         const auto count = std::min(batch_size, samples.size() - begin);
         const auto batch = samples.subspan(begin, count);
-        auto [logits, values] = trainer.model()->forward(
-            feature_tensor(batch, trainer.device().torch_device));
+        auto [logits, values] =
+            trainer.model()->forward(feature_tensor(batch, trainer.device().torch_device));
         (void)values;
         rows.push_back(logits.detach().to(torch::kCPU));
     }
@@ -96,7 +95,8 @@ Evaluation evaluate(diamond_training::Trainer& trainer,
         std::vector<double> network(target.actions.size());
         double highest = -std::numeric_limits<double>::infinity();
         for (std::size_t index = 0; index < target.actions.size(); ++index) {
-            network[index] = logits[static_cast<int64_t>(row)][target.actions[index]].item<double>();
+            network[index] =
+                logits[static_cast<int64_t>(row)][target.actions[index]].item<double>();
             highest = std::max(highest, network[index]);
         }
         double total = 0.0;
@@ -113,8 +113,10 @@ Evaluation evaluate(diamond_training::Trainer& trainer,
         std::vector<std::size_t> order(network.size());
         for (std::size_t index = 0; index < network.size(); ++index) {
             order[index] = index;
-            if (network[index] > network[network_top]) network_top = index;
-            if (target.probabilities[index] > target.probabilities[teacher_top]) teacher_top = index;
+            if (network[index] > network[network_top])
+                network_top = index;
+            if (target.probabilities[index] > target.probabilities[teacher_top])
+                teacher_top = index;
             cross_entropy -= target.probabilities[index] * std::log(network[index]);
             entropy -= target.probabilities[index] * std::log(target.probabilities[index]);
             expected += network[index] * target.progress[index];
@@ -187,11 +189,11 @@ VacancyTarget vacancy_target(const diamond_training::TrainingSample& sample) {
     return target;
 }
 
-VacancyDistillationResult run_vacancy_distillation(
-    diamond_training::Trainer& trainer,
-    std::span<const diamond_training::TrainingSample> training_samples,
-    std::span<const diamond_training::TrainingSample> held_out_samples,
-    const VacancyDistillationConfig& config) {
+VacancyDistillationResult
+run_vacancy_distillation(diamond_training::Trainer& trainer,
+                         std::span<const diamond_training::TrainingSample> training_samples,
+                         std::span<const diamond_training::TrainingSample> held_out_samples,
+                         const VacancyDistillationConfig& config) {
     if (trainer.compatibility().model_name != "Min")
         throw std::invalid_argument("vacancy distillation requires Min");
     if (training_samples.empty() || held_out_samples.empty() || config.steps == 0 ||
