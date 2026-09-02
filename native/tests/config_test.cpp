@@ -456,7 +456,8 @@ int main(int argc, char** argv) {
             const std::filesystem::path root = argv[1];
             for (const char* name :
                  {"soo-production.json", "soo-bootstrap.json", "min-production.json",
-                  "min-production-6h.json", "min-bootstrap.json"}) {
+                  "min-production-6h.json", "min-bootstrap.json",
+                  "min-anneal-alpha050-v1.json"}) {
                 std::ifstream input(root / name, std::ios::binary);
                 require(static_cast<bool>(input), "cannot open reference production config");
                 const std::string contents{std::istreambuf_iterator<char>(input), {}};
@@ -475,6 +476,16 @@ int main(int argc, char** argv) {
                 require(
                     actual == expected,
                     (std::string("reference production config must round trip: ") + name).c_str());
+                if (std::string_view{name} == "min-anneal-alpha050-v1.json") {
+                    require(loaded.model_name == "Min", "anneal config must select Min");
+                    require(loaded.self_play.bootstrap_prior ==
+                                diamond_orchestration::kCanonicalTargetVacancyDistanceV2,
+                            "anneal config must select the canonical vacancy prior");
+                    require(loaded.self_play.bootstrap_prior_weight == 0.5,
+                            "anneal config must pin prior weight 0.50");
+                    require(loaded.training.policy_loss_domain == "legal",
+                            "anneal config must use legal policy loss");
+                }
             }
         }
     } catch (const std::exception& error) {
