@@ -100,6 +100,7 @@ class Trainer {
     }
     diamond_model::DiamondModel candidate_snapshot() const;
     torch::optim::AdamW& optimizer() { return optimizer_; }
+    void record_external_optimizer_step();
     void restore_checkpoint_state(TrainingConfig config, uint64_t training_step) {
         config_ = config;
         training_step_ = training_step;

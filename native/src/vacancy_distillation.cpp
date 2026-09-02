@@ -225,6 +225,7 @@ VacancyDistillationResult run_vacancy_distillation(
             throw std::runtime_error("vacancy distillation produced non-finite loss");
         loss.backward();
         trainer.optimizer().step();
+        trainer.record_external_optimizer_step();
     }
     auto final = evaluate(trainer, held_out_samples, config.evaluation_batch);
     double policy_kl = 0.0;

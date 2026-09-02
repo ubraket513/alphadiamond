@@ -440,6 +440,12 @@ diamond_model::DiamondModel Trainer::candidate_snapshot() const {
     return snapshot_model(model_, compatibility_, device_.torch_device, ModelRole::candidate);
 }
 
+void Trainer::record_external_optimizer_step() {
+    if (training_step_ == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("trainer training step overflow");
+    ++training_step_;
+}
+
 TrainingMetrics Trainer::train(std::span<const TrainingSample> samples) {
     const auto total_start = StepClock::now();
     if (samples.empty()) throw std::invalid_argument("training batch must not be empty");
