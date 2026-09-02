@@ -215,6 +215,7 @@ run_vacancy_distillation(diamond_training::Trainer& trainer,
 
     auto initial = evaluate(trainer, held_out_samples, config.evaluation_batch);
     trainer.model()->train();
+    double gradient_squared = 0.0;
     for (std::size_t step = 0; step < config.steps; ++step) {
         const std::size_t begin = (step * config.batch_size) % training_samples.size();
         std::vector<diamond_training::TrainingSample> batch;
@@ -231,6 +232,16 @@ run_vacancy_distillation(diamond_training::Trainer& trainer,
         if (!torch::isfinite(loss).item<bool>())
             throw std::runtime_error("vacancy distillation produced non-finite loss");
         loss.backward();
+        gradient_squared = 0.0;
+        for (const auto& parameter : trainer.model()->named_parameters())
+            if (parameter.value().requires_grad() && parameter.value().grad().defined())
+                gradient_squared += parameter.value()
+                                        .grad()
+                                        .detach()
+                                        .to(torch::kFloat64)
+                                        .pow(2)
+                                        .sum()
+                                        .item<double>();
         trainer.optimizer().step();
         trainer.record_external_optimizer_step();
     }
@@ -255,7 +266,8 @@ run_vacancy_distillation(diamond_training::Trainer& trainer,
     return {.initial = initial.metrics,
             .final = final.metrics,
             .policy_kl = policy_kl,
-            .trainable_update_l2 = std::sqrt(update_squared)};
+            .trainable_update_l2 = std::sqrt(update_squared),
+            .trainable_gradient_l2 = std::sqrt(gradient_squared)};
 }
 
 } // namespace diamond_pipeline

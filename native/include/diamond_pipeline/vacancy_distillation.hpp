@@ -44,6 +44,7 @@ struct VacancyDistillationResult {
     VacancyMetrics final;
     double policy_kl = 0.0;
     double trainable_update_l2 = 0.0;
+    double trainable_gradient_l2 = 0.0;
 };
 
 VacancyDistillationResult

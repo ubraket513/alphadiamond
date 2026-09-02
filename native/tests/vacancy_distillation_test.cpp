@@ -117,6 +117,7 @@ int main() {
              .evaluation_batch = 4});
         CHECK_EQ(learner.training_step(), uint64_t{10});
         CHECK(result.trainable_update_l2 > 0.0);
+        CHECK(result.trainable_gradient_l2 > 0.0);
         CHECK(result.final.legal_kl < result.initial.legal_kl);
         for (const auto& parameter : learner.model()->named_parameters()) {
             const bool policy = parameter.key().starts_with("policy_source.") ||
