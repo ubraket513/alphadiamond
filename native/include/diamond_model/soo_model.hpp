@@ -7,6 +7,9 @@
 
 namespace diamond_model {
 
+// Canonical directional graph shared by production initialization and probes.
+torch::Tensor topology_adjacency();
+
 class DirectionalResidualBlockImpl : public torch::nn::Module {
   public:
     explicit DirectionalResidualBlockImpl(int64_t width);

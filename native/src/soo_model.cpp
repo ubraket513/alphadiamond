@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "soo/board.hpp"
+
 namespace diamond_model {
 namespace {
 
@@ -43,6 +45,19 @@ std::filesystem::path weight(const std::filesystem::path& root, const std::strin
 }
 
 }  // namespace
+
+torch::Tensor topology_adjacency() {
+    soo::ensure_topology_configured();
+    auto adjacency = torch::zeros({soo::kDirections, soo::kBoardSize, soo::kBoardSize});
+    auto entries = adjacency.accessor<float, 3>();
+    for (int node = 0; node < soo::kBoardSize; ++node)
+        for (int direction = 0; direction < soo::kDirections; ++direction) {
+            const int neighbour = soo::topology().neighbour[node][direction];
+            if (neighbour >= 0)
+                entries[direction][node][neighbour] = 1.0F;
+        }
+    return adjacency;
+}
 
 DirectionalResidualBlockImpl::DirectionalResidualBlockImpl(int64_t width)
     : self_projection(torch::nn::LinearOptions(width, width)),

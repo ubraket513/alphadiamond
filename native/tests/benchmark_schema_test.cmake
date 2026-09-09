@@ -45,7 +45,7 @@ if(NOT selfplay_help_result EQUAL 0)
 endif()
 foreach(option IN ITEMS --checkpoint --config --precision --bootstrap-prior
         --simulations-late --repeat-window --max-game-seconds --diagnostic-roots
-        --diagnostic-batch)
+        --diagnostic-batch --torch-threads)
     string(FIND "${selfplay_help}" "${option}" option_position)
     if(option_position EQUAL -1)
         message(FATAL_ERROR "self-play benchmark help is missing ${option}")
@@ -133,11 +133,15 @@ if(selection_slots LESS 1 OR selection_slots GREATER 4)
 endif()
 
 run_json(selfplay_json "${SELFPLAY_BENCHMARK}"
-    --artifact "${MODEL_ARTIFACT}" --device cpu --lanes 2 --threads 1
+    --artifact "${MODEL_ARTIFACT}" --device cpu --lanes 2 --threads 1 --torch-threads 2
     --max-batch 2 --max-wait-us 200 --simulations 1 --max-moves 2
     --warmups 0 --repetitions 1 --diagnostic-roots 1 --diagnostic-batch 1
     --scratch "${SCRATCH}/selfplay")
 check_common("${selfplay_json}" selfplay)
+string(JSON selfplay_torch_threads GET "${selfplay_json}" environment torch_threads)
+if(NOT selfplay_torch_threads EQUAL 2)
+    message(FATAL_ERROR "selfplay torch threads must be independent of search threads")
+endif()
 string(JSON selfplay_model_sha GET "${selfplay_json}" domain model_sha256)
 string(JSON selfplay_runtime_sha GET "${selfplay_json}" domain runtime_sha256)
 string(JSON attempted GET "${selfplay_json}" domain attempted_episodes)

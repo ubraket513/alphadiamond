@@ -276,23 +276,6 @@ class SooPolicyArm final : public soo::BatchEvaluator {
     std::vector<float> folded_;
 };
 
-// The [6,73,73] adjacency the trunk expects, built from the generated topology
-// rather than read from a shipped weight file: this network has no weights.
-torch::Tensor topology_adjacency() {
-    auto adjacency = torch::zeros({6, kBoardNodes, kBoardNodes}, torch::kFloat32);
-    auto accessor = adjacency.accessor<float, 3>();
-    const soo::Topology& topo = soo::topology();
-    for (int node = 0; node < kBoardNodes; ++node) {
-        for (int direction = 0; direction < 6; ++direction) {
-            const int8_t neighbour =
-                topo.neighbour[static_cast<std::size_t>(node)][static_cast<std::size_t>(direction)];
-            if (neighbour >= 0)
-                accessor[direction][node][neighbour] = 1.0F;
-        }
-    }
-    return adjacency;
-}
-
 soo::State opening(const soo::Match& match) {
     soo::State state;
     state.occupancy.fill(soo::kEmpty);
@@ -478,13 +461,13 @@ int main(int argc, char** argv) {
             torch::manual_seed(static_cast<int64_t>(options.network_seed));
             diamond_model::DiamondModel network(options.width, options.residual_blocks,
                                                 kMinFeatures, 3);
-            network->set_adjacency(topology_adjacency());
+            network->set_adjacency(diamond_model::topology_adjacency());
             if (options.value_init == "zero")
                 diamond_training::zero_value_head(network);
             network->to(device);
             // set_adjacency again after the move: the trunk's gather tables are
             // cached against adjacency's version, and to() does not bump it.
-            network->set_adjacency(topology_adjacency().to(device));
+            network->set_adjacency(diamond_model::topology_adjacency().to(device));
             model_identity = "min-scratch:" + options.value_init + ":seed-" +
                              std::to_string(options.network_seed);
             evaluator = std::make_unique<VacancyWithMinValueArm>(match, std::move(network), device);

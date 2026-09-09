@@ -65,6 +65,7 @@ struct Options {
     // have its throughput column retracted. Zero means "one per lane", the old
     // behaviour, kept only so existing invocations do not silently change.
     std::size_t games = 0;
+    std::optional<std::size_t> torch_threads;
     uint64_t seed = 17;
     // Production exploration. Without it lanes play near-identical games and
     // the request stream is not the shape the batcher sees in a real run.
@@ -108,7 +109,8 @@ Options parse_options(int argc, char** argv) {
                 << "usage: selfplay_benchmark [--artifact DIR | --checkpoint DIR --config FILE] "
                    "[--device cpu|cuda|cuda:N] "
                    "[--precision fp32|fp16|bf16] "
-                   "[--lanes N] [--threads N] [--max-batch N] [--max-wait-us N] "
+                   "[--lanes N] [--threads N] [--torch-threads N] [--max-batch N] [--max-wait-us "
+                   "N] "
                    "[--simulations N] [--max-moves N] [--games N] [--seed N] "
                    "[--bootstrap-prior config|vacancy|none] [--simulations-late N] "
                    "[--repeat-window N] [--max-game-seconds F] "
@@ -136,6 +138,8 @@ Options parse_options(int argc, char** argv) {
             options.lanes = parse_count(value, option);
         else if (option == "--threads")
             options.threads = parse_count(value, option);
+        else if (option == "--torch-threads")
+            options.torch_threads = parse_count(value, option);
         else if (option == "--max-batch")
             options.max_batch = parse_count(value, option);
         else if (option == "--max-wait-us")
@@ -199,7 +203,8 @@ Options parse_options(int argc, char** argv) {
             "--temperature must be non-negative and --dirichlet-epsilon in [0, 1]");
     }
     const auto int_max = static_cast<std::size_t>(std::numeric_limits<int>::max());
-    if (options.lanes > int_max || options.threads > int_max || options.max_batch > int_max ||
+    if (options.lanes > int_max || options.threads > int_max ||
+        options.torch_threads.value_or(0) > int_max || options.max_batch > int_max ||
         options.max_wait_us > static_cast<uint64_t>(std::numeric_limits<int>::max()) ||
         options.simulations > int_max || options.simulations_late.value_or(0) > int_max ||
         options.repeat_window.value_or(0) > int_max || options.max_moves > int_max) {
@@ -491,7 +496,7 @@ int main(int argc, char** argv) {
     try {
         Options options = parse_options(argc, argv);
         soo::ensure_topology_configured();
-        torch::set_num_threads(static_cast<int>(options.threads));
+        torch::set_num_threads(static_cast<int>(options.torch_threads.value_or(options.threads)));
         torch::set_num_interop_threads(1);
 
         const auto device = diamond_training::resolve_device(options.device);

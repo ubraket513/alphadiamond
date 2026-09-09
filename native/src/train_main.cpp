@@ -220,6 +220,7 @@ diamond_model::DiamondModel model(const ProductionConfig& config) {
     auto built = diamond_model::DiamondModel(config.network.width, config.network.residual_blocks,
                                              config.model_name == "Soo" ? 4 : 6,
                                              config.model_name == "Soo" ? 1 : 3);
+    built->set_adjacency(diamond_model::topology_adjacency());
     // Min starts from a neutral value, not a random one. Applied here rather
     // than at one call site because every stage rebuilds this model and the
     // scratch path identifies iteration 0 by the model's digest -- zeroing in
@@ -569,11 +570,27 @@ struct IterationSource {
     std::optional<std::string> optimizer_reset_reason;
 };
 
+void validate_board_adjacency(const torch::Tensor& adjacency) {
+    if (!torch::equal(adjacency.to(torch::kCPU), diamond_model::topology_adjacency()))
+        throw CommandArtifactError("model board adjacency does not match authoritative topology");
+}
+
+void validate_checkpoint_topology(const diamond_training::CheckpointInfo& saved) {
+    // Check the archived buffer at the production boundary, before any actor or
+    // learner consumes it. Exact resume must never silently repair a checkpoint.
+    torch::serialize::InputArchive archive;
+    archive.load_from((saved.generation / "state.pt").string(), torch::kCPU);
+    torch::Tensor adjacency;
+    archive.read("adjacency", adjacency, true);
+    validate_board_adjacency(adjacency);
+}
+
 void validate_checkpoint_context(const diamond_training::CheckpointInfo& saved,
                                  const CommandRequest& request, const ProductionConfig& config,
                                  std::optional<uint64_t> expected_iteration = std::nullopt,
                                  std::optional<std::string_view> replay_sha256 = std::nullopt,
                                  const ProductionConfig* predecessor = nullptr) {
+    validate_checkpoint_topology(saved);
     if (saved.format_version != 3 || !saved.lineage || !saved.provenance)
         throw CommandArtifactError("exact continuation requires a checkpoint v3 manifest");
     if (saved.lineage->run_id != request.run_id)
@@ -647,6 +664,7 @@ IterationSource load_iteration_source(const CommandRequest& request, const Produ
                     "warm-start artifact is incompatible with resolved config");
             }
             trainer.model()->load_weights(artifact.weights);
+            validate_board_adjacency(trainer.model()->adjacency);
             return {.training_step = 0,
                     .model_digest = artifact.runtime_sha256,
                     .mode = diamond_training::CheckpointInitializationMode::warm_start,
@@ -1356,13 +1374,16 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             diamond_pipeline::ModelPool candidate_pool(1, device, actor_precision(config));
             diamond_pipeline::ModelPool champion_pool(1, device, actor_precision(config));
             try {
+                (void)diamond_training::load_checkpoint_v2_weights(candidate_path, candidate_model,
+                                                                   device);
+                (void)diamond_training::load_checkpoint_v2_weights(champion_path, champion_model,
+                                                                   device);
+                validate_board_adjacency(candidate_model->adjacency);
+                validate_board_adjacency(champion_model->adjacency);
                 candidate_runtime_sha256 =
-                    candidate_pool
-                        .install_checkpoint(compatibility, candidate_path, candidate_model)
-                        .checkpoint_sha256;
+                    candidate_pool.install(compatibility, candidate_model).checkpoint_sha256;
                 champion_runtime_sha256 =
-                    champion_pool.install_checkpoint(compatibility, champion_path, champion_model)
-                        .checkpoint_sha256;
+                    champion_pool.install(compatibility, champion_model).checkpoint_sha256;
             } catch (const std::exception& error) {
                 throw CommandArtifactError(error.what());
             }
@@ -1623,11 +1644,14 @@ Object evaluate(const CommandRequest& request, const ProductionConfig& config,
     diamond_pipeline::ModelKey candidate_key;
     diamond_pipeline::ModelKey champion_key;
     try {
-        candidate_info = diamond_training::inspect_checkpoint_v2(candidate_path);
-        champion_info = diamond_training::inspect_checkpoint_v2(champion_path);
-        candidate_key =
-            candidate.install_checkpoint(compatibility, candidate_path, candidate_model);
-        champion_key = champion.install_checkpoint(compatibility, champion_path, champion_model);
+        candidate_info =
+            diamond_training::load_checkpoint_v2_weights(candidate_path, candidate_model, device);
+        champion_info =
+            diamond_training::load_checkpoint_v2_weights(champion_path, champion_model, device);
+        validate_board_adjacency(candidate_model->adjacency);
+        validate_board_adjacency(champion_model->adjacency);
+        candidate_key = candidate.install(compatibility, candidate_model);
+        champion_key = champion.install(compatibility, champion_model);
         candidate.activate(candidate_key);
         champion.activate(champion_key);
     } catch (const std::exception& error) {

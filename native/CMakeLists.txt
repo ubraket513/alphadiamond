@@ -274,6 +274,16 @@ if(DIAMOND_BUILD_LIBTORCH)
     endif()
 
     add_executable(alphadiamond-train src/train_main.cpp)
+    if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
+        add_executable(production_topology_test tests/production_topology_test.cpp)
+        target_link_libraries(production_topology_test PRIVATE
+            alphadiamond::diamond_training alphadiamond::diamond_orchestration)
+        target_include_directories(production_topology_test PRIVATE tests)
+        add_dependencies(production_topology_test alphadiamond-train)
+        add_test(NAME production_topology_test COMMAND production_topology_test
+            "${CMAKE_CURRENT_BINARY_DIR}/production-topology-scratch"
+            "$<TARGET_FILE:alphadiamond-train>" "${CMAKE_SOURCE_DIR}/tests/golden")
+    endif()
     find_package(Git QUIET)
     set(DIAMOND_SOURCE_GIT_COMMIT "unavailable")
     set(DIAMOND_SOURCE_DIRTY 1)
