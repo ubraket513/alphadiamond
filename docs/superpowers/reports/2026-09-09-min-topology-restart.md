@@ -15,3 +15,17 @@ A 128-wide, six-block network with batch 1,024, eight Torch threads, and learnin
 Full-game self-play concurrency measurements and final operational state are recorded in `/workspace/alphadiamond-experiments/min-restart-20260909/`. The underlying diagnosis, independent numerical audit, and native realizability pressure tests are in `/workspace/alphadiamond-experiments/min-policy-audit-20260909/`.
 
 The four previous run directories were moved intact to `/workspace/alphadiamond-training/quarantine/20260909-zero-topology/`, with a manifest of original paths. Restart uses fresh weights and full vacancy-prior assistance. No claim of heuristic-free readiness follows from these measurements.
+
+## Self-play selection and startup gate
+
+A full fresh-model trial completed all 1,024 games at 128 simulations per move: 122,659 samples in 1,063.21 seconds, or 115.37 samples/s. No games aborted. Its 17.7-minute duration was excessive for initial tuning, so subsequent full-game trials were cancelled and replaced with eight-move timing trials.
+
+The short trials compared 16, 64, and 88 search threads, inference batches of 256 and 512, wait limits of 100 and 500 microseconds, and FP32/BF16/FP16 actors. More search threads alone changed throughput by approximately 1%. The fastest tested two-seed configuration used 512 lanes, 88 search threads, batch 512, a 500-microsecond wait, and FP16 actors: 192.61 moves/s. BF16 reached 187.62 moves/s. Learner parameters and updates remain FP32. The config `min-topology-5090-v1.json` records this provisional selection. Short opening throughput does not establish full-game quality with trained values.
+
+Historical production was faster: retained iteration 25 generated 125,542 samples in 276.37 seconds, about 454 samples/s, and its learner reported a median 11,129 samples/s. The 46% learner improvement above compares batch sizes on the current environment; it is not an improvement over historical production.
+
+A sustained independent matrix-multiplication probe stayed at 217–225 MHz GPU clocks despite 100% kernel activity. Resetting GPU clocks was denied inside the container. No GPU settings or host drivers were changed. Restricting work to the GPU's local NUMA node did not materially improve the short trial. Exact host clock configuration remains unknown.
+
+The user requires resolving this slowdown before actual training starts. Production training therefore remains paused. The supervisor wrapper and config are prepared, but the service is not registered. Arena is disabled unless a specific decision makes it necessary. The absolute goal deadline is 2026-09-10 03:18:15 UTC; the wrapper refuses to start after it and stops a running child at the deadline.
+
+One million samples is the replay capacity, not a startup fill threshold. The learner requires only one full batch to be available. Self-play timing does not load replay data. Inference stage timings use host clocks unless `DIAMOND_EVAL_STAGE_TIMING` is enabled; the reported device-to-host span can therefore include waiting for prior GPU work. It must not be interpreted as transfer bandwidth alone.
