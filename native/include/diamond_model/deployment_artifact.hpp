@@ -23,7 +23,11 @@ struct DeploymentArtifact {
     int64_t value_size = 0;         // value-head outputs
 };
 
-// Strictly validates the versioned Python-exported deployment bundle before
+// Computes the existing format-v3 runtime manifest digest from topology and weights.
+std::string deployment_runtime_sha256(const std::filesystem::path& root,
+    int64_t width, int64_t blocks, int64_t input_features, int64_t value_size);
+
+// Strictly validates the versioned deployment bundle before
 // any raw tensor is loaded by the production runtime.
 DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& root);
 

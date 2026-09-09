@@ -112,12 +112,15 @@ against the weights on both sides; see
 A training checkpoint carries optimizer, scheduler and RNG state, is not a
 deployment artifact, and is never bundled.
 
-**There is currently no way in this tree to turn a training checkpoint into a
-deployment artifact.** That exporter was Python and went with the rest of it;
-`alphadiamond-checkpoint` accepts only native checkpoint-v2/v3 roots and refuses
-a raw `.pt`. Converting an archival `latest.pt` — such as the assets on the
-`soo-v2.0.0-rc.1` release — currently requires restoring the deleted exporter
-from history outside this tree. Rebuilding that path natively is open work.
+Native transactional v3 checkpoints can be exported with:
+
+```bash
+alphadiamond-checkpoint export <checkpoint-v3-root> --out <new-artifact> --version <test-version>
+```
+
+The exporter preserves the checkpoint, rejects noncanonical topology, and verifies
+exact CPU inference parity before succeeding. Raw archival `.pt` checkpoints and
+v2 checkpoints without architecture provenance are not supported by this exporter.
 
 ## Training data
 

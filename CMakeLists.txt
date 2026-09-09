@@ -9,7 +9,7 @@ if(DIAMOND_BUILD_LIBTORCH_PROBE)
     set(DIAMOND_BUILD_LIBTORCH ON CACHE BOOL "Build native LibTorch model and training support" FORCE)
 endif()
 option(DIAMOND_BUILD_QT "Build the native Qt/QML shell" OFF)
-option(DIAMOND_BUILD_QT_SOO "Build Qt shell with native LibTorch Soo search" OFF)
+option(DIAMOND_BUILD_QT_SOO "Build Qt shell with native LibTorch Soo and Min search" OFF)
 
 # CMake cannot yet model CXX26 for the installed MSVC toolset.  Keep its
 # known-feature baseline at C++23, then require each compiler's next-standard

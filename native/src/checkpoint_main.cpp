@@ -4,6 +4,7 @@
 #include <string>
 
 #include "diamond_training/checkpoint.hpp"
+#include "diamond_training/checkpoint_export.hpp"
 
 namespace {
 
@@ -11,6 +12,7 @@ constexpr char kUsage[] =
     "usage:\n"
     "  alphadiamond-checkpoint inspect <checkpoint-root>\n"
     "  alphadiamond-checkpoint validate <checkpoint-root>\n"
+    "  alphadiamond-checkpoint export <checkpoint-v3-root> --out <new-artifact> --version <version>\n"
     "  alphadiamond-checkpoint migrate <checkpoint-v2-root> --out <new-v2-root>\n"
     "\n"
     "Only transactional native checkpoint-v2/v3 roots are accepted. Raw Python-v1\n"
@@ -47,6 +49,15 @@ int run(int argc, char** argv) {
     }
     const std::string command = argv[1];
     const std::filesystem::path root = argv[2];
+    if (command == "export") {
+        if (argc != 7 || std::string(argv[3]) != "--out" || std::string(argv[5]) != "--version")
+            throw diamond_training::CheckpointError("export requires --out <new-artifact> --version <version>");
+        torch::set_num_threads(2);
+        const auto artifact = diamond_training::export_checkpoint(root, argv[4], argv[6]);
+        std::cout << "artifact=" << artifact.root.string() << "\nmodel_sha256=" << artifact.model_sha256
+                  << "\nruntime_sha256=" << artifact.runtime_sha256 << "\nparity_states=12\nparity_exact=true\n";
+        return 0;
+    }
     if (command == "inspect") {
         if (argc != 3) throw diamond_training::CheckpointError("inspect takes one checkpoint root");
         print_info(diamond_training::inspect_checkpoint_v2(root));

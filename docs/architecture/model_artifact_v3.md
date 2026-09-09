@@ -104,3 +104,23 @@ PyTorch produced at export time; both currently match exactly.
 Still open: promotion policy -- preserve every checkpoint in the bucket,
 convert release candidates during promotion, publish only accepted artifacts,
 bundle one default per family.
+
+## Native checkpoint export
+
+`alphadiamond-checkpoint export <checkpoint-v3-root> --out <new-artifact> --version <version>`
+exports native transactional v3 checkpoints directly to raw format-v3 artifacts.
+It reads architecture and family from checkpoint provenance, validates the archives,
+rejects noncanonical adjacency and nonfinite weights, and preserves the source
+checkpoint and optimizer. The destination must not exist. Before success, the
+exporter strictly validates the artifact and requires exact CPU policy/value parity
+on 12 deterministic legal positions from the standard match. This is an export
+integrity check, not a playing-strength or promotion gate.
+
+For these raw-only native exports, `model_sha256` is the existing
+`canonical_model_digest` (a versioned digest over named parameters and buffers).
+`source.checkpoint_sha256` is the SHA-256 of the source `state.pt` archive;
+`runtime_sha256` retains its existing sorted-path-and-bytes definition. Historical
+TorchScript artifacts continue to use the graph SHA-256 as `model_sha256`.
+Native exports do not include or claim to have a TorchScript graph. The fixed parity
+sequence uses no random corpus, so `corpus_seed` is zero. The command uses two CPU
+threads and does not load the model onto the training GPU.

@@ -20,11 +20,13 @@
 #include <QUuid>
 
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 
 #ifdef DIAMOND_QT_HAS_SOO
 #include "diamond_model/deployment_artifact.hpp"
+#include "diamond_model/model_index.hpp"
 #endif
 
 namespace {
@@ -52,7 +54,7 @@ bool safeRelativePath(const QString& path) {
     if (path.isEmpty() || QDir::isAbsolutePath(path) || path.contains(QLatin1Char('\\')))
         return false;
     const QString clean = QDir::cleanPath(path);
-    return clean != QStringLiteral("..") && !clean.startsWith(QStringLiteral("../")) &&
+    return clean == path && clean != QStringLiteral(".") && clean != QStringLiteral("..") && !clean.startsWith(QStringLiteral("../")) &&
            !clean.contains(QStringLiteral("/../"));
 }
 int metaInt(const QJsonObject& root, const QJsonObject& source, const char* key) {
@@ -91,6 +93,7 @@ ModelCatalog::ModelCatalog(QObject* parent)
     : QObject(parent), network_(new QNetworkAccessManager(this)),
       local_root_(QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
                       .filePath(QStringLiteral("models"))) {
+    network_->setTransferTimeout(30000);
     QDir().mkpath(local_root_);
     QSettings settings;
     selected_id_ = settings.value(QStringLiteral("models/selectedId")).toString();
@@ -118,6 +121,8 @@ void ModelCatalog::beginWork() {
 void ModelCatalog::endWork() {
     if (busy_count_ > 0)
         --busy_count_;
+    if (!busy() && status_ == QStringLiteral("Refreshing GitHub and Hugging Face…"))
+        status_ = QStringLiteral("Model catalog ready.");
     Q_EMIT changed();
 }
 
@@ -130,7 +135,8 @@ bool ModelCatalog::readLocalModel(const QString& path, LocalModel* model) const 
                       source = root.value(QStringLiteral("source")).toObject();
     const QString family = root.value(QStringLiteral("model_family")).toString();
     const QString version = root.value(QStringLiteral("model_version")).toString();
-    if (family.isEmpty() || !kSemVer.match(version).hasMatch())
+    if ((family != QStringLiteral("soo") && family != QStringLiteral("min")) ||
+        !kSemVer.match(version).hasMatch())
         return false;
 #ifdef DIAMOND_QT_HAS_SOO
     try {
@@ -203,7 +209,7 @@ void ModelCatalog::rebuildRows() {
         known.insert(a.id);
     }
     for (const LocalModel& a : local_models_)
-        if (!known.contains(a.id))
+        if (!known.contains(a.id)) {
             rows.push_back(
                 QVariantMap{{"id", a.id},
                             {"name", modelLabel(a.id)},
@@ -219,6 +225,17 @@ void ModelCatalog::rebuildRows() {
                             {"huggingFace", false},
                             {"githubUrl", QString()},
                             {"huggingFaceUrl", QString()}});
+            known.insert(a.id);
+        }
+    std::sort(rows.begin(), rows.end(), [](const QVariant& left, const QVariant& right) {
+        const auto a = left.toMap(), b = right.toMap();
+        const auto af = a.value(QStringLiteral("id")).toString().section('/', 0, 0);
+        const auto bf = b.value(QStringLiteral("id")).toString().section('/', 0, 0);
+        if (af != bf) return af < bf;
+        if (a.value(QStringLiteral("trainingStep")) != b.value(QStringLiteral("trainingStep")))
+            return a.value(QStringLiteral("trainingStep")).toInt() > b.value(QStringLiteral("trainingStep")).toInt();
+        return a.value(QStringLiteral("id")).toString() < b.value(QStringLiteral("id")).toString();
+    });
     models_ = rows;
     Q_EMIT changed();
 }
@@ -358,13 +375,17 @@ void ModelCatalog::parseGitHubTree(const QByteArray& payload) {
 void ModelCatalog::parseHuggingFaceTree(const QByteArray& payload) {
     QSet<QString> ids;
     for (const QJsonValue& value : QJsonDocument::fromJson(payload).array()) {
-        const QString path = value.toObject().value(QStringLiteral("path")).toString();
+        const auto item = value.toObject();
+        if (item.value(QStringLiteral("type")).toString() != QStringLiteral("file"))
+            continue;
+        const QString path = item.value(QStringLiteral("path")).toString();
         const QStringList p = path.split('/');
         if (p.size() < 4 || p.at(0) != QStringLiteral("models") || !safeRelativePath(path))
             continue;
         const QString id = p.at(1) + QLatin1Char('/') + p.at(2);
-        hugging_face_files_[id].push_back(path);
-        if (p.at(3) == QStringLiteral("metadata.json"))
+        if (!hugging_face_files_[id].contains(path))
+            hugging_face_files_[id].push_back(path);
+        if (p.size() == 4 && p.at(3) == QStringLiteral("metadata.json"))
             ids.insert(id);
     }
     for (const QString& id : ids)
@@ -401,8 +422,9 @@ void ModelCatalog::addArtifact(const QString& source, const QJsonObject& metadat
     const QString id = family + QLatin1Char('/') + version;
     const QString modelDigest = metadata.value(QStringLiteral("model_sha256")).toString();
     const QString digest = metadata.value(QStringLiteral("runtime_sha256")).toString();
-    if (family.isEmpty() || !kSemVer.match(version).hasMatch() || modelDigest.isEmpty() ||
-        digest.isEmpty())
+    if ((family != QStringLiteral("soo") && family != QStringLiteral("min")) ||
+        !kSemVer.match(version).hasMatch() || !kDigest.match(modelDigest).hasMatch() ||
+        !kDigest.match(digest).hasMatch())
         return;
     if (artifacts_.contains(id) && (artifacts_.value(id).model_digest != modelDigest ||
                                     artifacts_.value(id).runtime_digest != digest)) {
@@ -445,17 +467,79 @@ void ModelCatalog::selectModel(const QString& modelId) {
     QSettings settings;
     settings.setValue(QStringLiteral("models/selectedId"), selected_id_);
     settings.setValue(QStringLiteral("models/selectedPath"), selected_path_);
+    settings.setValue(QStringLiteral("models/selectedByFamily/") + modelId.section('/', 0, 0),
+                      selected_id_);
     setStatus(QStringLiteral("%1 selected for next game.").arg(modelLabel(modelId)));
     rebuildRows();
 }
-bool ModelCatalog::activateSelected() {
-    if (selected_id_.isEmpty() || !QFileInfo::exists(selected_path_))
-        return false;
+bool ModelCatalog::activateSelected(const QString& family) {
+    if (!family.isEmpty()) {
+        const QString prefix = family + QLatin1Char('/');
+        QSettings settings;
+        QString id = selected_id_.startsWith(prefix) ? selected_id_ :
+            settings.value(QStringLiteral("models/selectedByFamily/") + family).toString();
+        if (!id.startsWith(prefix) || !local_paths_.contains(id)) {
+            id.clear();
+            const QStringList bases = {
+                QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("models")),
+                QDir::current().filePath(QStringLiteral("models")), local_root_};
+            // Training step count is not a promotion decision. Honor the indexed default.
+            bool invalidIndex = false;
+            for (const auto& base : bases) {
+                if (!QFile::exists(QDir(base).filePath(QStringLiteral("index.json")))) continue;
+                QString candidate;
+#ifdef DIAMOND_QT_HAS_SOO
+                try {
+                    const auto index = diamond_model::load_model_index(base.toStdString());
+                    if (const auto* entry = index.default_for(family.toStdString()))
+                        candidate = QString::fromStdString(entry->family + "/" + entry->version);
+                } catch (const std::exception& error) {
+                    invalidIndex = true;
+                    setStatus(QStringLiteral("Invalid model index: %1").arg(error.what()));
+                    break;
+                }
+#else
+                const auto index = QJsonDocument::fromJson(
+                    readAll(QDir(base).filePath(QStringLiteral("index.json")))).object();
+                if (index.value(QStringLiteral("index_version")).toInt() != 1 ||
+                    !index.value(QStringLiteral("models")).isArray() ||
+                    !index.value(QStringLiteral("defaults")).isObject()) {
+                    invalidIndex = true;
+                    break;
+                }
+                candidate = index.value(QStringLiteral("defaults")).toObject()
+                    .value(family).toString();
+#endif
+                if (!candidate.isEmpty() && !local_paths_.contains(candidate)) {
+                    invalidIndex = true;
+                    setStatus(QStringLiteral("The indexed model is not installed or valid."));
+                    break;
+                }
+                if (candidate.startsWith(prefix) && local_paths_.contains(candidate)) {
+                    id = candidate;
+                    break;
+                }
+            }
+            if (id.isEmpty() && !invalidIndex) {
+                QSet<QString> available;
+                for (const auto& model : local_models_)
+                    if (model.id.startsWith(prefix)) available.insert(model.id);
+                if (available.size() == 1) id = *available.cbegin();
+            }
+        }
+        selected_id_ = id;
+        selected_path_ = local_paths_.value(id);
+    }
+    if (!QFileInfo::exists(selected_path_)) {
+        selected_id_.clear();
+        selected_path_.clear();
+    }
     const bool changed = active_id_ != selected_id_ || active_path_ != selected_path_;
     active_id_ = selected_id_;
     active_path_ = selected_path_;
     if (changed) {
-        setStatus(QStringLiteral("%1 is active.").arg(modelLabel(active_id_)));
+        setStatus(active_id_.isEmpty() ? QStringLiteral("No model is active for this game. Select one in Models.") :
+                  QStringLiteral("%1 is active.").arg(modelLabel(active_id_)));
         rebuildRows();
     }
     return changed;
@@ -489,6 +573,14 @@ void ModelCatalog::startDownload(const QString& modelId, bool huggingFace) {
         setStatus(QStringLiteral("Download manifest is not ready; refresh the catalog."));
         return;
     }
+    const QString prefix = QStringLiteral("models/") + modelId + QLatin1Char('/');
+    // Validate the entire manifest before issuing requests or creating staging files.
+    for (const QString& path : files) {
+        if (!path.startsWith(prefix) || !safeRelativePath(path.mid(prefix.size()))) {
+            setStatus(QStringLiteral("Unsafe source path rejected."));
+            return;
+        }
+    }
     download_id_ = modelId;
     download_from_hugging_face_ = huggingFace;
     download_destination_ = destinationFor(modelId);
@@ -508,13 +600,7 @@ void ModelCatalog::startDownload(const QString& modelId, bool huggingFace) {
     setStatus(QStringLiteral("Downloading %1 from %2…")
                   .arg(modelLabel(modelId),
                        huggingFace ? QStringLiteral("Hugging Face") : QStringLiteral("GitHub")));
-    const QString prefix = QStringLiteral("models/") + modelId + QLatin1Char('/');
     for (const QString& path : files) {
-        if (!path.startsWith(prefix) || !safeRelativePath(path.mid(prefix.size()))) {
-            completeDownload(false, QStringLiteral("Unsafe source path rejected."));
-            endWork();
-            return;
-        }
         const QUrl url(
             huggingFace
                 ? QStringLiteral("https://huggingface.co/buckets/%1/resolve/%2?download=true")
@@ -531,14 +617,11 @@ void ModelCatalog::requestDownloadFile(const QString& relativePath, const QUrl& 
     connect(reply, &QNetworkReply::finished, this, [this, reply, relativePath] {
         if (reply->error() == QNetworkReply::NoError) {
             const QByteArray data = reply->readAll();
-            const qint64 expected =
-                reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
             const QString target = QDir(download_staging_).filePath(relativePath);
             QSaveFile file(target);
-            if (expected >= 0 && expected != data.size())
-                download_error_ =
-                    QStringLiteral("Download size validation failed for %1.").arg(relativePath);
-            else if (!QDir().mkpath(QFileInfo(target).absolutePath()) ||
+            // Qt checks HTTP framing and decompresses responses. Content-Length may
+            // be absent or describe compressed bytes; artifact SHA256 validates content.
+            if (!QDir().mkpath(QFileInfo(target).absolutePath()) ||
                      !file.open(QIODevice::WriteOnly) || file.write(data) != data.size() ||
                      !file.commit())
                 download_error_ = QStringLiteral("Could not save %1.").arg(relativePath);
@@ -557,7 +640,8 @@ bool ModelCatalog::validateDownloadedModel(const QString& path, QString* error) 
         *error = QStringLiteral("Downloaded model metadata validation failed.");
         return false;
     }
-    if (model.runtime_digest != artifacts_.value(download_id_).runtime_digest) {
+    const auto expected = artifacts_.value(download_id_);
+    if (model.runtime_digest != expected.runtime_digest || model.model_digest != expected.model_digest) {
         *error = QStringLiteral("Downloaded model digest mismatch.");
         return false;
     }

@@ -154,6 +154,7 @@ if(DIAMOND_BUILD_LIBTORCH)
 
     add_library(diamond_training STATIC
         src/checkpoint.cpp
+        src/checkpoint_export.cpp
         src/device.cpp
         src/parameter_diagnostics.cpp
         src/training_sample.cpp
@@ -182,6 +183,12 @@ if(DIAMOND_BUILD_LIBTORCH)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     )
     target_compile_features(diamond_release PUBLIC cxx_std_20)
+
+    if(BUILD_TESTING)
+        add_executable(checkpoint_export_test tests/checkpoint_export_test.cpp)
+        target_link_libraries(checkpoint_export_test PRIVATE alphadiamond::diamond_training)
+        add_test(NAME checkpoint_export_test COMMAND checkpoint_export_test "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-export-scratch")
+    endif()
 
     add_executable(alphadiamond-checkpoint src/checkpoint_main.cpp)
     target_link_libraries(alphadiamond-checkpoint PRIVATE alphadiamond::diamond_training)

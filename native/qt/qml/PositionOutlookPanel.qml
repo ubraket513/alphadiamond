@@ -13,14 +13,16 @@ PanelSection {
         Text {
             Layout.fillWidth: true
             text: root.controller.analysisAvailable
-                  ? "Estimated outlook · P" + root.controller.perspectivePlayerId
-                  : "Unavailable for Min"
+                  ? (root.controller.playerCount === 3
+                     ? "Placement utility · moving player (−1 to +1)"
+                     : "Estimated outlook · P" + root.controller.perspectivePlayerId)
+                  : "Analysis unavailable"
             color: Theme.textFaint
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontTiny
         }
         SegmentedControl {
-            visible: root.controller.analysisAvailable
+            visible: root.controller.analysisAvailable && root.controller.playerCount === 2
             implicitWidth: 108
             implicitHeight: 26
             options: [{ value: 1, label: "P1" }, { value: 2, label: "P2" }]
@@ -33,14 +35,13 @@ PanelSection {
         objectName: "positionOutlookChart"
         accessibleName: "Position outlook"
         points: root.controller.positionTelemetry
-        firstKey: "nnEstimate"
-        secondKey: "mctsEstimate"
+        firstKey: root.controller.playerCount === 3 ? "nnValue" : "nnEstimate"
+        secondKey: root.controller.playerCount === 3 ? "mctsValue" : "mctsEstimate"
         firstLabel: "NN estimate"
         secondLabel: "MCTS estimate"
-        minimum: 0
+        minimum: root.controller.playerCount === 3 ? -1 : 0
         maximum: 1
-        percent: true
+        percent: root.controller.playerCount === 2
         visible: root.controller.analysisAvailable
     }
 }
-
