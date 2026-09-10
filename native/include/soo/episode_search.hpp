@@ -43,6 +43,15 @@ class EpisodeSearch {
     int value_width() const { return two_ ? 1 : 3; }
     int seats() const { return seats_; }
 
+    void reset_match(const Match& match, const MCTSConfig& config) {
+        if (match.count != seats_) throw std::invalid_argument("cannot change episode seat count");
+        if (two_) two_.emplace(match, config);
+        else three_.emplace(match, config);
+        root_ = nullptr;
+        root_captured_ = false;
+        simulations_ = config.simulations;
+    }
+
     void reseed(uint64_t seed) {
         if (two_) two_->reseed(seed);
         else three_->reseed(seed);

@@ -7,6 +7,7 @@
 // contamination -- and it is the property most easily lost to a shared buffer
 // or a reused RNG.
 #include <chrono>
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <limits>
@@ -20,6 +21,8 @@
 #include "golden.hpp"
 #include "soo/board.hpp"
 #include "soo/selfplay.hpp"
+#include "soo/rules.hpp"
+#include "soo/encoder.hpp"
 
 namespace {
 
@@ -402,6 +405,50 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    // Mixed orders must survive lane reuse and batching, and encode the actual
+    // turn sequence rather than merely relabel the initial player's channel.
+    std::vector<soo::EpisodeJob> balanced_jobs;
+    for (int i = 0; i < 12; ++i) balanced_jobs.push_back({*min_opening, static_cast<uint64_t>(100 + i)});
+    soo::balance_episode_turn_orders(min_match, balanced_jobs);
+    std::set<std::vector<uint8_t>> observed_orders;
+    soo::EpisodeConfig balanced_config;
+    balanced_config.lanes = 2;
+    balanced_config.threads = 2;
+    balanced_config.max_batch = 2;
+    balanced_config.simulations = 4;
+    balanced_config.max_moves = 6;
+    soo::EpisodeMetrics balanced_metrics;
+    const auto balanced = soo::run_episodes(min_match, balanced_jobs, balanced_config, evaluator, balanced_metrics);
+    for (size_t i = 0; i < balanced.size(); ++i) {
+        const auto& ordered = *balanced_jobs[i].match;
+        std::vector<uint8_t> order;
+        for (int seat = 0; seat < ordered.count; ++seat) order.push_back(ordered.players[seat].id);
+        observed_orders.insert(order);
+        auto state = balanced_jobs[i].initial_state;
+        REQUIRE(balanced[i].moves.size() == 6, "balanced game did not record six moves");
+        for (const auto& move : balanced[i].moves) {
+            const auto encoded = soo::encode(state, ordered);
+            CHECK(move.features.canonical_player_ids == encoded.canonical_player_ids);
+            CHECK(move.features.node_features == encoded.node_features);
+            const auto action = soo::to_physical_action(move.selected_action, ordered, state.current_player);
+            std::vector<int32_t> legal;
+            soo::legal_action_ids(state, legal);
+            CHECK(std::find(legal.begin(), legal.end(), action) != legal.end());
+            state = soo::apply_action(state, ordered, action);
+        }
+        soo::EpisodeMetrics alone_metrics;
+        const auto alone = soo::run_episodes(ordered, {{balanced_jobs[i].initial_state, balanced_jobs[i].seed}},
+                                             balanced_config, evaluator, alone_metrics);
+        for (size_t move = 0; move < balanced[i].moves.size(); ++move)
+            CHECK_EQ(balanced[i].moves[move].selected_action, alone[0].moves[move].selected_action);
+    }
+    CHECK_EQ(observed_orders.size(), size_t{6});
+    balanced_jobs.pop_back();
+    bool rejected_partial_cycle = false;
+    try { soo::balance_episode_turn_orders(min_match, balanced_jobs); }
+    catch (const std::invalid_argument&) { rejected_partial_cycle = true; }
+    CHECK(rejected_partial_cycle);
 
     std::fprintf(stderr, "scheduler moves=%llu episodes=%zu\n",
                  static_cast<unsigned long long>(parallel.moves), first.size());
