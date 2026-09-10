@@ -6,7 +6,7 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 
 cd -- "$repo"
 tools/native_training.sh cmake --preset native-package
-tools/native_training.sh cmake --build --preset native-package --target diamond_qt --parallel 1
+tools/native_training.sh cmake --build --preset native-package --target diamond_qt --parallel
 tools/deploy_native_qt.sh \
     --build-dir build/native-package \
     --output-dir dist/diamond-qt-soo \

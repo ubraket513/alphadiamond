@@ -144,11 +144,11 @@ jobs:
 
       - name: Build CUDA acceptance targets
         run: >-
-          tools/native_training.sh cmake --build --preset native-training
+          tools/native_training.sh cmake --build --preset native-training --parallel
           --target device_test inference_coordinator_test training_step_parity_test
           checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
           checkpoint_v2_transaction_test alphadiamond-checkpoint alphadiamond-train
-          training_step_benchmark --parallel 1
+          training_step_benchmark
 
       - name: Verify LibTorch and CUDA DLL resolution
         run: |

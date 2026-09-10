@@ -45,3 +45,10 @@ az-bench/**/checkpoints/
 !/runtime/runs/soo/cpu8h-soo-20260819/latest.pt
 !/tests/golden/training-v1/min/checkpoint-v1.pt
 !/tests/golden/training-v1/soo/checkpoint-v1.pt
+
+# Agent tooling caches, not project sources
+.agents/
+.claude/skills/
+agent/skills/
+.serena/
+skills-lock.json

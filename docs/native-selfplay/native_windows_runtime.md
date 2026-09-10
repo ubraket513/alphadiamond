@@ -55,7 +55,9 @@ Qt, and CPU LibTorch.
 ```bash
 mamba activate C:\ProgramData\miniforge3\envs\alphadiamond
 tools/native_training.sh cmake --preset native-package
-tools/native_training.sh cmake --build --preset native-package --parallel 1
+tools/native_training.sh cmake --build --preset native-package --parallel
+
+Note: `--parallel` lets CMake use the native build tool’s multi-core mode (on MSVC this maps to `/m`), so this runs with all available CPU cores.
 ```
 
 A Windows native build needs both halves of the runtime environment: the MSVC

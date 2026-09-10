@@ -26,6 +26,7 @@ Item {
 
     implicitHeight: 180
     Layout.fillWidth: true
+    Layout.fillHeight: true
     activeFocusOnTab: true
 
     Accessible.role: Accessible.Chart
@@ -125,68 +126,92 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: 5
+        spacing: 10
 
-        RowLayout {
+        Rectangle {
             Layout.fillWidth: true
-            spacing: Theme.spacing
+            implicitHeight: 68
+            radius: Theme.radiusMedium
+            color: Theme.surfaceAlt
 
-            Repeater {
-                model: [
-                    { label: root.firstLabel, color: Theme.accent,
-                      value: root.firstValueText, delta: root.firstDeltaText },
-                    { label: root.secondLabel, color: Theme.systemOrange,
-                      value: root.secondValueText, delta: root.secondDeltaText }
-                ]
+            Rectangle {
+                anchors.centerIn: parent
+                width: 1
+                height: parent.height - 24
+                color: Theme.border
+            }
 
-                delegate: Rectangle {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    implicitHeight: 42
-                    radius: Theme.radiusSmall
-                    color: Theme.surfaceAlt
-                    border.width: 1
-                    border.color: Theme.border
+            RowLayout {
+                anchors.fill: parent
+                spacing: 0
+                Repeater {
+                    model: [
+                        { label: root.firstLabel, color: Theme.accent,
+                          value: root.firstValueText, delta: root.firstDeltaText },
+                        { label: root.secondLabel, color: Theme.systemOrange,
+                          value: root.secondValueText, delta: root.secondDeltaText }
+                    ]
+                    delegate: Item {
+                        id: metricCard
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        Layout.fillHeight: true
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 6
-                        spacing: 6
-
-                        Rectangle {
-                            width: 3
-                            Layout.fillHeight: true
-                            radius: 2
-                            color: parent.parent.modelData.color
-                        }
                         ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Text {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 6
+                            RowLayout {
                                 Layout.fillWidth: true
-                                text: parent.parent.parent.modelData.label
-                                color: Theme.textMuted
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontTiny
-                                elide: Text.ElideRight
+                                spacing: 6
+                                Rectangle {
+                                    width: 6; height: 6; radius: 3
+                                    color: metricCard.modelData.color
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: metricCard.modelData.label
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: Theme.fontTiny
+                                    elide: Text.ElideRight
+                                }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
+                                spacing: 6
                                 Text {
-                                    text: parent.parent.parent.parent.modelData.value
+                                    Layout.fillWidth: true
+                                    text: metricCard.modelData.value
                                     color: Theme.text
                                     font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontBody
-                                    font.weight: Theme.weightBold
+                                    font.pixelSize: Theme.fontTitle
+                                    font.weight: Theme.weightMedium
+                                    fontSizeMode: Text.Fit
+                                    minimumPixelSize: Theme.fontBody
                                 }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: parent.parent.parent.parent.modelData.delta
-                                    color: text.indexOf("up") >= 0 ? Theme.success
-                                         : text.indexOf("down") >= 0 ? Theme.danger
-                                         : Theme.textFaint
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: Theme.fontTiny
+                                Rectangle {
+                                    readonly property string delta: metricCard.modelData.delta
+                                    readonly property bool rising: delta.indexOf("up") >= 0
+                                    readonly property bool falling: delta.indexOf("down") >= 0
+                                    readonly property color ink: rising ? Theme.success
+                                                               : falling ? Theme.danger : Theme.textFaint
+                                    visible: rising || falling || delta.indexOf("no change") >= 0
+                                    implicitWidth: deltaLabel.implicitWidth + 12
+                                    implicitHeight: 22
+                                    radius: 11
+                                    color: Qt.rgba(ink.r, ink.g, ink.b, 0.09)
+                                    Text {
+                                        id: deltaLabel
+                                        anchors.centerIn: parent
+                                        text: parent.delta.replace(" up", "").replace(" down", "")
+                                                          .replace(" no change", "")
+                                        color: parent.ink
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: Theme.fontTiny
+                                        font.weight: Theme.weightMedium
+                                    }
                                 }
                             }
                         }
@@ -212,7 +237,7 @@ Item {
                     ctx.clearRect(0, 0, width, height)
                     var left = 42
                     var right = width - 5
-                    var top = 5
+                    var top = 10
                     var bottom = height - 18
                     var plotWidth = Math.max(1, right - left)
                     var plotHeight = Math.max(1, bottom - top)
@@ -268,6 +293,16 @@ Item {
                             }
                         }
                         ctx.stroke()
+                        // A player's first search must be visible before a second
+                        // point exists to form a line.
+                        ctx.fillStyle = color
+                        for (var dot = 0; dot < rows.length; ++dot) {
+                            if (!root.rowAvailable(rows[dot], key))
+                                continue
+                            ctx.beginPath()
+                            ctx.arc(xFor(dot), yFor(Number(rows[dot][key])), 2.5, 0, Math.PI * 2)
+                            ctx.fill()
+                        }
                     }
                     drawSeries(root.firstKey, Theme.accent)
                     drawSeries(root.secondKey, Theme.systemOrange)

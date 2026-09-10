@@ -58,8 +58,9 @@ PanelSection {
     GridLayout {
         Layout.fillWidth: true
         columns: 4
+        uniformCellWidths: true
         columnSpacing: Theme.spacing
-        rowSpacing: 3
+        rowSpacing: 12
         visible: root.hasMetrics
 
         Repeater {
@@ -76,14 +77,17 @@ PanelSection {
             delegate: ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true
-                spacing: 0
+                Layout.preferredWidth: 1
+                spacing: 4
                 Text {
+                    Layout.fillWidth: true
                     text: parent.modelData.label
                     color: Theme.textFaint
                     font.family: Theme.fontFamily
                     font.pixelSize: Theme.fontTiny
                 }
                 Text {
+                    Layout.fillWidth: true
                     text: parent.modelData.value
                     color: Theme.text
                     font.family: Theme.fontFamily

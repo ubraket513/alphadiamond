@@ -74,6 +74,7 @@ struct SelfPlayConfig final {
     std::string bootstrap_prior = std::string(kBootstrapPriorNone);
     double bootstrap_prior_weight = 1.0;
     std::optional<double> max_game_seconds;
+    bool balance_turn_orders = false;
 
     void validate() const;
     diamond_support::JsonValue to_json() const;

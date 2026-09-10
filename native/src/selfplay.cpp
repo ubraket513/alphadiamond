@@ -10,6 +10,7 @@
 #include <exception>
 #include <condition_variable>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -444,6 +445,7 @@ struct EpisodeLane {
     // Seat-agnostic: Soo's scalar search and Min's vector search behind one
     // handle, because everything else about a lane is the same for both.
     EpisodeSearch session;
+    Match match;
     State state;
     int move_count = 0;
     uint64_t game_seed = 0;
@@ -504,10 +506,49 @@ struct EpisodeLane {
 
 }  // namespace
 
+void balance_episode_turn_orders(const Match& match, std::vector<EpisodeJob>& jobs) {
+    if (match.count != 2 && match.count != 3)
+        throw std::invalid_argument("balanced episodes require two or three players");
+    std::vector<uint8_t> ids;
+    for (int seat = 0; seat < match.count; ++seat) ids.push_back(match.players[seat].id);
+    std::sort(ids.begin(), ids.end());
+    std::vector<Match> orders;
+    do {
+        Match ordered = match;
+        for (int seat = 0; seat < match.count; ++seat)
+            ordered.players[seat] = match.by_id(ids[seat]);
+        orders.push_back(ordered);
+    } while (std::next_permutation(ids.begin(), ids.end()));
+    if (jobs.size() % orders.size() != 0)
+        throw std::invalid_argument("episode count must contain complete turn-order cycles");
+    for (const auto& job : jobs)
+        if (job.initial_state.turn_number != 1 || job.initial_state.finished_count != 0 ||
+            job.initial_state.status != kInProgress)
+            throw std::invalid_argument("turn-order balancing requires opening jobs");
+    for (size_t index = 0; index < jobs.size(); ++index) {
+        jobs[index].match = orders[index % orders.size()];
+        jobs[index].initial_state.current_player = jobs[index].match->players[0].id;
+    }
+}
+
 std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJob>& jobs,
                                   const EpisodeConfig& config, BatchEvaluator& batch_evaluator,
                                   EpisodeMetrics& metrics) {
     if (jobs.empty()) return {};
+    for (const auto& job : jobs) {
+        const auto& selected = job.match ? *job.match : match;
+        if (selected.count != match.count)
+            throw std::invalid_argument("episode match changes player count");
+        std::set<uint8_t> ids;
+        for (int seat = 0; seat < selected.count; ++seat) {
+            const auto& player = selected.players[seat];
+            const auto& expected = match.by_id(player.id);
+            if (!ids.insert(player.id).second || player.camp != expected.camp ||
+                player.target_camp != expected.target_camp)
+                throw std::invalid_argument("episode match must preserve player camps");
+        }
+        (void)selected.by_id(job.initial_state.current_player);
+    }
     if (config.threads < 1) throw std::invalid_argument("threads must be positive");
     if (config.max_batch < 1) throw std::invalid_argument("max_batch must be positive");
     if (config.repetition_temperature < 0.0)
@@ -553,6 +594,9 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             const size_t index = next_job.fetch_add(1, std::memory_order_acq_rel);
             if (index >= jobs.size()) return false;
             const EpisodeJob& job = jobs[index];
+            lane.match = job.match ? *job.match : match;
+            lane.session.reset_match(lane.match, search_config);
+            const Match& match = lane.match;
             lane.job_index = index;
             lane.state = job.initial_state;
             lane.game_seed = job.seed;
@@ -655,6 +699,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 if (!ready.pop(lane_id)) break;
                 const auto work_start = Clock::now();
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
+                const Match& match = lane.match;
 
                 const auto abort_for_deadline = [&] {
                     Episode& episode = episodes[lane.job_index];

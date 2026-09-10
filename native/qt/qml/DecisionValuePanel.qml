@@ -6,8 +6,10 @@ PanelSection {
     objectName: "decisionValuePanel"
     required property var controller
     title: "Decision Value"
+    subtitle: "Value of the selected move"
 
     TelemetryChart {
+
         objectName: "decisionValueChart"
         accessibleName: "Decision value"
         points: root.controller.decisionTelemetry

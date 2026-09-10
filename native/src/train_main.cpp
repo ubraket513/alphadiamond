@@ -470,6 +470,8 @@ diamond_pipeline::IterationRequest iteration_job(const ProductionConfig& config,
         };
         job.jobs.push_back({start, state.derive_seed(seed_identity)});
     }
+    if (config.self_play.balance_turn_orders)
+        soo::balance_episode_turn_orders(job.match, job.jobs);
     job.training_batch_size = wiring.training_batch_size;
     job.training_steps = wiring.training_steps;
     job.iteration = static_cast<uint64_t>(iteration);
@@ -871,8 +873,8 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
             diamond_pipeline::ModelPool models(1, device, actor_precision(config));
             const auto key = models.install(compatibility, trainer.learner());
             models.activate(key);
-            const auto result = diamond_pipeline::run_self_play(
-                iteration_job(config, state, operation, key), models, {});
+            const auto selfplay_job = iteration_job(config, state, operation, key);
+            const auto result = diamond_pipeline::run_self_play(selfplay_job, models, {});
             diamond_pipeline::save_episode_artifact(episodes_path, operation, result.episodes);
 
             // Engine counters the episode artifact cannot carry, written beside
@@ -889,9 +891,29 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                 ++std::get<int64_t>(found->second.value);
             }
             const auto& m = result.metrics;
+            Object order_counts;
+            for (std::size_t index = 0; index < result.episodes.size(); ++index) {
+                const auto& game = selfplay_job.jobs[index];
+                const auto& match = game.match ? *game.match : selfplay_job.match;
+                std::string order;
+                for (int seat = 0; seat < match.count; ++seat) {
+                    if (seat) order += "-";
+                    order += std::to_string(match.players[seat].id);
+                }
+                auto [entry, inserted] = order_counts.try_emplace(order, Json{Object{
+                    {"requested", Json{int64_t{0}}}, {"completed", Json{int64_t{0}}},
+                    {"aborted", Json{int64_t{0}}}, {"samples", Json{int64_t{0}}}}});
+                (void)inserted;
+                auto& counts = std::get<Object>(entry->second.value);
+                ++std::get<int64_t>(counts.at("requested").value);
+                const auto& episode = result.episodes[index];
+                ++std::get<int64_t>(counts.at(episode.completed ? "completed" : "aborted").value);
+                std::get<int64_t>(counts.at("samples").value) += static_cast<int64_t>(episode.samples.size());
+            }
             write_json(
                 per_iteration / "selfplay.metrics.json",
                 Json{Object{
+                    {"turn_orders", Json{std::move(order_counts)}},
                     {"schema_version", Json{int64_t{2}}},
                     {"operation_id", Json{operation}},
                     {"iteration", Json{static_cast<int64_t>(iteration)}},

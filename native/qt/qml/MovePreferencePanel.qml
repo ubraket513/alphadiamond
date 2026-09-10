@@ -6,8 +6,10 @@ PanelSection {
     objectName: "movePreferencePanel"
     required property var controller
     title: "Move Preference"
+    subtitle: "Policy prior and search visits"
 
     TelemetryChart {
+
         objectName: "movePreferenceChart"
         accessibleName: "Move preference"
         points: root.controller.decisionTelemetry

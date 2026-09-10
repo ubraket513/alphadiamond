@@ -111,7 +111,11 @@ struct SchedulerConfig {
 struct EpisodeJob {
     State initial_state;
     uint64_t seed = 0;      // Python's derive_game_seed for this attempt
+    std::optional<Match> match;  // Per-game turn order; absent keeps the batch default.
 };
+
+// Assign every permutation equally, preserving camps and seeds. Opening jobs only.
+void balance_episode_turn_orders(const Match& match, std::vector<EpisodeJob>& jobs);
 
 // One recorded move.  The features are the *request* the evaluator answered, so
 // a sample is exactly what the network saw, not a re-encoding of it.

@@ -11,6 +11,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlProperty>
+#include <QJSValue>
 #include <QQuickStyle>
 #include <QPainter>
 #include <QPen>
@@ -232,6 +233,36 @@ int main(int argc, char* argv[]) {
                 !require_analysis(outlook_chart->property("height").toDouble() >= 150.0,
                                   "footer analysis chart is too small"))
                 return 1;
+            // Exercise the panel's AI-seat filtering with interleaved player
+            // samples, including a head-to-head perspective conversion.
+            for (int count : {2, 3}) {
+                const int ai = count;
+                QVariantList samples;
+                for (int player = 1; player <= count; ++player) {
+                    samples.push_back(QVariantMap{
+                        {"playerId", player}, {"ply", player}, {"available", true},
+                        {"perspectivePlayerId", count == 3 ? player : 1},
+                        {"nnValue", 0.2}, {"mctsValue", 0.4},
+                        {"nnEstimate", 0.6}, {"mctsEstimate", 0.7}});
+                }
+                QVariantMap mock{{"aiSeats", QVariantList{ai}}, {"playerCount", count},
+                                 {"analysisAvailable", true}, {"positionTelemetry", samples}};
+                QQmlProperty::write(outlook, QStringLiteral("controller"), mock);
+                const auto filtered = outlook->property("outlookPoints")
+                                          .value<QJSValue>().toVariant().toList();
+                if (!require_analysis(filtered.size() == 1 &&
+                        filtered.front().toMap().value("playerId").toInt() == ai &&
+                        std::abs(filtered.front().toMap().value("nnValue").toDouble() -
+                                 (count == 3 ? 0.2 : -0.2)) < 0.0001,
+                        "outlook mixes players or uses the wrong AI perspective")) return 1;
+                mock["aiSeats"] = QVariantList{};
+                QQmlProperty::write(outlook, QStringLiteral("controller"), mock);
+                if (!require_analysis(outlook->property("outlookPoints").value<QJSValue>()
+                                          .toVariant().toList().isEmpty(),
+                                      "human-only match exposes an AI outlook")) return 1;
+            }
+            QQmlProperty::write(outlook, QStringLiteral("controller"),
+                                QVariant::fromValue(&controller));
             if (!QQmlProperty::write(outlook_chart, QStringLiteral("points"),
                                      QVariantList{
                                          QVariantMap{{"available", true},

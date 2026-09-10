@@ -67,6 +67,21 @@ JsonValue runtime_json(std::string device, std::string precision = "fp32") {
 
 int main(int argc, char** argv) {
     try {
+        ProductionConfig balanced;
+        balanced.model_name = "Min";
+        balanced.arena.games = 36;
+        balanced.self_play.balance_turn_orders = true;
+        balanced.workers.games_per_iteration = 12;
+        balanced.validate();
+        require(ProductionConfig::from_json(balanced.to_json()) == balanced,
+                "balanced turn-order option must round trip");
+        balanced.workers.games_per_iteration = 13;
+        rejects([&] { balanced.validate(); }, "Min must reject incomplete six-order cycles");
+        balanced.model_name = "Soo";
+        balanced.workers.games_per_iteration = 4;
+        balanced.validate();
+        balanced.workers.games_per_iteration = 3;
+        rejects([&] { balanced.validate(); }, "Soo must reject incomplete two-order cycles");
         require(RuntimeConfig{} == RuntimeConfig{.device = "cpu", .precision = "fp32"},
                 "runtime defaults changed");
         require(RunBudgetConfig{} == RunBudgetConfig{.max_iterations = 1,
@@ -457,7 +472,9 @@ int main(int argc, char** argv) {
             const std::filesystem::path root = argv[1];
             for (const char* name :
                  {"soo-production.json", "soo-bootstrap.json", "min-production.json",
-                  "min-production-6h.json", "min-bootstrap.json", "min-anneal-alpha050-v1.json"}) {
+                  "min-production-6h.json", "min-bootstrap.json", "min-anneal-alpha050-v1.json",
+                  "min-balanced-orders-cpu-smoke.json", "min-balanced-orders-cuda-smoke.json",
+                  "min-balanced-orders-cuda-pilot.json", "min-balanced-orders-cuda-control.json"}) {
                 std::ifstream input(root / name, std::ios::binary);
                 require(static_cast<bool>(input), "cannot open reference production config");
                 const std::string contents{std::istreambuf_iterator<char>(input), {}};
@@ -470,6 +487,8 @@ int main(int argc, char** argv) {
                     std::get<JsonValue::Object>(normalized_root.at("self_play").value);
                 normalized_self_play.try_emplace(
                     "bootstrap_prior_weight", JsonValue{loaded.self_play.bootstrap_prior_weight});
+                if (!loaded.self_play.balance_turn_orders)
+                    normalized_self_play.erase("balance_turn_orders");
                 const auto expected = diamond_support::canonical_json(normalized_reference);
                 if (actual != expected)
                     std::cerr << "expected: " << expected << "\nactual: " << actual << '\n';
