@@ -93,7 +93,7 @@ No public release or GUI model promotion is performed by the launcher.
 Private asset prefix:
 
 ```text
-hf://buckets/ubraket513/alphadiamond-min-private-backups/min-balanced-orders-20260911/v1
+hf://buckets/ubraket513/alphadiamond-min-private-backups/min-balanced-orders-20260911/v2
 ```
 
 It contains the original `min-step20064.zip`, `MANIFEST.json` with the exact source
@@ -103,7 +103,7 @@ the complete handoff and verify file hashes:
 
 ```bash
 hf buckets sync \
-  hf://buckets/ubraket513/alphadiamond-min-private-backups/min-balanced-orders-20260911/v1 \
+  hf://buckets/ubraket513/alphadiamond-min-private-backups/min-balanced-orders-20260911/v2 \
   ./artifacts/min-balanced-handoff
 (cd artifacts/min-balanced-handoff && sha256sum --check SHA256SUMS)
 ```

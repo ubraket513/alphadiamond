@@ -34,7 +34,7 @@ output=$(cd "$output" && pwd)
 assets="$output/assets"
 mkdir -p "$assets"
 archive="$assets/min-step20064.zip"
-bucket='hf://buckets/ubraket513/alphadiamond-min-private-backups/min-balanced-orders-20260911/v1'
+bucket='hf://buckets/ubraket513/alphadiamond-min-private-backups/min-balanced-orders-20260911/v2'
 if [[ ! -f "$archive" ]]; then
   hf buckets cp "$bucket/min-step20064.zip" "$archive"
 fi

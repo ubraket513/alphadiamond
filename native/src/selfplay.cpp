@@ -510,7 +510,8 @@ void balance_episode_turn_orders(const Match& match, std::vector<EpisodeJob>& jo
     if (match.count != 2 && match.count != 3)
         throw std::invalid_argument("balanced episodes require two or three players");
     std::vector<uint8_t> ids;
-    for (int seat = 0; seat < match.count; ++seat) ids.push_back(match.players[seat].id);
+    for (int seat = 0; seat < match.count; ++seat)
+        ids.push_back(match.players[seat].id);
     std::sort(ids.begin(), ids.end());
     std::vector<Match> orders;
     do {

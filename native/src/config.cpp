@@ -308,14 +308,15 @@ void SelfPlayConfig::validate() const {
 Json SelfPlayConfig::to_json() const {
     validate();
     Object output{{"bootstrap_prior", Json{bootstrap_prior}},
-                       {"bootstrap_prior_weight", Json{bootstrap_prior_weight}},
-                       {"max_game_seconds", optional_json(max_game_seconds)},
-                       {"max_moves", Json{max_moves}},
-                       {"seed", Json{json_integer(seed, "self_play.seed")}},
-                       {"temperature", Json{temperature}},
-                       {"temperature_moves", Json{temperature_moves}}};
+                  {"bootstrap_prior_weight", Json{bootstrap_prior_weight}},
+                  {"max_game_seconds", optional_json(max_game_seconds)},
+                  {"max_moves", Json{max_moves}},
+                  {"seed", Json{json_integer(seed, "self_play.seed")}},
+                  {"temperature", Json{temperature}},
+                  {"temperature_moves", Json{temperature_moves}}};
     // Preserve canonical configuration hashes for existing fixed-order runs.
-    if (balance_turn_orders) output.emplace("balance_turn_orders", Json{true});
+    if (balance_turn_orders)
+        output.emplace("balance_turn_orders", Json{true});
     return Json{std::move(output)};
 }
 
@@ -340,7 +341,8 @@ SelfPlayConfig SelfPlayConfig::from_json(const Json& value) {
             ? number(input.at("bootstrap_prior_weight"), "self_play.bootstrap_prior_weight")
             : (result.bootstrap_prior == kBootstrapPriorNone ? 0.0 : 1.0);
     if (input.contains("balance_turn_orders"))
-        result.balance_turn_orders = boolean(input.at("balance_turn_orders"), "self_play.balance_turn_orders");
+        result.balance_turn_orders =
+            boolean(input.at("balance_turn_orders"), "self_play.balance_turn_orders");
     result.validate();
     return result;
 }
@@ -642,8 +644,10 @@ void ProductionConfig::validate() const {
     mcts.validate();
     self_play.validate();
     workers.validate();
-    if (self_play.balance_turn_orders && workers.games_per_iteration % (model_name == "Min" ? 6 : 2) != 0)
-        throw ConfigError("balanced self-play requires games_per_iteration divisible by the number of turn orders");
+    if (self_play.balance_turn_orders &&
+        workers.games_per_iteration % (model_name == "Min" ? 6 : 2) != 0)
+        throw ConfigError("balanced self-play requires games_per_iteration divisible by the number "
+                          "of turn orders");
     inference.validate();
     replay.validate();
     training.validate();
