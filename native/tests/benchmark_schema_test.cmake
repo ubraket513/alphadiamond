@@ -8,6 +8,19 @@ foreach(required IN ITEMS
     endif()
 endforeach()
 
+execute_process(COMMAND "${MIN_LEARNING_DIAGNOSTIC}" --help
+    RESULT_VARIABLE learning_help_result OUTPUT_VARIABLE learning_help ERROR_VARIABLE learning_help_error)
+if(NOT learning_help_result EQUAL 0)
+    message(FATAL_ERROR "Min learning diagnostic --help failed: ${learning_help_error}")
+endif()
+foreach(option IN ITEMS --checkpoint --config --replay --device --iteration --steps
+        --batch-size --eval-samples --eval-batch --log-every --seed --out)
+    string(FIND "${learning_help}" "${option}" option_position)
+    if(option_position EQUAL -1)
+        message(FATAL_ERROR "Min learning diagnostic help is missing ${option}")
+    endif()
+endforeach()
+
 foreach(executable IN ITEMS
         TRAINING_BENCHMARK CHECKPOINT_BENCHMARK REPLAY_BENCHMARK
         SELFPLAY_BENCHMARK END_TO_END_BENCHMARK)
@@ -21,6 +34,23 @@ endif()
 
 file(REMOVE_RECURSE "${SCRATCH}")
 file(MAKE_DIRECTORY "${SCRATCH}")
+
+execute_process(
+    COMMAND "${SELFPLAY_BENCHMARK}" --help
+    RESULT_VARIABLE selfplay_help_result
+    OUTPUT_VARIABLE selfplay_help
+    ERROR_VARIABLE selfplay_help_error)
+if(NOT selfplay_help_result EQUAL 0)
+    message(FATAL_ERROR "self-play benchmark --help failed: ${selfplay_help_error}")
+endif()
+foreach(option IN ITEMS --checkpoint --config --precision --bootstrap-prior
+        --simulations-late --repeat-window --max-game-seconds --diagnostic-roots
+        --diagnostic-batch --torch-threads)
+    string(FIND "${selfplay_help}" "${option}" option_position)
+    if(option_position EQUAL -1)
+        message(FATAL_ERROR "self-play benchmark help is missing ${option}")
+    endif()
+endforeach()
 
 function(run_json output executable)
     execute_process(
@@ -103,10 +133,15 @@ if(selection_slots LESS 1 OR selection_slots GREATER 4)
 endif()
 
 run_json(selfplay_json "${SELFPLAY_BENCHMARK}"
-    --artifact "${MODEL_ARTIFACT}" --device cpu --lanes 2 --threads 1
+    --artifact "${MODEL_ARTIFACT}" --device cpu --lanes 2 --threads 1 --torch-threads 2
     --max-batch 2 --max-wait-us 200 --simulations 1 --max-moves 2
-    --warmups 0 --repetitions 1 --scratch "${SCRATCH}/selfplay")
+    --warmups 0 --repetitions 1 --diagnostic-roots 1 --diagnostic-batch 1
+    --scratch "${SCRATCH}/selfplay")
 check_common("${selfplay_json}" selfplay)
+string(JSON selfplay_torch_threads GET "${selfplay_json}" environment torch_threads)
+if(NOT selfplay_torch_threads EQUAL 2)
+    message(FATAL_ERROR "selfplay torch threads must be independent of search threads")
+endif()
 string(JSON selfplay_model_sha GET "${selfplay_json}" domain model_sha256)
 string(JSON selfplay_runtime_sha GET "${selfplay_json}" domain runtime_sha256)
 string(JSON attempted GET "${selfplay_json}" domain attempted_episodes)
@@ -115,12 +150,27 @@ string(JSON aborted GET "${selfplay_json}" domain aborted_episodes)
 string(JSON evaluations GET "${selfplay_json}" domain evaluations)
 string(JSON batches GET "${selfplay_json}" domain batches)
 string(JSON batch_max GET "${selfplay_json}" domain batch_max)
+string(JSON boosted_moves GET "${selfplay_json}" domain boosted_moves)
+string(JSON boosted_fraction GET "${selfplay_json}" domain boosted_fraction)
+string(JSON first_finisher_count LENGTH "${selfplay_json}" domain first_finisher_counts)
+if(NOT first_finisher_count EQUAL 3)
+  message(FATAL_ERROR "selfplay benchmark must report all three first-finisher seats")
+endif()
+string(JSON diagnostic_rows GET "${selfplay_json}" domain policy_fit sampled_roots)
+string(JSON legal_mass GET "${selfplay_json}" domain policy_fit legal_probability_mass_mean)
+string(JSON full_kl GET "${selfplay_json}" domain policy_fit full_kl_mean)
+string(JSON legal_kl GET "${selfplay_json}" domain policy_fit legal_kl_mean)
 check_sha256("${selfplay_model_sha}" "self-play model digest")
 check_sha256("${selfplay_runtime_sha}" "self-play runtime digest")
 math(EXPR accounted "${completed} + ${aborted}")
 if(NOT attempted EQUAL 2 OR NOT accounted EQUAL attempted OR evaluations LESS 1
-   OR batches LESS 1 OR batch_max GREATER 2)
+   OR batches LESS 1 OR batch_max GREATER 2 OR NOT boosted_moves EQUAL 0
+   OR NOT boosted_fraction EQUAL 0)
     message(FATAL_ERROR "self-play benchmark accounting mismatch")
+endif()
+if(NOT diagnostic_rows EQUAL 1 OR legal_mass LESS_EQUAL 0 OR legal_mass GREATER 1
+   OR full_kl LESS -0.0000000001 OR legal_kl LESS -0.0000000001)
+    message(FATAL_ERROR "self-play policy diagnostics mismatch")
 endif()
 
 run_json(end_to_end_json "${END_TO_END_BENCHMARK}"

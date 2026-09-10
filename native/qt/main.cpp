@@ -22,6 +22,7 @@
 
 #include "native_controller.hpp"
 #include "native_chrome.hpp"
+#include "model_catalog.hpp"
 
 class PlaceholderIconProvider final : public QQuickImageProvider {
   public:
@@ -76,8 +77,7 @@ int main(int argc, char* argv[]) {
     bool smoke_mode = false;
     for (int i = 1; i < argc; ++i)
         smoke_mode = smoke_mode || QString::fromLocal8Bit(argv[i]).endsWith(QStringLiteral("-smoke"));
-    qputenv("QT_QPA_PLATFORM", smoke_mode ? QByteArrayLiteral("offscreen")
-                                           : QByteArrayLiteral("windows"));
+    if (smoke_mode) qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
 #ifdef Q_OS_WIN
     if (qEnvironmentVariableIsEmpty("QT_MEDIA_BACKEND"))
         qputenv("QT_MEDIA_BACKEND", QByteArrayLiteral("windows"));
@@ -154,6 +154,40 @@ int main(int argc, char* argv[]) {
     }
     for (int i = 1; i < argc; ++i) {
         const QString argument = QString::fromLocal8Bit(argv[i]);
+        if (argument == QStringLiteral("--models-smoke")) {
+            auto* catalog = qobject_cast<ModelCatalog*>(controller.modelCatalog());
+            QString minId;
+            for (const auto& value : catalog->models()) {
+                const auto row = value.toMap();
+                if (row.value("id").toString().startsWith(QStringLiteral("min/")) &&
+                    row.value("installed").toBool()) minId = row.value("id").toString();
+            }
+            if (minId.isEmpty()) { qCritical("models smoke requires an installed Min artifact"); return 1; }
+            catalog->selectModel(minId);
+            if (!controller.startMatch(QVariantList{1, 2, 3}, {})) return 1;
+            auto* dialog = root->findChild<QObject*>(QStringLiteral("modelsDialog"));
+            if (!dialog || !QMetaObject::invokeMethod(dialog, "open")) return 1;
+            QTimer check;
+            QObject::connect(&check, &QTimer::timeout, &app, [&] {
+                if (catalog->busy()) return;
+                check.stop();
+                auto* list = root->findChild<QObject*>(QStringLiteral("modelsList"));
+                auto* chart = root->findChild<QObject*>(QStringLiteral("positionOutlookChart"));
+                const bool valid = dialog->property("visible").toBool() && list &&
+                    list->property("count").toInt() > 0 && catalog->activeModelId() == minId &&
+                    chart && chart->property("firstKey").toString() == QStringLiteral("nnValue") &&
+                    !chart->property("percent").toBool();
+                if (i + 1 < argc)
+                    if (auto* window = qobject_cast<QQuickWindow*>(root))
+                        window->grabWindow().save(QString::fromLocal8Bit(argv[i + 1]));
+                qInfo("models smoke: active=%s rows=%d", qPrintable(catalog->activeModelId()),
+                      list ? list->property("count").toInt() : 0);
+                app.exit(valid ? 0 : 1);
+            });
+            check.start(100);
+            QTimer::singleShot(35000, &app, [&app] { app.exit(1); });
+            return app.exec();
+        }
         if (argument == QStringLiteral("--analysis-smoke")) {
             const auto require_analysis = [](bool condition, const char* message) {
                 if (!condition) {

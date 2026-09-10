@@ -2,16 +2,19 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <atomic>
 #include <cstdlib>
 #include <fstream>
-#include <optional>
+#include <span>
 #include <stdexcept>
-#include <thread>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #ifdef _WIN32
+// windows.h defines min/max as macros, which mangles std::min at its call site.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -19,12 +22,45 @@
 #endif
 
 #include "diamond_support/json.hpp"
+#include "diamond_pipeline/replay_segment.hpp"
 
 namespace diamond_pipeline {
 namespace {
 using diamond_support::JsonValue;
 using Object = JsonValue::Object;
 using Array = JsonValue::Array;
+enum class ReplayChunkEncoding { json_v1, binary_v1 };
+
+const char* encoding_name(ReplayChunkEncoding encoding) {
+    return encoding == ReplayChunkEncoding::binary_v1 ? "binary-v1" : "json-v1";
+}
+
+ReplayChunkEncoding encoding_from_string(const std::string& value) {
+    if (value == "json-v1") return ReplayChunkEncoding::json_v1;
+    if (value == "binary-v1") return ReplayChunkEncoding::binary_v1;
+    throw std::runtime_error("replay chunk encoding " + value + " is unsupported");
+}
+
+std::string_view to_string_view(const std::vector<std::byte>& bytes) {
+    return std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+std::filesystem::path stream_path(const std::filesystem::path& path);
+
+std::vector<std::byte> read_file_bytes(const std::filesystem::path& path) {
+    std::ifstream source(stream_path(path), std::ios::binary | std::ios::ate);
+    if (!source)
+        throw std::runtime_error("missing replay chunk");
+    const auto offset = source.tellg();
+    if (offset < 0)
+        throw std::runtime_error("cannot read replay chunk");
+    std::vector<std::byte> payload(static_cast<size_t>(offset));
+    source.seekg(0, std::ios::beg);
+    source.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
+    if (!source)
+        throw std::runtime_error("cannot read replay chunk");
+    return payload;
+}
 
 JsonValue json_string_array(const std::vector<int32_t>& values) { Array out; for (auto value : values) out.emplace_back(JsonValue{int64_t(value)}); return JsonValue{std::move(out)}; }
 JsonValue sample_json(const TrainingSample& sample) {
@@ -83,12 +119,7 @@ Compatibility compatibility_from_json(const JsonValue& value) {
     try { out.validate(); } catch (const std::invalid_argument& error) { throw std::runtime_error(error.what()); }
     return out;
 }
-bool same_json(const JsonValue& a, const JsonValue& b) {
-    return diamond_support::canonical_json(a) == diamond_support::canonical_json(b);
-}
 TrainingSample legacy_sample(const JsonValue& value, const Compatibility& compatibility) { const auto& row=object(value,"sample"); TrainingSample sample; sample.compatibility=compatibility; for(const auto& feature:array(field(row,"node_features"),"features")) for(const auto& item:array(feature,"feature row")) sample.node_features.push_back(float(number(item,"feature"))); for(const auto& player:array(field(row,"canonical_player_ids"),"players")) sample.canonical_player_ids.push_back(int32_t(integer(player,"player"))); for(const auto& pair:array(field(row,"sparse_policy"),"policy")){const auto& values=array(pair,"policy row"); if(values.size()!=2) throw std::runtime_error("policy row width");sample.sparse_policy.emplace_back(int32_t(integer(values[0],"action")),float(number(values[1],"probability")));} for(const auto& target:array(field(row,"value_target"),"targets")) sample.value_target.push_back(float(number(target,"target"))); return sample; }
-uint32_t mt_next(std::vector<uint32_t>& state, size_t& index) { if(index>=624){for(size_t i=0;i<624;++i){const uint32_t y=(state[i]&0x80000000U)|(state[(i+1)%624]&0x7fffffffU);state[i]=state[(i+397)%624]^(y>>1)^((y&1U)?0x9908b0dfU:0U);}index=0;} uint32_t y=state[index++];y^=y>>11;y^=(y<<7)&0x9d2c5680U;y^=(y<<15)&0xefc60000U;return y^(y>>18); }
-size_t mt_below(std::vector<uint32_t>& state, size_t& index, size_t n) { const int bits=std::bit_width(n); uint32_t value; do { value=mt_next(state,index)>>(32-bits); } while(value>=n); return value; }
 uint64_t next_splitmix(uint64_t& state) { state += 0x9e3779b97f4a7c15ULL; uint64_t value=state; value=(value^(value>>30))*0xbf58476d1ce4e5b9ULL; value=(value^(value>>27))*0x94d049bb133111ebULL; return value^(value>>31); }
 bool failure_injected(const char* name) {
 #ifdef _WIN32
@@ -104,6 +135,22 @@ bool failure_injected(const char* name) {
     return value != nullptr && *value != '\0';
 #endif
 }
+// What the store needs to remember about an ingested episode once its samples
+// are in the sampling pool and its chunk is on disk: identity, the duplicate
+// -detection fields, and the sample count the manifest reports.  Deliberately
+// not the samples themselves -- retaining a second copy of every sample
+// alongside the pool doubled the store's resident cost for data no caller
+// reads back.
+struct EpisodeRecord {
+    std::string game_id;
+    std::string retry_id;
+    std::string aborted_reason;
+    uint64_t seed = 0;
+    uint64_t move_count = 0;
+    size_t sample_count = 0;
+    bool completed = true;
+};
+
 JsonValue chunk_body(const Episode& episode, const Compatibility& compatibility) { Array rows; for (const auto& sample : episode.samples) rows.push_back(sample_json(sample)); return JsonValue{Object{{"compatibility",compatibility_json(compatibility)}, {"episode",JsonValue{Object{{"completed",JsonValue{episode.completed}}, {"game_id",JsonValue{episode.game_id}}, {"move_count",JsonValue{int64_t(episode.move_count)}}, {"retry_id",JsonValue{episode.retry_id}}, {"seed",JsonValue{int64_t(episode.seed)}}}}}, {"samples",JsonValue{std::move(rows)}}, {"schema_version",JsonValue{int64_t(1)}}}}; }
 #ifdef _WIN32
 std::wstring extended_windows_path(const std::filesystem::path& path) {
@@ -204,73 +251,106 @@ struct ReplayStore::Impl {
     std::filesystem::path manifest_path;
     Compatibility compatibility;
     size_t capacity;
-    uint64_t rng_state;
-    bool legacy = false;
-    JsonValue legacy_manifest;
-    std::vector<uint32_t> mt_state;
-    size_t mt_index = 0;
-    std::optional<double> mt_gauss_next;
+    uint64_t replay_seed;
+    ReplayContents contents = ReplayContents::full;
     JsonValue authoritative_compatibility;
-    std::vector<Episode> episodes;
+    std::vector<EpisodeRecord> episodes;
     std::vector<TrainingSample> samples;
     Array aborted_records;
-    std::vector<JsonValue> chunk_payloads;
-    std::string rng_algorithm = "splitmix64";
-    JsonValue selection_transaction{nullptr};
-    JsonValue ingest_transaction{nullptr};
-    ReplaySamplingStats sampling_stats;
+    // Per-episode chunk digest, positionally aligned with `episodes`; empty for
+    // an aborted episode, which has no chunk.  This used to hold the whole
+    // parsed chunk body per episode, which cost ~30 KB per sample and was
+    // retained for the store's lifetime -- at a 1M capacity that alone is tens
+    // of gigabytes.  Every use was ultimately after the digest, so only the
+    // digest is kept.
+    std::vector<std::string> chunk_digests;
+    std::vector<ReplayChunkEncoding> chunk_encodings;
 
-    JsonValue rng_json() const {
-        Object rng{{"algorithm", JsonValue{rng_algorithm}}};
-        if (rng_algorithm == "python-mt19937") {
-            Array words;
-            for (auto word : mt_state)
-                words.emplace_back(JsonValue{int64_t(word)});
-            words.emplace_back(JsonValue{int64_t(mt_index)});
-            JsonValue gauss = mt_gauss_next ? JsonValue{*mt_gauss_next} : JsonValue{nullptr};
-            rng["state"] = JsonValue{
-                Array{JsonValue{int64_t(3)}, JsonValue{std::move(words)}, std::move(gauss)}};
-        } else
-            rng["state"] = JsonValue{std::to_string(rng_state)};
-        return JsonValue{std::move(rng)};
+    // Every completed episode gets its digest recorded at the same moment it
+    // enters `episodes`, on both the load and the ingest path, so a missing one
+    // is a broken invariant rather than a cache miss to recompute -- the
+    // samples needed to recompute it are no longer retained.
+    const std::string& chunk_digest(size_t index) const {
+        if (index >= chunk_digests.size() || chunk_digests[index].empty())
+            throw std::runtime_error("replay episode has no chunk digest");
+        return chunk_digests[index];
     }
 
-    void write_manifest() {
-        if (legacy) {
-            auto& manifest = std::get<Object>(legacy_manifest.value);
-            auto& state = std::get<Array>(manifest.at("rng_state").value);
-            auto& words = std::get<Array>(state.at(1).value);
-            for (size_t i = 0; i < mt_state.size(); ++i) words[i] = JsonValue{int64_t(mt_state[i])};
-            words[624] = JsonValue{int64_t(mt_index)};
-            atomic_write(manifest_path, diamond_support::canonical_json(legacy_manifest));
-            return;
-        }
+    ReplayChunkEncoding chunk_encoding(size_t index) const {
+        if (index >= chunk_encodings.size())
+            throw std::runtime_error("replay episode has no chunk encoding");
+        return chunk_encodings[index];
+    }
+
+    std::filesystem::path chunk_path(size_t index) const {
+        const auto& digest = chunk_digest(index);
+        return namespace_path / "chunks" /
+               (digest + std::string(chunk_encoding(index) == ReplayChunkEncoding::binary_v1
+                               ? ".bin"
+                               : ".json"));
+    }
+
+    std::string chunk_path(const std::string& digest, ReplayChunkEncoding encoding) const {
+        return digest + std::string(encoding == ReplayChunkEncoding::binary_v1 ? ".bin" : ".json");
+    }
+    // Diagnostics for the last sample() call.  Sampling is pure, so this is
+    // reporting only: nothing reads it back and no manifest records it.
+    mutable ReplaySamplingStats sampling_stats;
+
+    void write_manifest(size_t first = 0) {
         Array chunks, game_ids;
-        for (size_t i = 0; i < episodes.size(); ++i)
+        bool has_binary_chunks = false;
+        for (size_t i = first; i < episodes.size(); ++i)
             if (episodes[i].completed) {
                 const auto& episode = episodes[i];
-                const auto body = (i < chunk_payloads.size() &&
-                                   std::holds_alternative<Object>(chunk_payloads[i].value))
-                                      ? chunk_payloads[i]
-                                      : chunk_body(episode, compatibility);
-                const auto digest = diamond_support::sha256(diamond_support::canonical_json(body));
+                const auto digest = chunk_digest(i);
+                const auto encoding = chunk_encoding(i);
+                if (encoding == ReplayChunkEncoding::binary_v1)
+                    has_binary_chunks = true;
                 chunks.emplace_back(
                     JsonValue{Object{{"game_id", JsonValue{episode.game_id}},
-                                     {"sample_count", JsonValue{int64_t(episode.samples.size())}},
-                                     {"sha256", JsonValue{digest}}}});
+                                     {"sample_count", JsonValue{int64_t(episode.sample_count)}},
+                                     {"sha256", JsonValue{digest}},
+                                     {"encoding", JsonValue{encoding_name(encoding)}}}});
                 game_ids.emplace_back(JsonValue{episode.game_id});
             }
         const auto compat = std::holds_alternative<Object>(authoritative_compatibility.value) ? authoritative_compatibility : compatibility_json(compatibility);
+        // Contents identity only.  The manifest answers "which samples does
+        // this store hold, under which compatibility, at which capacity" and
+        // nothing else: no sampler state, no transaction records.  Training
+        // therefore cannot change the manifest, and its digest is stable
+        // across a TRAIN stage.
         Object final{{"aborted", JsonValue{aborted_records}},
                      {"capacity", JsonValue{int64_t(capacity)}},
                      {"chunks", JsonValue{std::move(chunks)}},
                      {"compatibility", std::move(compat)},
                      {"game_ids", JsonValue{std::move(game_ids)}},
-                     {"ingest_transaction", ingest_transaction},
-                     {"rng", rng_json()},
-                     {"schema_version", JsonValue{int64_t(3)}},
-                     {"selection_transaction", selection_transaction}};
+                     {"schema_version", JsonValue{int64_t(has_binary_chunks ? 5 : 4)}}};
         atomic_write(manifest_path, diamond_support::canonical_json(JsonValue{std::move(final)}));
+    }
+
+    size_t retained_episode_start() const {
+        size_t retained_samples = 0;
+        size_t first = 0;
+        for (size_t i = episodes.size(); i-- > 0;) {
+            if (episodes[i].completed)
+                retained_samples += episodes[i].sample_count;
+            first = i;
+            if (retained_samples >= capacity)
+                break;
+        }
+        return first;
+    }
+
+    void discard_episode_prefix(size_t first) {
+        if (first == 0)
+            return;
+        episodes.erase(episodes.begin(),
+                       episodes.begin() + static_cast<std::ptrdiff_t>(first));
+        chunk_digests.erase(chunk_digests.begin(),
+                            chunk_digests.begin() + static_cast<std::ptrdiff_t>(first));
+        chunk_encodings.erase(chunk_encodings.begin(),
+                              chunk_encodings.begin() + static_cast<std::ptrdiff_t>(first));
     }
 
     void cleanup_unreachable_chunks() {
@@ -278,14 +358,8 @@ struct ReplayStore::Impl {
             throw std::runtime_error("injected replay pre-cleanup failure");
         std::unordered_set<std::string> referenced;
         for (size_t i = 0; i < episodes.size(); ++i)
-            if (episodes[i].completed) {
-                const auto body = i < chunk_payloads.size() &&
-                                          std::holds_alternative<Object>(chunk_payloads[i].value)
-                                      ? chunk_payloads[i]
-                                      : chunk_body(episodes[i], compatibility);
-                referenced.insert(diamond_support::sha256(diamond_support::canonical_json(body)) +
-                                  ".json");
-            }
+            if (episodes[i].completed)
+                referenced.insert(chunk_path(i).filename().string());
         std::error_code error;
         const auto chunks = namespace_path / "chunks";
         const bool chunks_exist = std::filesystem::exists(chunks, error);
@@ -310,193 +384,116 @@ struct ReplayStore::Impl {
     }
 };
 
-ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility, size_t capacity, uint64_t seed) : impl_(std::make_unique<Impl>()) {
+ReplayStore::ReplayStore(std::filesystem::path root, Compatibility compatibility, size_t capacity,
+                         uint64_t seed, ReplayContents contents, ReplayOpenMode open_mode)
+    : impl_(std::make_unique<Impl>()) {
     if (capacity == 0) throw std::invalid_argument("replay capacity must be positive");
-    impl_->compatibility=std::move(compatibility); impl_->capacity=capacity; impl_->rng_state=seed;
-    const auto original_root = root;
+    impl_->compatibility = std::move(compatibility);
+    impl_->capacity = capacity;
+    impl_->replay_seed = seed;
+    impl_->contents = contents;
+    impl_->compatibility.validate();
     const auto compatibility_digest = diamond_support::sha256(
         diamond_support::canonical_json(compatibility_json(impl_->compatibility)));
-    impl_->compatibility.validate();
     impl_->namespace_path = std::move(root) / "persistent-replay-v2" /
                             impl_->compatibility.family() / compatibility_digest;
     impl_->manifest_path = impl_->namespace_path / "manifest.json";
-    std::error_code root_error;
-    const bool root_exists = std::filesystem::exists(original_root, root_error) && !root_error;
-    if (!std::filesystem::exists(impl_->manifest_path) && root_exists) {
-        // A migrated store is authoritative.  Resolve it by the complete
-        // canonical compatibility object, never by model name/version alone.
-        std::filesystem::path match;
-        const auto v2_family = original_root / "persistent-replay-v2" / impl_->compatibility.family();
-        if (std::filesystem::exists(v2_family)) for (const auto& entry : std::filesystem::directory_iterator(v2_family, std::filesystem::directory_options::skip_permission_denied)) {
-            if (entry.path().filename() == "manifest.json" || !std::filesystem::is_directory(entry.path())) continue;
-            const auto manifest_path = entry.path() / "manifest.json";
-            try {
-                std::ifstream source(stream_path(manifest_path), std::ios::binary);
-                const auto parsed = diamond_support::parse_json(std::string{std::istreambuf_iterator<char>(source), {}});
-                const auto& manifest = object(parsed, "manifest");
-                const auto schema = integer(field(manifest, "schema_version"), "schema");
-                if ((schema == 2 || schema == 3) &&
-                    same_json(field(manifest, "compatibility"),
-                              compatibility_json(impl_->compatibility))) {
-                    if (!match.empty()) throw std::runtime_error("multiple replay stores match compatibility");
-                    match = manifest_path;
-                }
-            } catch (const std::runtime_error&) { throw; } catch (...) {}
-        }
-        if (!match.empty()) { impl_->manifest_path = match; impl_->namespace_path = match.parent_path(); }
-    }
-    if (!std::filesystem::exists(impl_->manifest_path) && root_exists) {
-        const auto v1_family = original_root / "persistent-replay-v1";
-        if (std::filesystem::exists(v1_family)) for (const auto& family : std::filesystem::directory_iterator(v1_family, std::filesystem::directory_options::skip_permission_denied)) {
-            if (!std::filesystem::is_directory(family.path())) continue;
-            for (const auto& digest_dir : std::filesystem::directory_iterator(family.path(), std::filesystem::directory_options::skip_permission_denied)) {
-            if (!std::filesystem::is_directory(digest_dir.path())) continue;
-            const auto manifest_path = digest_dir.path() / "manifest.json";
-            try {
-                std::ifstream candidate(stream_path(manifest_path), std::ios::binary);
-                const std::string text((std::istreambuf_iterator<char>(candidate)), {});
-                const auto parsed=diamond_support::parse_json(text); const auto& manifest=object(parsed,"manifest");
-                const auto& legacy=object(field(manifest,"compatibility"),"compatibility");
-                const bool compatibility_match = same_json(JsonValue{legacy}, compatibility_json(impl_->compatibility));
-                if (compatibility_match) { impl_->manifest_path=manifest_path; impl_->namespace_path=manifest_path.parent_path(); impl_->legacy=true; break; }
-            } catch (...) {}
-            }
-            if (impl_->legacy) break;
-        }
-    }
-    if (!impl_->legacy) {
-        if (!std::filesystem::exists(impl_->manifest_path)) { impl_->write_manifest(); return; }
-        std::ifstream source_manifest(stream_path(impl_->manifest_path), std::ios::binary);
-        const std::string manifest_text{std::istreambuf_iterator<char>(source_manifest),
-                                        std::istreambuf_iterator<char>()};
-        const auto parsed = diamond_support::parse_json(manifest_text);
-        const auto& manifest = object(parsed, "manifest");
-        const auto schema = integer(field(manifest, "schema_version"), "schema");
-        if (schema != 2 && schema != 3)
-            throw std::runtime_error("unsupported replay manifest");
-        const auto& chunks = array(field(manifest, "chunks"), "chunks");
-        const auto& ids = array(field(manifest, "game_ids"), "game ids");
-        if (chunks.size() != ids.size())
-            throw std::runtime_error("manifest game_ids do not match ordered chunks");
-        for (size_t i = 0; i < chunks.size(); ++i) {
-            const auto& descriptor = object(chunks[i], "chunk descriptor");
-            const auto id = string(field(descriptor, "game_id"), "game id");
-            if (id != string(ids[i], "game id"))
-                throw std::runtime_error("manifest game_ids do not match ordered chunks");
-            const auto digest = string(field(descriptor, "sha256"), "digest");
-            std::ifstream chunk_file(
-                stream_path(impl_->namespace_path / "chunks" / (digest + ".json")),
-                std::ios::binary);
-            if (!chunk_file)
-                throw std::runtime_error("missing replay chunk");
-            const std::string chunk_text{std::istreambuf_iterator<char>(chunk_file),
-                                         std::istreambuf_iterator<char>()};
-            auto chunk = diamond_support::parse_json(chunk_text);
-            auto payload = object(chunk, "chunk");
-            const auto stored = string(field(payload, "sha256"), "digest");
-            payload.erase("sha256");
-            if (stored != digest || diamond_support::sha256(diamond_support::canonical_json(
-                                        JsonValue{payload})) != digest)
-                throw std::runtime_error("corrupt replay chunk hash");
-            for (const auto& row : array(field(payload, "samples"), "samples"))
-                impl_->samples.push_back(legacy_sample(row, impl_->compatibility));
-        }
-        const auto persisted_capacity = integer(field(manifest, "capacity"), "capacity");
-        if (persisted_capacity <= 0) throw std::runtime_error("invalid replay capacity");
-        impl_->capacity = static_cast<size_t>(persisted_capacity);
-        impl_->samples.clear();
-        // Rebuild live episodes from the ordered descriptors so a subsequent
-        // sample/ingest cannot rewrite the manifest with empty chunks.
-        for (size_t i = 0; i < chunks.size(); ++i) {
-            const auto& descriptor = object(chunks[i], "chunk descriptor");
-            const auto id = string(field(descriptor, "game_id"), "game id");
-            const auto digest = string(field(descriptor, "sha256"), "digest");
-            std::ifstream chunk_file(
-                stream_path(impl_->namespace_path / "chunks" / (digest + ".json")),
-                std::ios::binary);
-            const std::string text{std::istreambuf_iterator<char>(chunk_file), std::istreambuf_iterator<char>()};
-            auto payload = object(diamond_support::parse_json(text), "chunk");
-            payload.erase("sha256");
-            impl_->chunk_payloads.emplace_back(payload);
-            Episode episode; episode.game_id = id; episode.completed = true; episode.compatibility = compatibility_from_json(field(payload, "compatibility"));
-            for (const auto& row : array(field(payload, "samples"), "samples")) { auto sample = legacy_sample(row, episode.compatibility); episode.samples.push_back(sample); impl_->samples.push_back(std::move(sample)); }
-            impl_->episodes.push_back(std::move(episode));
-        }
-        if (impl_->samples.size() > impl_->capacity) impl_->samples.erase(impl_->samples.begin(), impl_->samples.end() - static_cast<std::ptrdiff_t>(impl_->capacity));
-        if (const auto found = manifest.find("aborted"); found != manifest.end()) impl_->aborted_records = array(found->second, "aborted");
-        if (const auto found = manifest.find("selection_transaction"); found != manifest.end())
-            impl_->selection_transaction = found->second;
-        if (const auto found = manifest.find("ingest_transaction"); found != manifest.end())
-            impl_->ingest_transaction = found->second;
-        impl_->authoritative_compatibility = field(manifest, "compatibility");
-        const auto& rng = object(field(manifest, "rng"), "rng");
-        impl_->rng_algorithm = string(field(rng, "algorithm"), "rng algorithm");
-        if (impl_->rng_algorithm == "python-mt19937") {
-            const auto& state = array(field(rng, "state"), "rng state");
-            const auto& words = array(state.at(1), "mt state");
-            if (words.size() != 625 || state.size() < 2)
-                throw std::runtime_error("invalid CPython MT19937 state");
-            for (size_t i = 0; i < 624; ++i)
-                impl_->mt_state.push_back(uint32_t(integer(words.at(i), "mt word")));
-            impl_->mt_index = size_t(integer(words.at(624), "mt index"));
-            if (state.size() > 2 && !std::holds_alternative<std::nullptr_t>(state.at(2).value))
-                impl_->mt_gauss_next = number(state.at(2), "mt gauss_next");
-        } else
-            impl_->rng_state = std::stoull(string(field(rng, "state"), "rng state"));
-        impl_->cleanup_unreachable_chunks();
+    if (!std::filesystem::exists(impl_->manifest_path)) {
+        if (open_mode == ReplayOpenMode::must_exist)
+            throw std::runtime_error("replay manifest does not exist");
+        impl_->write_manifest();
         return;
     }
-    std::ifstream manifest_file(stream_path(impl_->manifest_path), std::ios::binary);
-    std::string manifest_text((std::istreambuf_iterator<char>(manifest_file)), {});
-    impl_->legacy_manifest = diamond_support::parse_json(manifest_text);
-    const auto& manifest = object(impl_->legacy_manifest, "manifest");
-    if (integer(field(manifest, "schema_version"), "schema") != 1)
+
+    std::ifstream source_manifest(stream_path(impl_->manifest_path), std::ios::binary);
+    const std::string manifest_text{std::istreambuf_iterator<char>(source_manifest),
+                                    std::istreambuf_iterator<char>()};
+    const auto parsed = diamond_support::parse_json(manifest_text);
+    const auto& manifest = object(parsed, "manifest");
+    const auto schema_version = integer(field(manifest, "schema_version"), "schema");
+    if (schema_version != 4 && schema_version != 5)
         throw std::runtime_error("unsupported replay manifest");
+    const auto& chunks = array(field(manifest, "chunks"), "chunks");
+    const auto& ids = array(field(manifest, "game_ids"), "game ids");
+    if (chunks.size() != ids.size())
+        throw std::runtime_error("manifest game_ids do not match ordered chunks");
+    const auto persisted_capacity = integer(field(manifest, "capacity"), "capacity");
+    if (persisted_capacity <= 0)
+        throw std::runtime_error("invalid replay capacity");
+    impl_->capacity = static_cast<size_t>(persisted_capacity);
     impl_->authoritative_compatibility = field(manifest, "compatibility");
-    if (!same_json(field(manifest, "compatibility"), compatibility_json(impl_->compatibility))) throw std::runtime_error("replay manifest compatibility mismatch");
-    const auto& chunks=array(field(manifest,"chunks"),"chunks"); const auto& ids=array(field(manifest,"game_ids"),"game ids"); if(chunks.size()!=ids.size()) throw std::runtime_error("manifest game_ids do not match ordered chunks");
+    if (const auto found = manifest.find("aborted"); found != manifest.end())
+        impl_->aborted_records = array(found->second, "aborted");
+
+    // One pass over the descriptors.  Metadata-only stops here: the manifest
+    // already carries game_id, sample_count and sha256 for every episode, which
+    // is everything except the samples themselves -- so a stage that only needs
+    // the manifest digest or the episode index never touches a chunk file.
+    impl_->episodes.reserve(chunks.size());
+    impl_->chunk_digests.reserve(chunks.size());
+    impl_->chunk_encodings.reserve(chunks.size());
     for (size_t i = 0; i < chunks.size(); ++i) {
-        const auto& chunk = object(chunks[i], "chunk");
-        const auto id = string(field(chunk, "game_id"), "game id");
-        if (id != string(ids[i], "game id")) throw std::runtime_error("manifest game_ids do not match ordered chunks");
-        std::ifstream source(
-            stream_path(impl_->namespace_path / "chunks" / (diamond_support::sha256(id) + ".json")),
-            std::ios::binary);
-        if (!source) throw std::runtime_error("missing replay chunk: " + (impl_->namespace_path / "chunks" / (diamond_support::sha256(id) + ".json")).string());
-        const std::string text{std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>()};
-        auto parsed = diamond_support::parse_json(text);
-        auto payload = object(parsed, "chunk");
-        const auto expected = string(field(payload, "sha256"), "digest");
-        payload.erase("sha256");
-        if (expected != string(field(chunk, "sha256"), "digest") || diamond_support::sha256(diamond_support::canonical_json(JsonValue{payload})) != expected) throw std::runtime_error("corrupt replay chunk hash");
-        impl_->chunk_payloads.emplace_back(payload);
-        Episode episode; episode.game_id = id; episode.completed = true; episode.compatibility = compatibility_from_json(field(payload, "compatibility"));
-        const auto& episode_data = object(field(payload, "episode"), "episode");
-        if (const auto found = episode_data.find("seed"); found != episode_data.end()) episode.seed = uint64_t(integer(found->second, "seed"));
-        if (const auto found = episode_data.find("move_count"); found != episode_data.end()) episode.move_count = uint64_t(integer(found->second, "move count"));
-        if (const auto found = episode_data.find("retry_id"); found != episode_data.end()) episode.retry_id = string(found->second, "retry id");
-        for (const auto& row : array(field(payload, "samples"), "samples")) {
-            auto sample = legacy_sample(row, episode.compatibility);
-            episode.samples.push_back(sample);
-            impl_->samples.push_back(std::move(sample));
-        }
+        const auto& descriptor = object(chunks[i], "chunk descriptor");
+        const auto id = string(field(descriptor, "game_id"), "game id");
+        if (id != string(ids[i], "game id"))
+            throw std::runtime_error("manifest game_ids do not match ordered chunks");
+        const auto digest = string(field(descriptor, "sha256"), "digest");
+        const auto encoding = schema_version == 5 ?
+                                (descriptor.find("encoding") == descriptor.end()
+                                     ? ReplayChunkEncoding::json_v1
+                                     : encoding_from_string(string(descriptor.find("encoding")->second,
+                                                                  "chunk encoding")))
+                                : ReplayChunkEncoding::json_v1;
+        EpisodeRecord episode;
+        episode.game_id = id;
+        episode.completed = true;
+        episode.sample_count =
+            static_cast<size_t>(integer(field(descriptor, "sample_count"), "sample count"));
         impl_->episodes.push_back(std::move(episode));
+        impl_->chunk_digests.push_back(digest);
+        impl_->chunk_encodings.push_back(encoding);
+        if (contents == ReplayContents::metadata_only)
+            continue;
+
+        // Full open: read and verify each chunk exactly once, materialising its
+        // samples straight into the pool.  This used to parse every chunk
+        // twice -- once to count, then again after clearing -- which at a 1M
+        // capacity meant parsing ~2 GB of JSON per store construction, and a
+        // training iteration constructs a store in three separate stages.
+        const auto chunk_name = impl_->chunk_path(digest, encoding);
+        if (encoding == ReplayChunkEncoding::json_v1) {
+            const auto chunk_bytes = read_file_bytes(impl_->namespace_path / "chunks" / chunk_name);
+            const std::string chunk_text(to_string_view(chunk_bytes));
+            auto payload = object(diamond_support::parse_json(chunk_text), "chunk");
+            const auto stored = string(field(payload, "sha256"), "digest");
+            payload.erase("sha256");
+            if (stored != digest ||
+                diamond_support::sha256(diamond_support::canonical_json(JsonValue{payload})) != digest)
+                throw std::runtime_error("corrupt replay chunk hash");
+            const auto chunk_compatibility = compatibility_from_json(field(payload, "compatibility"));
+            const auto samples_start = impl_->samples.size();
+            for (const auto& row : array(field(payload, "samples"), "samples"))
+                impl_->samples.push_back(legacy_sample(row, chunk_compatibility));
+            if (impl_->samples.size() - samples_start != episode.sample_count)
+                throw std::runtime_error("replay chunk sample count mismatch");
+            continue;
+        }
+
+        const auto chunk_bytes = read_file_bytes(impl_->namespace_path / "chunks" / chunk_name);
+        if (diamond_support::sha256(to_string_view(chunk_bytes)) != digest)
+            throw std::runtime_error("corrupt replay chunk hash");
+        const auto chunk = decode_replay_segment(std::span<const std::byte>(chunk_bytes),
+                                                impl_->compatibility);
+        if (chunk.compatibility != impl_->compatibility)
+            throw std::runtime_error("replay chunk compatibility mismatch");
+        if (chunk.samples.size() != episode.sample_count)
+            throw std::runtime_error("replay chunk sample count mismatch");
+        impl_->samples.insert(impl_->samples.end(), chunk.samples.begin(), chunk.samples.end());
     }
-    if (const auto found = manifest.find("aborted"); found != manifest.end()) impl_->aborted_records = array(found->second, "aborted");
-    if(impl_->samples.size()>capacity) impl_->samples.erase(impl_->samples.begin(),impl_->samples.end()-static_cast<std::ptrdiff_t>(capacity)); const auto& state=array(field(manifest,"rng_state"),"rng state"); const auto& words=array(state.at(1),"mt state"); if(integer(state.at(0),"rng version")!=3||words.size()!=625)throw std::runtime_error("invalid CPython MT19937 state"); for(size_t i=0;i<624;++i)impl_->mt_state.push_back(uint32_t(integer(words[i],"mt word"))); impl_->mt_index=size_t(integer(words[624],"mt index")); if(state.size()>2&&!std::holds_alternative<std::nullptr_t>(state.at(2).value)) impl_->mt_gauss_next=number(state.at(2),"mt gauss_next"); impl_->rng_algorithm="python-mt19937";
-    // Legacy stores are migrated transactionally before the object becomes usable.
-    impl_->legacy = false;
-    const auto v2_digest = diamond_support::sha256(diamond_support::canonical_json(impl_->authoritative_compatibility));
-    impl_->namespace_path = original_root / "persistent-replay-v2" / impl_->compatibility.family() / v2_digest;
-    impl_->manifest_path = impl_->namespace_path / "manifest.json";
-    for (size_t i = 0; i < impl_->episodes.size(); ++i) if (impl_->episodes[i].completed) {
-        auto payload = impl_->chunk_payloads[i];
-        const auto digest = diamond_support::sha256(diamond_support::canonical_json(payload));
-        auto stored = payload;
-        std::get<Object>(stored.value)["sha256"] = JsonValue{digest};
-        atomic_write(impl_->namespace_path / "chunks" / (digest + ".json"), diamond_support::canonical_json(stored));
-    }
-    impl_->write_manifest();
+    if (impl_->samples.size() > impl_->capacity)
+        impl_->samples.erase(impl_->samples.begin(),
+                             impl_->samples.end() - static_cast<std::ptrdiff_t>(impl_->capacity));
+    impl_->cleanup_unreachable_chunks();
 }
 ReplayStore::~ReplayStore() = default;
 ReplayStore::ReplayStore(ReplayStore&&) noexcept = default;
@@ -505,7 +502,7 @@ ReplayStore& ReplayStore::operator=(ReplayStore&&) noexcept = default;
 ReplayIngestReport ReplayStore::ingest_iteration(std::span<const Episode> episodes) {
     std::unordered_set<std::string> known; for(const auto& episode:impl_->episodes) known.insert(episode.game_id);
     for (const auto& row : impl_->aborted_records) { const auto& aborted = object(row, "aborted"); if (const auto value = aborted.find("game_id"); value != aborted.end()) known.insert(string(value->second, "aborted game id")); }
-    std::vector<Episode> accepted;
+    std::vector<const Episode*> accepted;
     ReplayIngestReport report;
     for(const Episode& episode:episodes) {
         if(episode.game_id.empty()) throw std::invalid_argument("replay game_id is empty");
@@ -513,9 +510,25 @@ ReplayIngestReport ReplayStore::ingest_iteration(std::span<const Episode> episod
         if (!known.insert(episode.game_id).second) {
             bool identical = false;
             for (size_t i = 0; i < impl_->episodes.size(); ++i) if (impl_->episodes[i].game_id == episode.game_id) {
-                if (impl_->episodes[i].completed != episode.completed) break;
-                if (episode.completed && i < impl_->chunk_payloads.size() && std::holds_alternative<Object>(impl_->chunk_payloads[i].value)) identical = diamond_support::sha256(diamond_support::canonical_json(chunk_body(episode, impl_->compatibility))) == diamond_support::sha256(diamond_support::canonical_json(impl_->chunk_payloads[i]));
-                else identical = !episode.completed && impl_->episodes[i].aborted_reason == episode.aborted_reason && impl_->episodes[i].move_count == episode.move_count && impl_->episodes[i].seed == episode.seed && impl_->episodes[i].retry_id == episode.retry_id;
+                if (impl_->episodes[i].completed != episode.completed)
+                    break;
+                if (episode.completed && i < impl_->chunk_digests.size() &&
+                    !impl_->chunk_digests[i].empty()) {
+                    std::string encoded;
+                    if (impl_->chunk_encoding(i) == ReplayChunkEncoding::binary_v1)
+                        encoded =
+                            diamond_support::sha256(to_string_view(encode_replay_segment(
+                                episode, impl_->compatibility)));
+                    else
+                        encoded = diamond_support::sha256(
+                            diamond_support::canonical_json(chunk_body(episode, impl_->compatibility)));
+                    identical = encoded == impl_->chunk_digests[i];
+                } else
+                    identical = !episode.completed && impl_->episodes[i].aborted_reason ==
+                                       episode.aborted_reason &&
+                               impl_->episodes[i].move_count == episode.move_count &&
+                               impl_->episodes[i].seed == episode.seed &&
+                               impl_->episodes[i].retry_id == episode.retry_id;
                 break;
             }
             if (!episode.completed) for (const auto& row : impl_->aborted_records) {
@@ -529,23 +542,48 @@ ReplayIngestReport ReplayStore::ingest_iteration(std::span<const Episode> episod
                 report.duplicate_samples += episode.samples.size();
             continue;
         }
-        accepted.push_back(episode);
+        accepted.push_back(&episode);
         if (episode.completed)
             report.accepted_samples += episode.samples.size();
     }
-    for(const Episode& episode:accepted) if(episode.completed) { auto body=chunk_body(episode, impl_->compatibility); const auto hash=diamond_support::sha256(diamond_support::canonical_json(body)); std::get<Object>(body.value).emplace("sha256",JsonValue{hash}); atomic_write(impl_->namespace_path/"chunks"/(hash+".json"), diamond_support::canonical_json(std::move(body))); }
+    // Digests are captured here, where each body is serialised once anyway, so
+    // the commit below never has to rebuild a chunk body.  Empty means aborted.
+    std::vector<std::string> accepted_digests(accepted.size());
+    std::vector<ReplayChunkEncoding> accepted_encodings(accepted.size(),
+                                                       ReplayChunkEncoding::json_v1);
+    for (size_t i = 0; i < accepted.size(); ++i) if (accepted[i]->completed) {
+        const auto bytes = encode_replay_segment(*accepted[i], impl_->compatibility);
+        const auto hash = diamond_support::sha256(to_string_view(bytes));
+        accepted_digests[i] = hash;
+        accepted_encodings[i] = ReplayChunkEncoding::binary_v1;
+        atomic_write(impl_->namespace_path / "chunks" / (hash + ".bin"), std::string(to_string_view(bytes)));
+    }
     if (!accepted.empty() && failure_injected("DIAMOND_REPLAY_FAIL_AFTER_CHUNK_ACTIVATE"))
         throw std::runtime_error("injected replay failure after chunk activation");
-    const auto old_episodes = impl_->episodes; const auto old_samples = impl_->samples; const auto old_aborted = impl_->aborted_records; const auto old_chunks = impl_->chunk_payloads;
+    const auto old_episode_count = impl_->episodes.size();
+    const auto old_sample_count = impl_->samples.size();
+    const auto old_aborted_count = impl_->aborted_records.size();
+    const auto old_chunk_count = impl_->chunk_digests.size();
+    const auto old_chunk_encoding_count = impl_->chunk_encodings.size();
     try {
-        for (const auto& episode : accepted) {
-            impl_->episodes.push_back(episode);
+        for (size_t i = 0; i < accepted.size(); ++i) {
+            const auto& episode = *accepted[i];
+            impl_->episodes.push_back(EpisodeRecord{.game_id = episode.game_id,
+                                                    .retry_id = episode.retry_id,
+                                                    .aborted_reason = episode.aborted_reason,
+                                                    .seed = episode.seed,
+                                                    .move_count = episode.move_count,
+                                                    .sample_count = episode.samples.size(),
+                                                    .completed = episode.completed});
+            impl_->chunk_digests.push_back(accepted_digests[i]);
+            impl_->chunk_encodings.push_back(accepted_encodings[i]);
             if (episode.completed) {
-                impl_->samples.insert(impl_->samples.end(), episode.samples.begin(),
-                                      episode.samples.end());
-                impl_->chunk_payloads.emplace_back(chunk_body(episode, impl_->compatibility));
+                // A metadata-only store has no pool to extend; size() reports
+                // from the records instead.
+                if (impl_->contents == ReplayContents::full)
+                    impl_->samples.insert(impl_->samples.end(), episode.samples.begin(),
+                                          episode.samples.end());
             } else {
-                impl_->chunk_payloads.emplace_back(JsonValue{nullptr});
                 impl_->aborted_records.emplace_back(
                     JsonValue{Object{{"game_id", JsonValue{episode.game_id}},
                                      {"aborted_reason", JsonValue{episode.aborted_reason}},
@@ -554,22 +592,24 @@ ReplayIngestReport ReplayStore::ingest_iteration(std::span<const Episode> episod
                                      {"seed", JsonValue{int64_t(episode.seed)}}}});
             }
         }
-    if(impl_->samples.size()>impl_->capacity) impl_->samples.erase(impl_->samples.begin(),impl_->samples.end()-static_cast<std::ptrdiff_t>(impl_->capacity));
-    if (!accepted.empty()) {
-        const auto transaction_id = diamond_support::sha256(diamond_support::canonical_json(
-            JsonValue{Object{{"accepted_games", JsonValue{int64_t(accepted.size())}},
-                             {"duplicate_games", JsonValue{int64_t(report.duplicate_games)}},
-                             {"rng", impl_->rng_json()}}}));
-        impl_->ingest_transaction =
-            JsonValue{Object{{"accepted_games", JsonValue{int64_t(accepted.size())}},
-                             {"accepted_samples", JsonValue{int64_t(report.accepted_samples)}},
-                             {"duplicate_games", JsonValue{int64_t(report.duplicate_games)}},
-                             {"duplicate_samples", JsonValue{int64_t(report.duplicate_samples)}},
-                             {"state", JsonValue{"committed"}},
-                             {"transaction_id", JsonValue{transaction_id}}}};
-        impl_->write_manifest();
+    if (!accepted.empty() && failure_injected("DIAMOND_REPLAY_FAIL_BEFORE_MANIFEST_COMMIT"))
+        throw std::runtime_error("injected replay failure before manifest commit");
+    const auto retained_start = impl_->retained_episode_start();
+    if (!accepted.empty())
+        impl_->write_manifest(retained_start);
+    } catch (...) {
+        impl_->episodes.resize(old_episode_count);
+        impl_->samples.resize(old_sample_count);
+        impl_->aborted_records.resize(old_aborted_count);
+        impl_->chunk_digests.resize(old_chunk_count);
+        impl_->chunk_encodings.resize(old_chunk_encoding_count);
+        throw;
     }
-    } catch (...) { impl_->episodes=old_episodes; impl_->samples=old_samples; impl_->aborted_records=old_aborted; impl_->chunk_payloads=old_chunks; throw; }
+    if (!accepted.empty())
+        impl_->discard_episode_prefix(impl_->retained_episode_start());
+    if(impl_->samples.size()>impl_->capacity) impl_->samples.erase(impl_->samples.begin(),impl_->samples.end()-static_cast<std::ptrdiff_t>(impl_->capacity));
+    if (!accepted.empty())
+        impl_->cleanup_unreachable_chunks();
     report.accepted_games = accepted.size();
     return report;
 }
@@ -577,7 +617,18 @@ size_t ReplayStore::ingest(std::span<const Episode> episodes) {
     return ingest_iteration(episodes).accepted_games;
 }
 size_t ReplayStore::size() const noexcept {
-    return impl_ ? impl_->samples.size() : 0;
+    if (!impl_)
+        return 0;
+    // Metadata-only holds no samples, so the pool size comes from the episode
+    // records the manifest carried -- the same number a full open would report.
+    if (impl_->contents == ReplayContents::metadata_only) {
+        size_t total = 0;
+        for (const auto& episode : impl_->episodes)
+            if (episode.completed)
+                total += episode.sample_count;
+        return std::min(total, impl_->capacity);
+    }
+    return impl_->samples.size();
 }
 std::filesystem::path ReplayStore::manifest_path() const {
     if (!impl_ || !std::filesystem::is_regular_file(impl_->manifest_path))
@@ -592,110 +643,55 @@ std::string ReplayStore::manifest_digest() const {
     const std::string contents((std::istreambuf_iterator<char>(input)), {});
     return diamond_support::sha256(contents);
 }
-std::vector<TrainingSample> ReplayStore::sample(size_t count) {
+uint64_t ReplayStore::replay_seed() const noexcept { return impl_ ? impl_->replay_seed : 0; }
+uint64_t replay_sampling_seed(uint64_t replay_seed, uint64_t iteration, uint64_t training_step) {
+    uint64_t state = replay_seed;
+    state ^= next_splitmix(state) ^ (iteration + 0x2545f4914f6cdd1dULL);
+    state ^= next_splitmix(state) ^ (training_step + 0x9e3779b97f4a7c15ULL);
+    return next_splitmix(state);
+}
+std::vector<TrainingSample> ReplayStore::sample(size_t count, uint64_t seed) const {
+    if (impl_->contents == ReplayContents::metadata_only)
+        throw std::logic_error("replay store was opened metadata-only and holds no samples");
     if (count == 0)
         return {};
     if (count > impl_->samples.size())
         throw std::invalid_argument("replay sample count exceeds available samples");
-    const auto old_rng = impl_->rng_state;
-    const auto old_mt = impl_->mt_state;
-    const auto old_index = impl_->mt_index;
-    const auto old_gauss = impl_->mt_gauss_next;
-    const auto before_rng = impl_->rng_json();
-    bool activated = false;
-    try {
-        std::unordered_map<size_t, size_t> swaps;
-        swaps.reserve(count * 2);
-        std::vector<size_t> selected;
-        selected.reserve(count);
-        for (size_t i = 0; i < count; ++i) {
-            const size_t remaining = impl_->samples.size() - i;
-            const size_t offset = impl_->rng_algorithm == "python-mt19937"
-                                      ? mt_below(impl_->mt_state, impl_->mt_index, remaining)
-                                      : next_splitmix(impl_->rng_state) % remaining;
-            const size_t index = i + offset;
-            const auto selected_it = swaps.find(index);
-            selected.push_back(selected_it == swaps.end() ? index : selected_it->second);
-            const auto replacement_it = swaps.find(i);
-            swaps[index] = replacement_it == swaps.end() ? i : replacement_it->second;
-        }
-        std::vector<TrainingSample> out;
-        out.reserve(count);
-        Array selected_ids;
-        for (const auto index : selected) {
-            out.push_back(impl_->samples[index]);
-            selected_ids.emplace_back(JsonValue{"sample-index:" + std::to_string(index)});
-        }
-        impl_->sampling_stats = {.selection_slots = swaps.size(), .copied_samples = out.size()};
-        const auto after_rng = impl_->rng_json();
-        const auto transaction_id =
-            diamond_support::sha256(diamond_support::canonical_json(JsonValue{
-                Object{{"before_rng", before_rng}, {"selected_ids", JsonValue{selected_ids}}}}));
-        impl_->selection_transaction =
-            JsonValue{Object{{"after_rng", after_rng},
-                             {"before_rng", before_rng},
-                             {"selected_ids", JsonValue{std::move(selected_ids)}},
-                             {"state", JsonValue{"committed"}},
-                             {"transaction_id", JsonValue{transaction_id}}}};
-        impl_->write_manifest();
-        activated = true;
-        if (failure_injected("DIAMOND_REPLAY_FAIL_AFTER_SELECTION_ACTIVATE"))
-            throw std::runtime_error("injected replay selection post-activation failure");
-        return out;
-    } catch (...) {
-        if (!activated) {
-            impl_->rng_state = old_rng;
-            impl_->mt_state = old_mt;
-            impl_->mt_index = old_index;
-            impl_->mt_gauss_next = old_gauss;
-        }
-        throw;
+    // Partial Fisher-Yates over a sparse swap map: `count` draws, no shuffle of
+    // the whole pool and no allocation proportional to it.  The stream is
+    // seeded per call, so this reads memory and copies rows -- nothing else.
+    uint64_t stream = seed;
+    std::unordered_map<size_t, size_t> swaps;
+    swaps.reserve(count * 2);
+    std::vector<size_t> selected;
+    selected.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const size_t remaining = impl_->samples.size() - i;
+        const size_t index = i + next_splitmix(stream) % remaining;
+        const auto selected_it = swaps.find(index);
+        selected.push_back(selected_it == swaps.end() ? index : selected_it->second);
+        const auto replacement_it = swaps.find(i);
+        swaps[index] = replacement_it == swaps.end() ? i : replacement_it->second;
     }
+    std::vector<TrainingSample> out;
+    out.reserve(count);
+    for (const auto index : selected)
+        out.push_back(impl_->samples[index]);
+    impl_->sampling_stats = {.selection_slots = swaps.size(), .copied_samples = out.size()};
+    return out;
 }
 ReplaySamplingStats ReplayStore::last_sampling_stats() const noexcept {
     return impl_ ? impl_->sampling_stats : ReplaySamplingStats{};
 }
 void ReplayStore::prune() {
-    size_t total = 0, first = 0;
-    for (size_t i = impl_->episodes.size(); i-- > 0;) {
-        if (impl_->episodes[i].completed) total += impl_->episodes[i].samples.size();
-        first = i;
-        if (total >= impl_->capacity) break;
-    }
+    const auto first = impl_->retained_episode_start();
     if (first == 0) return;
-    const auto old_episodes=impl_->episodes; const auto old_samples=impl_->samples; const auto old_chunks=impl_->chunk_payloads; const auto old_aborted=impl_->aborted_records;
-    try {
-        impl_->episodes.erase(impl_->episodes.begin(), impl_->episodes.begin()+static_cast<std::ptrdiff_t>(first));
-        if (impl_->chunk_payloads.size() >= first) impl_->chunk_payloads.erase(impl_->chunk_payloads.begin(), impl_->chunk_payloads.begin()+static_cast<std::ptrdiff_t>(first));
-        if (impl_->samples.size()>impl_->capacity) impl_->samples.erase(impl_->samples.begin(),impl_->samples.end()-static_cast<std::ptrdiff_t>(impl_->capacity));
-        impl_->write_manifest();
-    } catch (...) { impl_->episodes=old_episodes; impl_->samples=old_samples; impl_->chunk_payloads=old_chunks; impl_->aborted_records=old_aborted; throw; }
+    impl_->write_manifest(first);
+    impl_->discard_episode_prefix(first);
+    if (impl_->samples.size() > impl_->capacity)
+        impl_->samples.erase(impl_->samples.begin(),
+                             impl_->samples.end() -
+                                 static_cast<std::ptrdiff_t>(impl_->capacity));
     impl_->cleanup_unreachable_chunks();
 }
-void ReplayStore::restore_manifest(const std::filesystem::path& snapshot) {
-    std::ifstream file(stream_path(snapshot), std::ios::binary);
-    if (!file)
-        throw std::runtime_error("cannot read replay manifest snapshot");
-    const std::string value((std::istreambuf_iterator<char>(file)),{}); const auto parsed=diamond_support::parse_json(value); const auto& manifest=object(parsed,"manifest");
-    if (integer(field(manifest,"schema_version"),"schema") != 1) throw std::runtime_error("unsupported replay restore snapshot");
-    // Reopen through the normal v1 loader in an isolated scratch namespace.  It
-    // validates every descriptor/chunk and rebuilds episodes, samples, aborted
-    // records, and RNG state before touching the live store.
-    static std::atomic_uint64_t restore_sequence{0};
-    const auto temp = std::filesystem::temp_directory_path() / ("alphadiamond-replay-restore-" + std::to_string(++restore_sequence));
-    const auto legacy_dir = temp / "persistent-replay-v1" / "Soo" / snapshot.parent_path().filename();
-    std::filesystem::create_directories(legacy_dir / "chunks");
-    atomic_write(legacy_dir / "manifest.json", value);
-    const auto source_chunks = snapshot.parent_path() / "chunks";
-    if (std::filesystem::exists(source_chunks)) std::filesystem::copy(source_chunks, legacy_dir / "chunks", std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-    ReplayStore reopened(temp, impl_->compatibility, impl_->capacity, impl_->rng_state);
-    const auto root = impl_->namespace_path.parent_path().parent_path().parent_path();
-    const auto digest = diamond_support::sha256(diamond_support::canonical_json(reopened.impl_->authoritative_compatibility));
-    reopened.impl_->namespace_path = root / "persistent-replay-v2" / reopened.impl_->compatibility.family() / digest;
-    reopened.impl_->manifest_path = reopened.impl_->namespace_path / "manifest.json";
-    reopened.impl_->write_manifest();
-    impl_ = std::move(reopened.impl_);
-    std::error_code ignored; std::filesystem::remove_all(temp, ignored);
-}
-
 }  // namespace diamond_pipeline

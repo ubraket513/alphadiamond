@@ -124,6 +124,11 @@ int main(int argc, char** argv) {
     NativeController stale_controller;
     stale_controller.startMatch(QVariantList{1, 2}, QVariantList{});
     stale_controller.startMatch(QVariantList{1, 2, 3}, QVariantList{});
+#ifdef DIAMOND_QT_HAS_SOO
+    if (!require(stale_controller.analysisAvailable(),
+                 "Min matches must offer neural analysis")) return 1;
+#endif
+    stale_controller.shutdown();
     QElapsedTimer stale_grace;
     stale_grace.start();
     while (stale_grace.elapsed() < 1000) {
@@ -131,7 +136,6 @@ int main(int argc, char** argv) {
         QThread::msleep(5);
     }
     if (!require(stale_controller.playerCount() == 3 &&
-                 !stale_controller.analysisAvailable() &&
                  stale_controller.latestSearchCompute().isEmpty() &&
                  stale_controller.positionTelemetry().isEmpty() &&
                  !stale_controller.hasProposal(),

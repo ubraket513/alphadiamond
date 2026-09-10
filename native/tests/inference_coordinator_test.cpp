@@ -315,6 +315,39 @@ void test_cuda_batches(const diamond_training::ResolvedDevice& device) {
         }
     }
 }
+
+void test_cuda_precision_parity(const diamond_training::ResolvedDevice& device) {
+    torch::manual_seed(9127);
+    auto source = diamond_model::DiamondModel(8, 1, 6, 3);
+    diamond_pipeline::ModelPool fp32(1, device, diamond_pipeline::InferencePrecision::fp32);
+    const auto fp32_key = fp32.install(min_compatibility(), source);
+    fp32.activate(fp32_key);
+
+    BatchFixture reference(64, 6, 3);
+    fp32.evaluate(reference.items);
+
+    for (const auto precision : {diamond_pipeline::InferencePrecision::fp16,
+                                 diamond_pipeline::InferencePrecision::bf16}) {
+        diamond_pipeline::ModelPool reduced(1, device, precision);
+        const auto key = reduced.install(min_compatibility(), source);
+        reduced.activate(key);
+        BatchFixture candidate(64, 6, 3);
+        reduced.evaluate(candidate.items);
+
+        for (std::size_t row = 0; row < candidate.outcomes.size(); ++row) {
+            check_distribution(candidate.outcomes[row], candidate.actions[row].size());
+            CHECK_EQ(candidate.outcomes[row].priors.size(), reference.outcomes[row].priors.size());
+            for (std::size_t column = 0; column < candidate.outcomes[row].priors.size(); ++column) {
+                CHECK(std::abs(candidate.outcomes[row].priors[column] -
+                               reference.outcomes[row].priors[column]) < 0.02);
+            }
+            for (std::size_t value = 0; value < 3; ++value) {
+                CHECK(std::abs(candidate.outcomes[row].values[value] -
+                               reference.outcomes[row].values[value]) < 0.05);
+            }
+        }
+    }
+}
 #endif
 
 } // namespace
@@ -328,6 +361,7 @@ int main(int argc, char** argv) {
     if (run_cuda) {
 #ifdef DIAMOND_TEST_WITH_CUDA
         test_cuda_batches(diamond_training::resolve_device("cuda"));
+        test_cuda_precision_parity(diamond_training::resolve_device("cuda"));
         return soo_test::report("inference_coordinator_test_cuda");
 #else
         REQUIRE(false, "CUDA inference coverage was not compiled for this build");

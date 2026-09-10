@@ -8,9 +8,10 @@ computer, records the moves the human players make, asks the agent for its
 seat's move, and physically plays that move on the real board before
 confirming it.
 
-The primary Windows application is a native Qt 6 executable. Two-player human
-play uses the exported Soo AlphaZero model through LibTorch and the existing
-native C++ MCTS; training, checkpointing, and model release are native C++ as well.
+The primary Windows application is a native Qt 6 executable. Two-player games
+use Soo; three-player games use Min. Both run exported AlphaZero models through
+LibTorch and native C++ MCTS. Training, checkpointing, and model release are
+native C++ as well.
 
 ---
 
@@ -642,7 +643,7 @@ For the primary Windows GUI:
 * Windows 10/11 x64
 * Visual Studio C++ build tools
 * CMake/Ninja, Qt 6 (Core, Gui, Qml, Quick, QuickControls2, Multimedia)
-* CPU LibTorch for the Soo-enabled build
+* CPU LibTorch for the model-enabled build (`DIAMOND_BUILD_QT_SOO`)
 
 The validated Windows development environment is the mamba environment at
 `C:\ProgramData\miniforge3\envs\alphadiamond`; it supplies CMake, Qt, and
@@ -668,6 +669,20 @@ tools/run_native_qt.sh --soo --simulations 2048
 
 The window opens at 1440 × 900 and stays usable down to 980 × 640; the board
 rescales with the window.
+
+Open **Models** to refresh the GitHub/Hugging Face catalog, download an artifact,
+and select it for the next game. Soo and Min selections are remembered separately.
+Downloads are staged, checked against both catalog identities and the artifact's
+runtime hashes, then installed atomically. Saved games require their original
+model to remain installed.
+
+For a local Min test export, copy its complete directory to
+`models/min/<version>/` beside the executable, or under the local storage path
+shown in Models. Refresh, select Min, and start a three-player game. A local test
+artifact does not need a published catalog entry or a rating. Min charts show the
+moving player's placement utility (first +1, second 0, third −1), not a win
+probability. The existing `--soo` launcher option selects the LibTorch-enabled
+package and also supports Min when a Min artifact is installed.
 
 The native executable can also be launched directly from
 `dist\diamond-qt-soo\diamond_qt.exe`. The deployment script verifies its DLL,
@@ -810,9 +825,8 @@ Undo works normally after a load.
 
 ## Current limitations
 
-* The release AI path is two-player human-vs-Soo. Three-player native rules and
-  controller play work, but native Min/MCTS3P model search is not part of this
-  migration gate.
+* The bundled release default is Soo. Three-player Min search requires a separate
+  compatible Min artifact; an unavailable model produces an explicit error.
 * At most **one** seat can be driven by an agent; there is no agent-vs-agent mode.
 * A player with no legal move is reported as an error rather than being passed
   over, since the position cannot arise in normal play.
@@ -820,9 +834,8 @@ Undo works normally after a load.
   stop in camps that belong to other players.
 * Save files always describe a match played from the standard opening; a
   session started from a set-up position cannot be saved and reloaded as such.
-* No analysis features (policy heatmaps, candidate distributions, evaluation
-  graphs). The AI panel shows actual agent, legal-move, simulation, and search
-  timing metadata only.
+* Analysis reports network/search values, move preferences, and search timing.
+  These diagnostics do not establish a calibrated playing-strength rating.
 * Undo has no redo.
 
 ---

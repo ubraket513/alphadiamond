@@ -49,15 +49,11 @@ class EpisodeSearch {
     }
 
     void set_simulations(int simulations) {
-        if (two_) {
+        if (two_)
             two_->set_simulations(simulations);
-            return;
-        }
-        // SearchSession3P takes its budget at construction; changing it between
-        // moves is the adaptive-search knob, which Min does not use yet.
-        if (simulations != simulations_) {
-            throw std::invalid_argument("adaptive simulations are not implemented for 3P");
-        }
+        else
+            three_->set_simulations(simulations);
+        simulations_ = simulations;
     }
 
     void begin(const State& state, double temperature) {

@@ -4,16 +4,21 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <chrono>
 #include <exception>
 #include <condition_variable>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <unordered_map>
 
 #include "soo/batcher.hpp"
 #include "soo/encoder.hpp"
 #include "soo/evaluator.hpp"
+#include "soo/prior.hpp"
 #include "soo/rules.hpp"
 
 namespace soo {
@@ -155,6 +160,47 @@ void DummyBatchEvaluator::evaluate(std::vector<BatchItem>& batch) {
     if (latency_ms_ > 0.0) {
         std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(latency_ms_));
     }
+}
+
+std::vector<double> blend_legal_priors(const std::vector<double>& vacancy,
+                                       const std::vector<double>& network, double weight) {
+    if (!std::isfinite(weight) || weight < 0.0 || weight > 1.0)
+        throw std::invalid_argument("bootstrap prior weight must be finite and in [0, 1]");
+    if (vacancy.empty() || vacancy.size() != network.size())
+        throw std::invalid_argument("prior vectors must have the same positive legal-action width");
+
+    const auto normalized = [](const std::vector<double>& values, const char* name) {
+        double sum = 0.0;
+        for (const double value : values) {
+            if (!std::isfinite(value) || value < 0.0)
+                throw std::invalid_argument(std::string(name) +
+                                            " prior must contain finite non-negative values");
+            sum += value;
+        }
+        if (!std::isfinite(sum) || sum <= 0.0)
+            throw std::invalid_argument(std::string(name) +
+                                        " prior must have positive finite mass");
+        std::vector<double> result;
+        result.reserve(values.size());
+        for (const double value : values)
+            result.push_back(value / sum);
+        return result;
+    };
+
+    const auto vacancy_normalized = normalized(vacancy, "vacancy");
+    const auto network_normalized = normalized(network, "network");
+    std::vector<double> mixed(vacancy.size());
+    double mixed_sum = 0.0;
+    for (std::size_t index = 0; index < mixed.size(); ++index) {
+        mixed[index] =
+            weight * vacancy_normalized[index] + (1.0 - weight) * network_normalized[index];
+        mixed_sum += mixed[index];
+    }
+    if (!std::isfinite(mixed_sum) || mixed_sum <= 0.0)
+        throw std::invalid_argument("blended prior must have positive finite mass");
+    for (double& value : mixed)
+        value /= mixed_sum;
+    return mixed;
 }
 
 SchedulerMetrics run_scheduler(const Match& match, const State& opening,
@@ -404,8 +450,44 @@ struct EpisodeLane {
     std::optional<Clock::time_point> deadline;
     bool done = false;
     EvalOutcome outcome;
+    // Filled on the search worker when the bootstrap phase is configured, and
+    // supplied in place of the network's priors once the batch comes back.  It
+    // is computed here rather than on the evaluator thread because that thread
+    // is the serial resource: the vacancy prior is ~7.5 us per evaluation, and
+    // a batch of 32 of them on the critical path is 240 us the workers could
+    // have absorbed in parallel.
+    std::vector<double> bootstrap_priors;
     // Which job this lane is currently playing.  A lane outlives its game.
     size_t job_index = 0;
+    // Unconditional position history, kept for diagnosis whether or not the
+    // repetition trigger is configured: how often each position recurred over
+    // the whole game, and the tail of the game so a short cycle is visible.
+    std::unordered_map<uint64_t, uint32_t> key_counts;
+    std::deque<uint64_t> key_tail;
+    // Occupancy of every target camp, and the ply it last changed, so a
+    // retained block can be told from a transient one.
+    std::array<std::array<uint8_t, kCampSize>, kMaxPlayers> camp_snapshot{};
+    std::array<uint32_t, kMaxPlayers> camp_changed_ply{};
+
+    // Counted before the push, over the previous 8 entries: a position is a
+    // short-cycle repeat if it already occurred within that reach.
+    uint32_t observations = 0;
+    uint32_t repeat_within_8 = 0;
+
+    void observe(uint64_t key, uint32_t window) {
+        ++observations;
+        std::size_t back = 0;
+        for (auto it = key_tail.rbegin(); it != key_tail.rend() && back < 8; ++it, ++back) {
+            if (*it == key) {
+                ++repeat_within_8;
+                break;
+            }
+        }
+        ++key_counts[key];
+        key_tail.push_back(key);
+        while (key_tail.size() > window) key_tail.pop_front();
+    }
+
     // Dynamics keys of the recent plies, newest last, for the repetition
     // trigger.  Bounded by repeat_window, so this is a handful of integers.
     std::deque<uint64_t> recent;
@@ -428,6 +510,11 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     if (jobs.empty()) return {};
     if (config.threads < 1) throw std::invalid_argument("threads must be positive");
     if (config.max_batch < 1) throw std::invalid_argument("max_batch must be positive");
+    if (config.repetition_temperature < 0.0)
+        throw std::invalid_argument("repetition_temperature must not be negative");
+    if (!std::isfinite(config.bootstrap_prior_weight) || config.bootstrap_prior_weight < 0.0 ||
+        config.bootstrap_prior_weight > 1.0)
+        throw std::invalid_argument("bootstrap_prior_weight must be finite and in [0, 1]");
 
     MCTSConfig search_config;
     search_config.simulations = config.simulations;
@@ -485,7 +572,21 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 continue;
             }
             lane.recent.clear();
+            lane.key_counts.clear();
+            lane.key_tail.clear();
+            lane.observations = 0;
+            lane.repeat_within_8 = 0;
+            lane.camp_changed_ply.fill(0);
+            {
+                const Topology& topo = topology();
+                for (uint8_t s = 0; s < match.count; ++s) {
+                    const auto& cells = topo.camp_positions[match.players[s].target_camp];
+                    for (int c = 0; c < kCampSize; ++c)
+                        lane.camp_snapshot[s][c] = lane.state.occupancy[cells[c]];
+                }
+            }
             const uint64_t key = dynamics_key(lane.state);
+            lane.observe(key, 64);
             lane.session.reseed(lane.game_seed);
             lane.session.set_simulations(simulations_for(lane, key, 0));
             if (config.repeat_window > 0) {
@@ -512,6 +613,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
     // How often the boosted search budget fired.  Reported rather than
     // inferred: the trigger only earns its complexity if this stays small.
     std::atomic<uint64_t> boosted{0};
+    std::atomic<uint64_t> repetition_moves{0};
 
     std::exception_ptr failure;
     std::mutex failure_mutex;
@@ -579,9 +681,17 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 if (status == EpisodeSearch::Status::NeedsEvaluation) {
                     BatchItem item{&lane.session.pending_state(),
                                    &lane.session.pending_features(),
-                                   &lane.session.pending_actions(), 0, &lane.outcome,
-                                   lane.session.value_width()};
+                                   &lane.session.pending_actions(),
+                                   0,
+                                   &lane.outcome,
+                                   lane.session.value_width(),
+                                   static_cast<int>(lane.job_index)};
                     batch_evaluator.prepare(item);
+                    if (config.bootstrap_prior) {
+                        vacancy_prior(lane.session.pending_actions(),
+                                      canonical_self_occupancy(lane.session.pending_state(), match),
+                                      lane.bootstrap_priors);
+                    }
                     busy[static_cast<size_t>(w)] += seconds_since(work_start);
                     batcher.submit(lane_id);
                     continue;
@@ -604,11 +714,72 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                     lane.state, match,
                     to_physical_action(move.selected_action, match, lane.state.current_player));
                 ++lane.move_count;
+                lane.observe(dynamics_key(lane.state), 64);
+                {
+                    const Topology& topo = topology();
+                    for (uint8_t s = 0; s < match.count; ++s) {
+                        const auto& cells = topo.camp_positions[match.players[s].target_camp];
+                        for (int c = 0; c < kCampSize; ++c) {
+                            const uint8_t held = lane.state.occupancy[cells[c]];
+                            if (held != lane.camp_snapshot[s][c]) {
+                                lane.camp_snapshot[s][c] = held;
+                                lane.camp_changed_ply[s] = static_cast<uint32_t>(lane.move_count);
+                            }
+                        }
+                    }
+                }
 
                 const bool finished = lane.state.status == kFinished;
                 const bool out_of_moves = lane.move_count >= config.max_moves;
                 if (finished || out_of_moves) {
                     episode.move_count = lane.move_count;
+                    {
+                        // See Episode::diagnostics. Blocker mobility is the
+                        // point: a blocker with no legal move is stuck, one
+                        // with legal moves that stays put is being retained.
+                        auto& diag = episode.diagnostics;
+                        diag.current_player = lane.state.current_player;
+                        diag.occupancy.assign(lane.state.occupancy.begin(),
+                                              lane.state.occupancy.end());
+                        diag.unique_positions = static_cast<uint32_t>(lane.key_counts.size());
+                        diag.observations = lane.observations;
+                        diag.repeat_within_8 = lane.repeat_within_8;
+                        for (const auto& [ignored, count] : lane.key_counts) {
+                            (void)ignored;
+                            diag.max_revisits = std::max(diag.max_revisits, count);
+                        }
+                        diag.recent_keys.assign(lane.key_tail.begin(), lane.key_tail.end());
+                        const Topology& topo = topology();
+                        std::array<uint8_t, kBoardSize> destinations{};
+                        std::array<uint8_t, kBoardSize> kinds{};
+                        for (uint8_t s = 0; s < match.count; ++s) {
+                            const auto& spec = match.players[s];
+                            const auto& cells = topo.camp_positions[spec.target_camp];
+                            CampDiagnostics camp;
+                            camp.player_id = spec.id;
+                            camp.target_camp = spec.target_camp;
+                            camp.plies_since_camp_changed = static_cast<uint32_t>(lane.move_count) -
+                                                            lane.camp_changed_ply[s];
+                            for (int c = 0; c < kCampSize; ++c) {
+                                const uint8_t cell = cells[c];
+                                const uint8_t held = lane.state.occupancy[cell];
+                                if (held == 0) {
+                                    ++camp.empty_in_target;
+                                } else if (held == spec.id) {
+                                    ++camp.own_in_target;
+                                } else {
+                                    ++camp.foreign_in_target;
+                                    camp.blocker_cells.push_back(cell);
+                                    camp.blocker_owners.push_back(held);
+                                    const int count = moves_from(lane.state, cell,
+                                                                 destinations.data(), kinds.data());
+                                    camp.blocker_legal_moves.push_back(
+                                        static_cast<uint16_t>(count));
+                                }
+                            }
+                            diag.camps.push_back(std::move(camp));
+                        }
+                    }
                     if (finished) {
                         episode.completed = true;
                         episode.finish_order.assign(
@@ -631,6 +802,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 }
 
                 const uint64_t key = dynamics_key(lane.state);
+                const bool repeated = config.repeat_window > 0 && lane.seen_recently(key);
                 const int budget = simulations_for(lane, key, lane.move_count);
                 if (budget > config.simulations) {
                     boosted.fetch_add(1, std::memory_order_relaxed);
@@ -640,7 +812,12 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 }
                 lane.session.reseed(lane.game_seed + static_cast<uint64_t>(lane.move_count));
                 lane.session.set_simulations(budget);
-                lane.session.begin(lane.state, temperature_for(lane.move_count));
+                const double temperature = repeated && config.repetition_temperature > 0.0
+                                               ? config.repetition_temperature
+                                               : temperature_for(lane.move_count);
+                if (repeated && config.repetition_temperature > 0.0)
+                    repetition_moves.fetch_add(1, std::memory_order_relaxed);
+                lane.session.begin(lane.state, temperature);
                 busy[static_cast<size_t>(w)] += seconds_since(work_start);
                 ready.push(lane_id);
             }
@@ -659,10 +836,10 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
             items.reserve(batch.size());
             for (const int lane_id : batch) {
                 EpisodeLane& lane = *lanes[static_cast<size_t>(lane_id)];
-                items.push_back(BatchItem{&lane.session.pending_state(),
-                                          &lane.session.pending_features(),
-                                          &lane.session.pending_actions(), 0, &lane.outcome,
-                                          lane.session.value_width()});
+                items.push_back(
+                    BatchItem{&lane.session.pending_state(), &lane.session.pending_features(),
+                              &lane.session.pending_actions(), 0, &lane.outcome,
+                              lane.session.value_width(), static_cast<int>(lane.job_index)});
             }
             const auto eval_start = Clock::now();
             batch_evaluator.evaluate(items);
@@ -679,7 +856,13 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
                 const double* values = lane.session.value_width() == 1
                                            ? &lane.outcome.value
                                            : lane.outcome.values.data();
-                lane.session.supply(lane.outcome.priors, values);
+                if (config.bootstrap_prior) {
+                    lane.bootstrap_priors = blend_legal_priors(
+                        lane.bootstrap_priors, lane.outcome.priors, config.bootstrap_prior_weight);
+                    lane.session.supply(lane.bootstrap_priors, values);
+                } else {
+                    lane.session.supply(lane.outcome.priors, values);
+                }
             }
             ready.push_many(batch);
         }
@@ -702,6 +885,7 @@ std::vector<Episode> run_episodes(const Match& match, const std::vector<EpisodeJ
         metrics.moves += static_cast<uint64_t>(episode.move_count);
     }
     metrics.boosted_moves = boosted.load();
+    metrics.repetition_moves = repetition_moves.load();
     return episodes;
 }
 

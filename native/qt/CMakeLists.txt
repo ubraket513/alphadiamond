@@ -131,6 +131,18 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+    if(DIAMOND_BUILD_QT_SOO)
+        add_executable(diamond_qt_min_runtime_test tests/min_runtime_test.cpp)
+        target_link_libraries(diamond_qt_min_runtime_test PRIVATE diamond_qt_backend)
+        target_compile_definitions(diamond_qt_min_runtime_test PRIVATE QT_NO_KEYWORDS)
+        set(DIAMOND_QT_MIN_TEST_ARTIFACT "" CACHE PATH "Min deployment artifact for Qt inference test")
+        if(DIAMOND_QT_MIN_TEST_ARTIFACT)
+            add_test(NAME diamond_qt_min_runtime_test COMMAND diamond_qt_min_runtime_test
+                "${DIAMOND_QT_MIN_TEST_ARTIFACT}")
+            set_tests_properties(diamond_qt_min_runtime_test PROPERTIES
+                ENVIRONMENT "DIAMOND_TORCH_THREADS=2")
+        endif()
+    endif()
     add_executable(diamond_qt_controller_contract
         tests/controller_contract.cpp
     )

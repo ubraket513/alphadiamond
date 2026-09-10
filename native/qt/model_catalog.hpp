@@ -51,7 +51,7 @@ class ModelCatalog final : public QObject {
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void selectModel(const QString& modelId);
     Q_INVOKABLE void downloadModel(const QString& modelId);
-    bool activateSelected(); // Commits pending selection at new-game boundary.
+    bool activateSelected(const QString& family = {}); // Commits selection for this game's family.
   Q_SIGNALS:
     void changed();
 

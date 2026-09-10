@@ -49,6 +49,17 @@ struct MCTSConfig final {
     double dirichlet_epsilon = 0.25;
     uint64_t seed = 0;
 
+    // Adaptive search budget for the repetition attractor. The aborted tail is a
+    // short-cycle shuffle rather than slow progress -- median 31.6 % unique
+    // positions, one position revisited 61 times, 68.4 % of moves returning
+    // within 8 ply -- so the budget is spent where a game has demonstrably
+    // looped. `simulations_late` applies instead of `simulations` when the
+    // current position already occurred within `repeat_window` plies of the
+    // game; both zero disables the trigger and every move uses `simulations`.
+    // See docs/model-training/soo_scratch_training.md sections 6.2 and 6.6.
+    int64_t simulations_late = 0;
+    int64_t repeat_window = 0;
+
     void validate() const;
     diamond_support::JsonValue to_json() const;
     static MCTSConfig from_json(const diamond_support::JsonValue& value);
@@ -61,6 +72,7 @@ struct SelfPlayConfig final {
     double temperature = 1.0;
     uint64_t seed = 0;
     std::string bootstrap_prior = std::string(kBootstrapPriorNone);
+    double bootstrap_prior_weight = 1.0;
     std::optional<double> max_game_seconds;
 
     void validate() const;
@@ -72,7 +84,9 @@ struct SelfPlayConfig final {
 struct WorkerConfig final {
     int64_t logical_lanes = 1;
     int64_t search_threads = 1;
-    int64_t games_per_iteration = 1;
+    // Two, not one: games must exceed lanes or the job queue never engages, and
+    // a default configuration has to be a valid one.
+    int64_t games_per_iteration = 2;
     std::string retry_id = "attempt-0";
 
     void validate() const;
@@ -109,6 +123,7 @@ struct TrainingConfig final {
     double learning_rate = 1e-3;
     double weight_decay = 1e-4;
     uint64_t seed = 0;
+    std::string policy_loss_domain = "full";
 
     void validate() const;
     diamond_support::JsonValue to_json() const;
@@ -128,6 +143,7 @@ struct RunBudgetConfig final {
 };
 
 struct ArenaConfig final {
+    bool enabled = true;
     int64_t games = 36;
     uint64_t seed = 0;
     int64_t max_moves = 2000;
@@ -189,4 +205,4 @@ struct ProductionConfig final {
     bool operator==(const ProductionConfig&) const = default;
 };
 
-}  // namespace diamond_orchestration
+} // namespace diamond_orchestration

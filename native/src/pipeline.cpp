@@ -24,9 +24,9 @@ TrainingSample sample_from_move(const soo::EpisodeMove& move, const soo::Episode
     if (visits == 0 || move.root_actions.size() != move.visit_counts.size())
         throw PipelineError("self-play emitted an invalid sparse visit policy");
     for (std::size_t i = 0; i < move.root_actions.size(); ++i) {
-        if (move.visit_counts[i] != 0)
-            sample.sparse_policy.emplace_back(move.root_actions[i],
-                static_cast<float>(static_cast<double>(move.visit_counts[i]) / visits));
+        sample.sparse_policy.emplace_back(
+            move.root_actions[i],
+            static_cast<float>(static_cast<double>(move.visit_counts[i]) / visits));
     }
     if (compatibility.player_count == 2) {
         if (episode.finish_order.empty() || sample.canonical_player_ids.empty())
@@ -229,6 +229,20 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
     soo::EpisodeMetrics metrics;
     const auto episodes =
         soo::run_episodes(request.match, request.jobs, request.selfplay, models, metrics);
+    std::vector<soo::VisitTargetObservation> all_targets;
+    std::vector<soo::VisitTargetObservation> completed_targets;
+    std::vector<soo::VisitTargetObservation> aborted_targets;
+    for (const auto& episode : episodes) {
+        auto& bucket = episode.completed ? completed_targets : aborted_targets;
+        for (const auto& move : episode.moves) {
+            const auto row = soo::inspect_visit_target(move.visit_counts);
+            all_targets.push_back(row);
+            bucket.push_back(row);
+        }
+    }
+    result.metrics.all_targets = soo::summarize_visit_targets(all_targets);
+    result.metrics.completed_targets = soo::summarize_visit_targets(completed_targets);
+    result.metrics.aborted_targets = soo::summarize_visit_targets(aborted_targets);
     result.episodes.reserve(episodes.size());
     for (std::size_t index = 0; index < episodes.size(); ++index) {
         if (stop.stop_requested())
@@ -254,7 +268,75 @@ SelfPlayResult run_self_play(const IterationRequest& request, ModelPool& models,
                 record.samples.push_back(sample_from_move(move, episode, request.compatibility));
             result.new_samples += record.samples.size();
         }
+        if (!episode.completed) {
+            AbortedGameDiagnostics aborted;
+            aborted.game_id = record.game_id;
+            aborted.seed = record.seed;
+            aborted.move_count = record.move_count;
+            aborted.abort_reason = record.aborted_reason;
+            aborted.state = episode.diagnostics;
+            result.aborted_diagnostics.push_back(std::move(aborted));
+        }
         result.episodes.push_back(std::move(record));
+    }
+
+    {
+        std::vector<uint64_t> completed_moves;
+        completed_moves.reserve(result.completed_games);
+        for (const auto& record : result.episodes)
+            if (record.completed) completed_moves.push_back(record.move_count);
+        if (!completed_moves.empty()) {
+            std::sort(completed_moves.begin(), completed_moves.end());
+            const auto quantile = [&completed_moves](double q) {
+                const auto last = static_cast<double>(completed_moves.size() - 1);
+                return completed_moves[static_cast<std::size_t>(q * last)];
+            };
+            result.metrics.completed_moves_p50 = quantile(0.50);
+            result.metrics.completed_moves_p90 = quantile(0.90);
+            result.metrics.completed_moves_p99 = quantile(0.99);
+            result.metrics.completed_moves_max = completed_moves.back();
+        }
+    }
+
+    for (std::size_t index = 0; index < episodes.size(); ++index) {
+        uint64_t blocked_cells = 0;
+        for (const auto& camp : episodes[index].diagnostics.camps)
+            blocked_cells += camp.foreign_in_target;
+        if (blocked_cells == 0) continue;
+        if (episodes[index].completed) {
+            ++result.metrics.completed_with_blocked_camp;
+        } else {
+            ++result.metrics.aborted_with_blocked_camp;
+            result.metrics.aborted_blocked_cells_total += blocked_cells;
+        }
+    }
+
+    result.metrics.evaluations = metrics.evaluations;
+    result.metrics.batches = metrics.batches;
+    result.metrics.moves = metrics.moves;
+    result.metrics.boosted_moves = metrics.boosted_moves;
+    if (metrics.moves > 0) {
+        result.metrics.boosted_fraction =
+            static_cast<double>(metrics.boosted_moves) / static_cast<double>(metrics.moves);
+    }
+    result.metrics.wall_seconds = metrics.wall_seconds;
+    result.metrics.evaluator_seconds = metrics.evaluator_seconds;
+    result.metrics.worker_busy_seconds = metrics.worker_busy_seconds;
+    if (metrics.wall_seconds > 0.0)
+        result.metrics.evaluator_busy_fraction = metrics.evaluator_seconds / metrics.wall_seconds;
+    if (!metrics.batch_sizes.empty()) {
+        auto sizes = metrics.batch_sizes;
+        std::sort(sizes.begin(), sizes.end());
+        double total = 0.0;
+        for (const uint32_t size : sizes) total += size;
+        result.metrics.batch_mean = total / static_cast<double>(sizes.size());
+        const auto quantile = [&sizes](double q) {
+            const auto last = static_cast<double>(sizes.size() - 1);
+            return sizes[static_cast<std::size_t>(q * last)];
+        };
+        result.metrics.batch_p50 = quantile(0.50);
+        result.metrics.batch_p90 = quantile(0.90);
+        result.metrics.batch_max = sizes.back();
     }
     return result;
 }
@@ -281,9 +363,21 @@ TrainingResult train_replay(const IterationRequest& request, ReplayStore& replay
                             std::to_string(request.training_batch_size) + ", available " +
                             std::to_string(result.replay_size));
     }
+    // Sampling is stateless: the seed is a pure function of the replay seed,
+    // the iteration and the local step, so a TRAIN stage killed part-way and
+    // re-run from step 0 draws exactly the same minibatch sequence, and the
+    // replay store is never written during training.
     for (std::size_t step = 0; step < request.training_steps; ++step) {
         if (stop.stop_requested()) throw CancelledError("native pipeline cancelled during training");
-        auto samples = replay.sample(request.training_batch_size);
+        const auto drawn = std::chrono::steady_clock::now();
+        auto samples = replay.sample(
+            request.training_batch_size,
+            replay_sampling_seed(replay.replay_seed(), request.iteration, step));
+        const auto sample_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - drawn).count();
+        result.replay_sample_seconds += sample_seconds;
+        result.replay_sample_max_seconds =
+            std::max(result.replay_sample_max_seconds, sample_seconds);
         result.training_metrics.push_back(trainer.train(samples));
         ++result.completed_training_steps;
         result.training_batch_sizes.push_back(samples.size());

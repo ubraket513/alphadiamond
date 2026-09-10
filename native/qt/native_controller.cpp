@@ -232,6 +232,7 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
 #else
     rating_bridge_ = nullptr;
 #endif
+    model_catalog_->activateSelected(QStringLiteral("soo"));
     soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     sound_player_ = new NativeMovePlayer(this);
     connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
@@ -311,8 +312,7 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
             QTimer::singleShot(0, this, &NativeController::startAiTurn);
     });
     match_.count = 2;
-    match_.players[0] = soo::PlayerSpec{1, 2, 5};
-    match_.players[1] = soo::PlayerSpec{2, 0, 3};
+    match_ = soo::standard_soo_match();
     ai_seats_ = {2};
     ai_player_name_ = resolvedAiPlayerName();
     geometry_->setPlayerCount(match_.count);
@@ -344,7 +344,7 @@ void NativeController::cancelSearch() {
 
 bool NativeController::analysisAvailable() const {
 #ifdef DIAMOND_QT_HAS_SOO
-    return match_.count == 2;
+    return match_.count == 2 || match_.count == 3;
 #else
     return false;
 #endif
@@ -358,7 +358,7 @@ void NativeController::setPerspectivePlayerId(int playerId) {
 }
 
 QVariantList NativeController::positionTelemetry() const {
-    if (perspective_player_id_ == 1) return position_telemetry_;
+    if (match_.count == 3 || perspective_player_id_ == 1) return position_telemetry_;
     QVariantList rows = position_telemetry_;
     for (QVariant& value : rows) {
         QVariantMap row = value.toMap();
@@ -375,7 +375,7 @@ QVariantList NativeController::positionTelemetry() const {
 }
 
 QVariantList NativeController::decisionTelemetry() const {
-    if (perspective_player_id_ == 1) return decision_telemetry_;
+    if (match_.count == 3 || perspective_player_id_ == 1) return decision_telemetry_;
     QVariantList rows = decision_telemetry_;
     for (QVariant& value : rows) {
         QVariantMap row = value.toMap();
@@ -410,13 +410,9 @@ QString NativeController::aiAgentName() const {
 
 QString NativeController::resolvedAiPlayerName() const {
 #ifdef DIAMOND_QT_HAS_SOO
-    if (match_.count == 2) {
-        const QString label = model_catalog_->activeModelLabel();
-        if (!label.isEmpty() && label != QStringLiteral("None"))
-            return label;
-        return QStringLiteral("Soo AlphaZero");
-    }
-    return QStringLiteral("Native fallback");
+    const QString label = model_catalog_->activeModelLabel();
+    if (!label.isEmpty() && label != QStringLiteral("None")) return label;
+    return match_.count == 3 ? QStringLiteral("Min AlphaZero") : QStringLiteral("Soo AlphaZero");
 #else
     return QStringLiteral("Native deterministic");
 #endif
@@ -550,23 +546,16 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
         }
     }
     cancelSearch();
-    if (model_catalog_->activateSelected())
-        soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     ai_failure_latched_ = false;
     match_ = {};
     match_.count = static_cast<uint8_t>(order.size());
+    model_catalog_->activateSelected(match_.count == 3 ? QStringLiteral("min") : QStringLiteral("soo"));
+    soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
     geometry_->setPlayerCount(match_.count);
-    const int camps2[2] = {2, 0};
-    const int targets2[2] = {5, 3};
-    const int camps3[3] = {2, 1, 0};
-    const int targets3[3] = {5, 4, 3};
+    const auto standard = match_.count == 3 ? soo::standard_min_match() : soo::standard_soo_match();
     for (int i = 0; i < match_.count; ++i) {
         const int id = order.at(i).toInt();
-        const int camp = match_.count == 2 ? camps2[id - 1] : camps3[id - 1];
-        const int target = match_.count == 2 ? targets2[id - 1] : targets3[id - 1];
-        match_.players[i] = soo::PlayerSpec{static_cast<uint8_t>(id),
-                                             static_cast<uint8_t>(camp),
-                                             static_cast<uint8_t>(target)};
+        match_.players[i] = standard.by_id(static_cast<uint8_t>(id));
     }
     ai_seats_ = aiSeats;
     ai_player_name_ = resolvedAiPlayerName();
@@ -712,9 +701,14 @@ bool NativeController::loadGame(const QUrl& path) {
         fail(QStringLiteral("Load failed: unsupported save schema version."));
         return false;
     }
-    if (schema == 2 && order.size() == 2 && !ai.isEmpty()) {
+    if (schema == 2 && (order.size() == 2 || order.size() == 3) && !ai.isEmpty()) {
         const QString saved_model_id = root.value("ai_model_id").toString();
         if (!saved_model_id.isEmpty()) {
+            const QString family = order.size() == 3 ? QStringLiteral("min/") : QStringLiteral("soo/");
+            if (!saved_model_id.startsWith(family)) {
+                fail(QStringLiteral("Load failed: saved AI model family does not match this game."));
+                return false;
+            }
             model_catalog_->selectModel(saved_model_id);
             if (model_catalog_->selectedModelId() != saved_model_id) {
                 fail(QStringLiteral("Load failed: saved AI model is not installed."));
@@ -994,16 +988,17 @@ void NativeController::appendTelemetryForCommit(uint8_t player, int32_t action) 
     const bool available = matching_search;
     const bool decision_available = available && selected.has_value();
 
+    const int perspective = match_.count == 3 ? player : 1;
     QVariantMap position{{"ply", ply}, {"turnNumber", ply}, {"playerId", player},
-        {"perspectivePlayerId", 1}, {"available", available}};
+        {"perspectivePlayerId", perspective}, {"available", available}};
     QVariantMap decision{{"ply", ply}, {"turnNumber", ply}, {"playerId", player},
-        {"perspectivePlayerId", 1}, {"selectedAction", action},
+        {"perspectivePlayerId", perspective}, {"selectedAction", action},
         {"available", decision_available}};
     if (available) {
         const double nn_value = normalize_soo_value(
-            pending_telemetry_->root_network_value, player, 1);
+            pending_telemetry_->root_network_value, player, perspective);
         const double mcts_value = normalize_soo_value(
-            pending_telemetry_->root_search_value, player, 1);
+            pending_telemetry_->root_search_value, player, perspective);
         position.insert("nnValue", nn_value);
         position.insert("nnEstimate", soo_estimate(nn_value));
         position.insert("mctsValue", mcts_value);
@@ -1021,7 +1016,7 @@ void NativeController::appendTelemetryForCommit(uint8_t player, int32_t action) 
         decision.insert("averageNeuralEvaluationMs", compute.average_neural_evaluation_ms);
     }
     if (selected) {
-        decision.insert("mctsQ", normalize_soo_value(selected->q, player, 1));
+        decision.insert("mctsQ", normalize_soo_value(selected->q, player, perspective));
         decision.insert("policyPrior", selected->prior);
         decision.insert("visitFraction", selected->visit_fraction);
         decision.insert("visits", selected->visits);
@@ -1189,7 +1184,7 @@ void NativeController::startAiTurn() {
 
 void NativeController::startHumanAnalysis() {
 #ifdef DIAMOND_QT_HAS_SOO
-    if (isGameOver() || match_.count != 2 || ai_seats_.contains(state_.current_player) ||
+    if (isGameOver() || !analysisAvailable() || ai_seats_.contains(state_.current_player) ||
         analysis_thinking_ || (pending_telemetry_ &&
         pending_telemetry_turn_ == state_.turn_number &&
         pending_telemetry_player_ == state_.current_player)) return;
@@ -1234,9 +1229,8 @@ void NativeController::startSearch(bool selectMove) {
             QVariantMap{{"label", QStringLiteral("Legal moves")},
                         {"value", QString::number(static_cast<int>(legal.size()))}}};
 #ifdef DIAMOND_QT_HAS_SOO
-        if (search_match.count == 2)
-            ai_details_.push_back(QVariantMap{{"label", QStringLiteral("Simulations")},
-                                              {"value", QString::number(simulations)}});
+        ai_details_.push_back(QVariantMap{{"label", QStringLiteral("Simulations")},
+                                          {"value", QString::number(simulations)}});
 #endif
         ++ai_search_start_count_;
     } else {
@@ -1247,15 +1241,8 @@ void NativeController::startSearch(bool selectMove) {
     const quint64 request_generation = ++generation_;
     const std::shared_ptr<SooSearchRuntime> runtime = soo_runtime_;
     ai_worker_->start(request_generation,
-        [runtime, search_state, search_match, rejected, legal, simulations]() -> AiSearchResult {
-        if (search_match.count == 2)
-            return runtime->search(search_state, search_match, rejected, simulations);
-        auto is_rejected = [&rejected](int32_t action) {
-            return std::find(rejected.cbegin(), rejected.cend(), action) != rejected.cend();
-        };
-        for (int32_t action : legal)
-            if (!is_rejected(action)) return AiSearchResult{action, {}};
-        return AiSearchResult{legal.front(), {}};
+        [runtime, search_state, search_match, rejected, simulations]() -> AiSearchResult {
+        return runtime->search(search_state, search_match, rejected, simulations);
     });
 }
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
@@ -19,6 +20,7 @@
 #include "diamond_model/model_index.hpp"
 #include "diamond_model/soo_evaluator.hpp"
 #include "soo/mcts.hpp"
+#include "soo/mcts3p.hpp"
 #endif
 
 #ifdef DIAMOND_QT_HAS_SOO
@@ -27,14 +29,14 @@ namespace {
 // Packaged and source builds both name the promoted default in models/index.json.
 // There is deliberately no spike/random fallback: a missing or malformed release
 // model must fail loudly instead of producing apparently valid weak play.
-QString resolve_soo_artifact() {
+QString resolve_artifact(const std::string& family) {
     const QStringList bases = {QCoreApplication::applicationDirPath(), QDir::currentPath()};
     for (const QString& base : bases) {
         const QString models = QDir(base).filePath(QStringLiteral("models"));
         if (!QFile::exists(QDir(models).filePath(QStringLiteral("index.json")))) continue;
         try {
             const auto index = diamond_model::load_model_index(models.toStdString());
-            if (const auto* entry = index.default_for("soo"))
+            if (const auto* entry = index.default_for(family))
                 return QString::fromStdString(entry->root.string());
         } catch (const std::exception&) {
             // A malformed index must not be a silent fallback to some other
@@ -57,9 +59,15 @@ class SooSearchRuntime::Impl {
     std::mutex mutex;
 #ifdef DIAMOND_QT_HAS_SOO
     std::unique_ptr<diamond_model::SooEvaluator> evaluator;
+    diamond_model::DiamondModel min_model{nullptr};
+    std::string loaded_family;
 
-    void ensure_loaded() {
-        if (evaluator) return;
+    void ensure_loaded(const std::string& family) {
+        if (!loaded_family.empty()) {
+            if (loaded_family != family)
+                throw std::invalid_argument("Loaded model family does not match the game");
+            return;
+        }
         static std::once_flag configured;
         std::call_once(configured, [] {
             bool ok = false;
@@ -68,15 +76,70 @@ class SooSearchRuntime::Impl {
             torch::set_num_threads(threads);
             torch::set_num_interop_threads(1);
         });
-        const std::string root = (artifact_root.isEmpty() ? resolve_soo_artifact()
+        const std::string root = (artifact_root.isEmpty() ? resolve_artifact(family)
                                                            : artifact_root).toStdString();
-        // Family-scoped: a Min bundle in the Soo slot is refused rather than
-        // loaded with the wrong tensor shapes.
-        const auto artifact = diamond_model::validate_deployment_artifact(root, "soo");
+        const auto artifact = diamond_model::validate_deployment_artifact(root, family);
         diamond_model::DiamondModel model(artifact.width, artifact.residual_blocks,
                                           artifact.input_features, artifact.value_size);
         model->load_weights(artifact.weights);
-        evaluator = std::make_unique<diamond_model::SooEvaluator>(model);
+        model->eval();
+        if (family == "soo") evaluator = std::make_unique<diamond_model::SooEvaluator>(model);
+        else min_model = std::move(model);
+        loaded_family = family;
+    }
+
+    soo::SearchResult search_min(const soo::State& state, const soo::Match& match,
+                                 const soo::MCTSConfig& config) {
+        soo::SearchSession3P session(match, config);
+        session.begin(state, 0.0);
+        soo::SearchResult result;
+        bool root = true;
+        torch::NoGradGuard no_grad;
+        while (session.advance() == soo::SearchSession3P::Status::NeedsEvaluation) {
+            const auto started = std::chrono::steady_clock::now();
+            const auto& encoded = session.pending_features();
+            const auto& actions = session.pending_actions();
+            auto features = torch::from_blob(const_cast<float*>(encoded.node_features.data()),
+                                             {1, soo::kBoardSize, 6}, torch::kFloat32);
+            const auto [logits, values] = min_model->forward(features);
+            const auto indices = torch::tensor(actions, torch::TensorOptions().dtype(torch::kLong));
+            const auto priors = torch::softmax(logits.index_select(1, indices), 1).contiguous();
+            soo::EvalOutcome3P outcome;
+            for (size_t index = 0; index < actions.size(); ++index) {
+                const double prior = priors.data_ptr<float>()[index];
+                if (!std::isfinite(prior)) throw std::runtime_error("Min produced a non-finite prior");
+                outcome.priors.push_back(prior);
+            }
+            for (size_t index = 0; index < outcome.value.size(); ++index) {
+                outcome.value[index] = values[0][static_cast<int64_t>(index)].item<float>();
+                if (!std::isfinite(outcome.value[index]))
+                    throw std::runtime_error("Min produced a non-finite value");
+            }
+            if (root) result.root_network_value = outcome.value[0];
+            root = false;
+            session.supply(outcome);
+            result.neural_evaluation_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+        }
+        const auto& vector_result = session.result();
+        result.selected_action = vector_result.selected_action;
+        result.root_actions = vector_result.root_actions;
+        result.visit_counts = vector_result.visit_counts;
+        result.policy = vector_result.policy;
+        result.root_priors = vector_result.root_priors;
+        result.simulations_run = vector_result.simulations_run;
+        result.evaluator_calls = vector_result.evaluator_calls;
+        result.nodes_created = vector_result.nodes_created;
+        const int seat = match.seat_of(state.current_player);
+        uint64_t visits = 0;
+        for (size_t index = 0; index < vector_result.q_vectors.size(); ++index) {
+            const double q = vector_result.q_vectors[index].at(static_cast<size_t>(seat));
+            result.q_values.push_back(q);
+            result.root_mean_value += q * result.visit_counts[index];
+            visits += result.visit_counts[index];
+        }
+        if (visits) result.root_mean_value /= static_cast<double>(visits);
+        return result;
     }
 #endif
 };
@@ -90,15 +153,17 @@ AiSearchResult SooSearchRuntime::search(const soo::State& state, const soo::Matc
                                         int simulations) {
     std::scoped_lock lock(impl_->mutex);
 #ifdef DIAMOND_QT_HAS_SOO
-    if (match.count != 2) throw std::invalid_argument("Soo analysis requires a two-seat match");
-    impl_->ensure_loaded();
+    if (match.count != 2 && match.count != 3)
+        throw std::invalid_argument("Analysis requires a two-seat or three-seat match");
+    impl_->ensure_loaded(match.count == 3 ? "min" : "soo");
     soo::MCTSConfig config;
     config.simulations = simulations;
     config.c_puct = 1.5;
     config.dirichlet_epsilon = 0.0;
-    soo::MCTS2P search(match, *impl_->evaluator, config);
     const auto started = std::chrono::steady_clock::now();
-    const soo::SearchResult result = search.run(state, 0.0, false);
+    const soo::SearchResult result = match.count == 3
+        ? impl_->search_min(state, match, config)
+        : soo::MCTS2P(match, *impl_->evaluator, config).run(state, 0.0, false);
     const double total_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - started).count();
 
@@ -145,4 +210,3 @@ AiSearchResult SooSearchRuntime::search(const soo::State& state, const soo::Matc
     return AiSearchResult{legal.empty() ? -1 : legal.front(), {}};
 #endif
 }
-

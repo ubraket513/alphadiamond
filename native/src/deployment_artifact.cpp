@@ -285,6 +285,11 @@ const std::array<const char*, 6> kRuntimeFiles = {
 
 }  // namespace
 
+std::string deployment_runtime_sha256(const std::filesystem::path& root,
+    int64_t width, int64_t blocks, int64_t input_features, int64_t value_size) {
+    return runtime_sha256(root, expected_weights(width, blocks, input_features, value_size));
+}
+
 DeploymentArtifact validate_deployment_artifact(const std::filesystem::path& root) {
     static const std::set<std::string> expected_keys = {
         "architecture", "corpus_seed", "dtype", "format_version", "game_contract",

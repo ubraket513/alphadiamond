@@ -91,4 +91,21 @@ struct Match {
     int seat_of(uint8_t player_id) const;
 };
 
+// The seat geometry, in one place.
+//
+// A seat is (player id, starting camp, target camp) and the three are not
+// independent: a player targets the camp *opposite* its own, and no player's
+// target may be another player's start. Get that wrong and the game still runs
+// -- the rules stay self-consistent -- but every game begins with the opponent
+// already occupying the camp you must fill to win, which is unwinnable until
+// they vacate it. That shipped: the trainer and both benchmarks placed the two
+// Soo seats head-on while the Qt application used the correct geometry, and
+// self-play completion sat at 77 % instead of 97 % for as long as it lasted.
+//
+// These are the values in tests/golden/rules-v1.txt, which is normative and
+// frozen. Construct a standard match through these functions and never by
+// writing the triples at a call site.
+Match standard_soo_match();   // 2 players: {1, camp 2, target 5}, {2, camp 0, target 3}
+Match standard_min_match();   // 3 players: {1,2,5}, {2,1,4}, {3,0,3}
+
 }  // namespace soo

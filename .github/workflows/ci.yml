@@ -118,10 +118,12 @@ jobs:
         run: git diff --check
       - name: Install pinned clang-format major
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes \
-            "clang-format-$CLANG_FORMAT_MAJOR"
           formatter="clang-format-$CLANG_FORMAT_MAJOR"
+          if ! command -v "$formatter" >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes \
+              "$formatter"
+          fi
           "$formatter" --version
           "$formatter" --version | grep -Eq 'version 18([.]|$)'
       - name: Check only changed C and C++ lines

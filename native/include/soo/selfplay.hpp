@@ -8,6 +8,7 @@
 // lane to the batcher and immediately look for another runnable one.
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -36,6 +37,12 @@ struct BatchItem {
     // Min. An evaluator that ignores this fills `value` and leaves a Min lane
     // reading zeros for two of its seats.
     int value_width = 1;
+    // Which job in this run the request belongs to, or -1 when the caller does
+    // not track jobs. Lanes take the next unstarted job rather than owning one,
+    // so an evaluator that must treat games differently -- the arena router,
+    // which sends the candidate's turns to a different model in every game --
+    // cannot key on the lane or on the outcome pointer.
+    int job = -1;
 };
 
 // Whatever answers a batch. The dummy is native and sleeps; the Gate D one
@@ -115,6 +122,48 @@ struct EpisodeMove {
     int32_t selected_action = 0;          // canonical
 };
 
+// Per-seat state of a target camp at the moment a game stopped.
+struct CampDiagnostics {
+    uint8_t player_id = 0;
+    uint8_t target_camp = 0;
+    uint8_t own_in_target = 0;      // cells of the camp holding the owner's piece
+    uint8_t foreign_in_target = 0;  // cells holding somebody else's piece
+    uint8_t empty_in_target = 0;    // cells holding nothing
+    // Board cells of the camp occupied by a foreign piece, and how many legal
+    // moves each of those pieces had. A blocker with zero legal moves is stuck;
+    // a blocker with legal moves that stayed put is being retained.
+    std::vector<uint8_t> blocker_cells;
+    std::vector<uint8_t> blocker_owners;
+    std::vector<uint16_t> blocker_legal_moves;
+    // Plies since any cell of this camp last changed hands. A large value with
+    // a mobile blocker is the signature of a held block.
+    uint32_t plies_since_camp_changed = 0;
+};
+
+struct EpisodeDiagnostics {
+    uint8_t current_player = 0;
+    std::vector<uint8_t> occupancy;
+    std::vector<CampDiagnostics> camps;  // indexed by seat
+    // Position repetition over the whole game, keyed on dynamics_key: the
+    // physical state, deliberately excluding turn_number.
+    uint32_t unique_positions = 0;
+    uint32_t max_revisits = 0;
+    // How many positions were observed, which is `move_count + 1`: the opening
+    // is recorded when the lane is seated, then once after every move. Carried
+    // explicitly because it is the denominator `unique_positions` belongs over,
+    // and dividing by `move_count` instead reports 1 + 1/move_count for a game
+    // that never repeated anything -- a ratio above 1.0, which reads like an
+    // error and hides how much headroom is left.
+    uint32_t observations = 0;
+    // Observations whose position had already occurred within the previous 8
+    // plies. `max_revisits` says one position recurred often; it cannot tell a
+    // tight A-B-A cycle from a slow return, and the tight cycle is what the
+    // aborted tail is made of.
+    uint32_t repeat_within_8 = 0;
+    // The tail of the game, newest last, so a short cycle is visible directly.
+    std::vector<uint64_t> recent_keys;
+};
+
 struct Episode {
     std::vector<EpisodeMove> moves;
     std::vector<uint8_t> finish_order;
@@ -127,6 +176,17 @@ struct Episode {
     // Set when the game's own monotonic deadline elapsed. This is deliberately
     // distinct from the move limit and caller cancellation.
     bool max_game_seconds_exceeded = false;
+    // Why a game did not terminate.
+    //
+    // A seat finishes only when every cell of its target camp holds its own
+    // piece, so a foreign piece resting there blocks that camp. That alone
+    // proves nothing -- a blocker is free to leave -- so what has to be
+    // distinguished is a transient occupation from a *retained* one: a blocker
+    // that can move, does not, while the position cycles. These fields carry
+    // exactly what that classification needs, and are filled for completed
+    // games too, since the blocked counts only mean something against that
+    // baseline.
+    EpisodeDiagnostics diagnostics;
 };
 
 struct EpisodeConfig {
@@ -177,7 +237,28 @@ struct EpisodeConfig {
     //
     // Takes precedence over ``late_move_threshold`` when both are set.
     int repeat_window = 0;
+
+    // Use this move-selection temperature when the current physical position
+    // already occurred within ``repeat_window`` plies. Zero keeps the normal
+    // temperature schedule. Search remains unchanged; only the seeded choice
+    // among root visit counts escapes a demonstrated cycle.
+    double repetition_temperature = 0.0;
+
+    // Bootstrap phase: take the policy prior from the vacancy heuristic instead
+    // of the network, keeping values from the network.
+    //
+    // A randomly initialised network has no idea how to make progress toward
+    // the target camp, and a game ends only when a camp is filled -- so without
+    // this every from-scratch game runs to ``max_moves``, produces no samples,
+    // and the run learns nothing.  The heuristic is stated in canonical
+    // coordinates, where the acting seat's target is always canonical z-, so it
+    // is seat-agnostic and applies to Min exactly as it does to Soo.
+    bool bootstrap_prior = false;
+    double bootstrap_prior_weight = 1.0;
 };
+
+std::vector<double> blend_legal_priors(const std::vector<double>& vacancy,
+                                       const std::vector<double>& network, double weight);
 
 struct EpisodeMetrics {
     uint64_t evaluations = 0;
@@ -186,6 +267,8 @@ struct EpisodeMetrics {
     // How often the boosted budget fired. The trigger only earns its complexity
     // if this stays small, so it is reported rather than inferred.
     uint64_t boosted_moves = 0;
+    // How often repetition changed the move-selection temperature.
+    uint64_t repetition_moves = 0;
     double wall_seconds = 0.0;
     double evaluator_seconds = 0.0;
     double worker_busy_seconds = 0.0;

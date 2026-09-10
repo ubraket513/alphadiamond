@@ -12,7 +12,8 @@ AppDialog {
     objectName: "modelsDialog"
     title: "Models"
     message: "Browse native models from GitHub and Hugging Face. "
-             + "A selection becomes active when the next game starts."
+             + "Soo plays two-player games; Min plays three-player games. "
+             + "Selections apply to the next game of that type."
     acceptText: "Close"
     showReject: false
     implicitWidth: 780
@@ -84,7 +85,7 @@ AppDialog {
                 }
 
                 ActionButton {
-                    text: root.catalog.busy ? "Refreshing…" : "Refresh"
+                    text: root.catalog.busy ? "Working…" : "Refresh"
                     enabled: !root.catalog.busy
                     onClicked: root.catalog.refresh()
                 }
@@ -102,6 +103,7 @@ AppDialog {
 
         ListView {
             id: modelList
+            objectName: "modelsList"
             Layout.fillWidth: true
             Layout.preferredHeight: 390
             clip: true
@@ -181,7 +183,7 @@ AppDialog {
                                   + "  ·  Latest ELO: "
                                   + (modelData.latestElo === "" ? "unavailable" : modelData.latestElo)
                                   + "  ·  Training simulations: "
-                                  + modelData.trainingSimulations
+                                  + (modelData.trainingSimulations > 0 ? modelData.trainingSimulations : "unavailable")
                             color: Theme.textMuted
                             font.family: Theme.fontFamily
                             font.pixelSize: Theme.fontSmall

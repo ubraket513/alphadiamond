@@ -12,9 +12,15 @@
 
 namespace diamond_training {
 
+enum class PolicyLossDomain {
+    full,
+    legal,
+};
+
 struct TrainingConfig {
     double learning_rate;
     double weight_decay;
+    PolicyLossDomain policy_loss_domain = PolicyLossDomain::full;
 };
 
 struct TrainingMetrics {
@@ -47,6 +53,25 @@ diamond_model::DiamondModel snapshot_model(const diamond_model::DiamondModel& so
                                            const Compatibility& compatibility, torch::Device target,
                                            ModelRole role);
 
+// Zeroes the final value layer, leaving every other parameter untouched.
+//
+// A freshly initialised Min network answers every leaf with an arbitrary
+// three-vector, which is a bias toward seats the network has no reason to
+// prefer -- and during the bootstrap phase, where the policy prior comes from
+// the vacancy heuristic rather than the network, that noise is the only thing
+// competing with the heuristic's sense of direction. Zeroing the last layer
+// makes the initial value exactly [0,0,0]: neutral rather than random.
+//
+// Deliberately applied after construction, not inside it. The model consumes
+// exactly the same RNG draws either way, so a zero-initialised network and a
+// random one differ in this layer and are bit-identical everywhere else, which
+// is what makes an A/B between them an experiment about one term.
+//
+// Symmetry does not survive the first optimizer step: the final layer sees a
+// gradient immediately, and the layers below it start moving on the second,
+// once that layer is no longer zero.
+void zero_value_head(const diamond_model::DiamondModel& model);
+
 // A versioned SHA-256 identity over sorted named parameters then named buffers.
 // FP32 tensor data is serialized canonically as contiguous CPU little-endian bytes.
 std::string canonical_model_digest(const diamond_model::DiamondModel& model);
@@ -57,13 +82,21 @@ class Trainer {
             const ResolvedDevice& device);
 
     TrainingMetrics train(std::span<const TrainingSample> samples);
-    uint64_t training_step() const { return training_step_; }
-    const Compatibility& compatibility() const { return compatibility_; }
-    const TrainingConfig& config() const { return config_; }
+    uint64_t training_step() const {
+        return training_step_;
+    }
+    const Compatibility& compatibility() const {
+        return compatibility_;
+    }
+    const TrainingConfig& config() const {
+        return config_;
+    }
     const ResolvedDevice& device() const {
         return device_;
     }
-    diamond_model::DiamondModel& model() { return model_; }
+    diamond_model::DiamondModel& model() {
+        return model_;
+    }
     const diamond_model::DiamondModel& model() const {
         return model_;
     }
@@ -74,7 +107,10 @@ class Trainer {
         return model_;
     }
     diamond_model::DiamondModel candidate_snapshot() const;
-    torch::optim::AdamW& optimizer() { return optimizer_; }
+    torch::optim::AdamW& optimizer() {
+        return optimizer_;
+    }
+    void record_external_optimizer_step();
     void restore_checkpoint_state(TrainingConfig config, uint64_t training_step) {
         config_ = config;
         training_step_ = training_step;
@@ -89,4 +125,4 @@ class Trainer {
     uint64_t training_step_ = 0;
 };
 
-}  // namespace diamond_training
+} // namespace diamond_training

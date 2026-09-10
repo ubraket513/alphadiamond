@@ -28,11 +28,7 @@ training_sample(const diamond_training::Compatibility& compatibility) {
 
 soo::Match soo_match() {
     soo::ensure_topology_configured();
-    soo::Match match;
-    match.count = 2;
-    match.players[0] = {1, 0, 3};
-    match.players[1] = {2, 3, 0};
-    return match;
+    return soo::standard_soo_match();
 }
 
 soo::State opening(const soo::Match& match) {
@@ -88,6 +84,26 @@ int main(int argc, char** argv) {
     CHECK_EQ(result.completed_games, std::size_t{0});
     CHECK_EQ(result.aborted_games, std::size_t{0});
     CHECK_EQ(result.training_step, uint64_t{0});
+
+    diamond_pipeline::IterationRequest target_request;
+    target_request.operation_id = "target-metrics-v2";
+    target_request.model_key = key;
+    target_request.compatibility = compatibility;
+    target_request.match = soo_match();
+    target_request.jobs = {{opening(target_request.match), 17}};
+    target_request.selfplay.lanes = 1;
+    target_request.selfplay.threads = 1;
+    target_request.selfplay.max_batch = 1;
+    target_request.selfplay.max_wait_us = 1;
+    target_request.selfplay.simulations = 1;
+    target_request.selfplay.max_moves = 1;
+    const auto targets = diamond_pipeline::run_self_play(target_request, models, {});
+    CHECK(targets.metrics.all_targets.rows > 0);
+    CHECK(targets.metrics.all_targets.entropy_mean >= 0.0);
+    CHECK(targets.metrics.all_targets.normalized_entropy_mean >= 0.0);
+    CHECK(targets.metrics.all_targets.normalized_entropy_mean <= 1.0 + 1e-12);
+    CHECK_EQ(targets.metrics.all_targets.rows,
+             targets.metrics.completed_targets.rows + targets.metrics.aborted_targets.rows);
 
     diamond_pipeline::IterationRequest deadline_request;
     deadline_request.operation_id = "deadline-abort-v2";

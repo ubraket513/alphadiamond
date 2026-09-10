@@ -203,6 +203,28 @@ int main(int argc, char** argv) {
     }
 
     CHECK(saw_placed_seat);
+
+    soo::MCTSConfig adjustable;
+    adjustable.simulations = 4;
+    adjustable.dirichlet_epsilon = 0.0;
+    soo::SearchSession3P adjusted(match, adjustable);
+    adjusted.set_simulations(9);
+    adjusted.begin(cases.front().state, 0.0);
+    while (adjusted.advance() == soo::SearchSession3P::Status::NeedsEvaluation) {
+        adjusted.supply(
+            soo_test::evaluate_vector(adjusted.pending_features(), adjusted.pending_actions()));
+    }
+    CHECK_EQ(adjusted.result().simulations_run, uint32_t{9});
+    for (const int invalid : {0, -1}) {
+        bool threw = false;
+        try {
+            adjusted.set_simulations(invalid);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+
     std::fprintf(stderr, "checked %zu golden 3P searches\n", cases.size());
     return soo_test::report("mcts3p_golden_test");
 }

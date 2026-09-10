@@ -18,7 +18,8 @@ constexpr std::string_view kV1MigrationError =
     "train_steps_per_iteration, opening_suite, and promotion_statistics";
 
 const Object& object(const Json& value, std::string_view name) {
-    if (const auto* result = std::get_if<Object>(&value.value)) return *result;
+    if (const auto* result = std::get_if<Object>(&value.value))
+        return *result;
     throw ConfigError(std::string(name) + " must be a JSON object");
 }
 
@@ -30,22 +31,64 @@ void require_exact_keys(const Object& value, std::initializer_list<std::string_v
         actual.insert(key);
     }
     std::set<std::string> required;
-    for (std::string_view key : expected) required.emplace(key);
-    if (actual == required) return;
+    for (std::string_view key : expected)
+        required.emplace(key);
+    if (actual == required)
+        return;
 
     std::string details;
     for (const auto& key : required) {
         if (!actual.contains(key)) {
-            if (!details.empty()) details += "; ";
+            if (!details.empty())
+                details += "; ";
             details += "missing: " + key;
         }
     }
     for (const auto& key : actual) {
         if (!required.contains(key)) {
-            if (!details.empty()) details += "; ";
+            if (!details.empty())
+                details += "; ";
             details += "unexpected: " + key;
         }
     }
+    throw ConfigError("invalid " + std::string(name) + " (" + details + ")");
+}
+
+// As require_exact_keys, but a named set of keys may also be absent. Strictness
+// is preserved -- unknown keys are still rejected -- while a field added after a
+// run started stays readable in that run's immutable resolved-config.json, which
+// `resume` parses back through from_json.
+void require_keys(const Object& value, std::initializer_list<std::string_view> expected,
+                  std::initializer_list<std::string_view> optional, std::string_view name) {
+    std::set<std::string> required;
+    for (std::string_view key : expected)
+        required.emplace(key);
+    std::set<std::string> permitted = required;
+    for (std::string_view key : optional)
+        permitted.emplace(key);
+
+    std::string details;
+    std::set<std::string> actual;
+    for (const auto& [key, ignored] : value) {
+        (void)ignored;
+        actual.insert(key);
+    }
+    for (const auto& key : required) {
+        if (!actual.contains(key)) {
+            if (!details.empty())
+                details += "; ";
+            details += "missing: " + key;
+        }
+    }
+    for (const auto& key : actual) {
+        if (!permitted.contains(key)) {
+            if (!details.empty())
+                details += "; ";
+            details += "unexpected: " + key;
+        }
+    }
+    if (details.empty())
+        return;
     throw ConfigError("invalid " + std::string(name) + " (" + details + ")");
 }
 
@@ -57,13 +100,15 @@ const Json& field(const Object& value, std::string_view name, std::string_view o
 }
 
 int64_t integer(const Json& value, std::string_view name) {
-    if (const auto* result = std::get_if<int64_t>(&value.value)) return *result;
+    if (const auto* result = std::get_if<int64_t>(&value.value))
+        return *result;
     throw ConfigError(std::string(name) + " must be an integer");
 }
 
 uint64_t non_negative_seed(const Json& value, std::string_view name) {
     const int64_t result = integer(value, name);
-    if (result < 0) throw ConfigError(std::string(name) + " must be a non-negative integer");
+    if (result < 0)
+        throw ConfigError(std::string(name) + " must be a non-negative integer");
     return static_cast<uint64_t>(result);
 }
 
@@ -75,13 +120,21 @@ double number(const Json& value, std::string_view name) {
         result = *double_value;
     else
         throw ConfigError(std::string(name) + " must be a number");
-    if (!std::isfinite(result)) throw ConfigError(std::string(name) + " must be finite");
+    if (!std::isfinite(result))
+        throw ConfigError(std::string(name) + " must be finite");
     return result;
 }
 
 const std::string& string(const Json& value, std::string_view name) {
-    if (const auto* result = std::get_if<std::string>(&value.value)) return *result;
+    if (const auto* result = std::get_if<std::string>(&value.value))
+        return *result;
     throw ConfigError(std::string(name) + " must be a string");
+}
+
+bool boolean(const Json& value, std::string_view name) {
+    if (const auto* result = std::get_if<bool>(&value.value))
+        return *result;
+    throw ConfigError(std::string(name) + " must be a boolean");
 }
 
 int64_t json_integer(uint64_t value, std::string_view name) {
@@ -137,7 +190,7 @@ Json optional_json(const std::optional<int64_t>& value) {
     return value ? Json{*value} : Json{nullptr};
 }
 
-}  // namespace
+} // namespace
 
 void NetworkConfig::validate() const {
     if (width <= 0 || residual_blocks <= 0)
@@ -162,8 +215,10 @@ NetworkConfig NetworkConfig::from_json(const Json& value) {
 void RuntimeConfig::validate() const {
     if (!is_device_name(device))
         throw ConfigError("runtime.device must be cpu, cuda, or cuda:N");
-    if (precision != "fp32")
-        throw ConfigError("runtime.precision must be fp32");
+    if (precision != "fp32" && precision != "fp16" && precision != "bf16")
+        throw ConfigError("runtime.precision must be fp32, fp16, or bf16");
+    if (device == "cpu" && precision != "fp32")
+        throw ConfigError("reduced runtime precision requires CUDA");
 }
 
 Json RuntimeConfig::to_json() const {
@@ -182,13 +237,25 @@ RuntimeConfig RuntimeConfig::from_json(const Json& value) {
 }
 
 void MCTSConfig::validate() const {
-    if (simulations <= 0) throw ConfigError("mcts.simulations must be positive");
+    if (simulations <= 0)
+        throw ConfigError("mcts.simulations must be positive");
     if (!std::isfinite(c_puct) || c_puct <= 0)
         throw ConfigError("mcts.c_puct must be a positive finite number");
     if (!std::isfinite(dirichlet_alpha) || dirichlet_alpha <= 0)
         throw ConfigError("mcts.dirichlet_alpha must be a positive finite number");
     if (!std::isfinite(dirichlet_epsilon) || dirichlet_epsilon < 0 || dirichlet_epsilon > 1)
         throw ConfigError("mcts.dirichlet_epsilon must be a finite number in [0, 1]");
+    if (simulations_late < 0)
+        throw ConfigError("mcts.simulations_late must be non-negative");
+    if (repeat_window < 0)
+        throw ConfigError("mcts.repeat_window must be non-negative");
+    // The two are one control and are meaningless apart: a window with no
+    // boosted budget never changes the search, and a boosted budget with no
+    // window can never fire. Rejecting the half-set pair keeps a silently
+    // inert configuration from looking enabled.
+    if ((simulations_late > 0) != (repeat_window > 0))
+        throw ConfigError("mcts.simulations_late and mcts.repeat_window must both be set "
+                          "to enable the repetition trigger, or both be zero");
 }
 
 Json MCTSConfig::to_json() const {
@@ -196,14 +263,16 @@ Json MCTSConfig::to_json() const {
     return Json{Object{{"c_puct", Json{c_puct}},
                        {"dirichlet_alpha", Json{dirichlet_alpha}},
                        {"dirichlet_epsilon", Json{dirichlet_epsilon}},
+                       {"repeat_window", Json{repeat_window}},
+                       {"simulations_late", Json{simulations_late}},
                        {"seed", Json{json_integer(seed, "mcts.seed")}},
                        {"simulations", Json{simulations}}}};
 }
 
 MCTSConfig MCTSConfig::from_json(const Json& value) {
     const Object& input = object(value, "mcts");
-    require_exact_keys(
-        input, {"c_puct", "dirichlet_alpha", "dirichlet_epsilon", "seed", "simulations"}, "mcts");
+    require_keys(input, {"c_puct", "dirichlet_alpha", "dirichlet_epsilon", "seed", "simulations"},
+                 {"repeat_window", "simulations_late"}, "mcts");
     MCTSConfig result{
         .simulations = integer(field(input, "simulations", "mcts"), "mcts.simulations"),
         .c_puct = number(field(input, "c_puct", "mcts"), "mcts.c_puct"),
@@ -211,17 +280,27 @@ MCTSConfig MCTSConfig::from_json(const Json& value) {
         .dirichlet_epsilon =
             number(field(input, "dirichlet_epsilon", "mcts"), "mcts.dirichlet_epsilon"),
         .seed = non_negative_seed(field(input, "seed", "mcts"), "mcts.seed")};
+    if (input.contains("simulations_late"))
+        result.simulations_late =
+            integer(field(input, "simulations_late", "mcts"), "mcts.simulations_late");
+    if (input.contains("repeat_window"))
+        result.repeat_window = integer(field(input, "repeat_window", "mcts"), "mcts.repeat_window");
     result.validate();
     return result;
 }
 
 void SelfPlayConfig::validate() const {
-    if (max_moves <= 0) throw ConfigError("self_play.max_moves must be positive");
-    if (temperature_moves < 0) throw ConfigError("self_play.temperature_moves must be non-negative");
+    if (max_moves <= 0)
+        throw ConfigError("self_play.max_moves must be positive");
+    if (temperature_moves < 0)
+        throw ConfigError("self_play.temperature_moves must be non-negative");
     if (!std::isfinite(temperature) || temperature < 0)
         throw ConfigError("self_play.temperature must be a non-negative finite number");
     if (!bootstrap_prior_is_valid(bootstrap_prior))
         throw ConfigError("self_play.bootstrap_prior must be a supported bootstrap prior");
+    if (!std::isfinite(bootstrap_prior_weight) || bootstrap_prior_weight < 0.0 ||
+        bootstrap_prior_weight > 1.0)
+        throw ConfigError("self_play.bootstrap_prior_weight must be finite and in [0, 1]");
     if (max_game_seconds && (!std::isfinite(*max_game_seconds) || *max_game_seconds <= 0))
         throw ConfigError("self_play.max_game_seconds must be a positive finite number or null");
 }
@@ -229,6 +308,7 @@ void SelfPlayConfig::validate() const {
 Json SelfPlayConfig::to_json() const {
     validate();
     return Json{Object{{"bootstrap_prior", Json{bootstrap_prior}},
+                       {"bootstrap_prior_weight", Json{bootstrap_prior_weight}},
                        {"max_game_seconds", optional_json(max_game_seconds)},
                        {"max_moves", Json{max_moves}},
                        {"seed", Json{json_integer(seed, "self_play.seed")}},
@@ -238,10 +318,10 @@ Json SelfPlayConfig::to_json() const {
 
 SelfPlayConfig SelfPlayConfig::from_json(const Json& value) {
     const Object& input = object(value, "self_play");
-    require_exact_keys(input,
-                       {"bootstrap_prior", "max_game_seconds", "max_moves", "seed", "temperature",
-                        "temperature_moves"},
-                       "self_play");
+    require_keys(input,
+                 {"bootstrap_prior", "max_game_seconds", "max_moves", "seed", "temperature",
+                  "temperature_moves"},
+                 {"bootstrap_prior_weight"}, "self_play");
     SelfPlayConfig result{
         .max_moves = integer(field(input, "max_moves", "self_play"), "self_play.max_moves"),
         .temperature_moves =
@@ -252,6 +332,10 @@ SelfPlayConfig SelfPlayConfig::from_json(const Json& value) {
             string(field(input, "bootstrap_prior", "self_play"), "self_play.bootstrap_prior"),
         .max_game_seconds = optional_number(field(input, "max_game_seconds", "self_play"),
                                             "self_play.max_game_seconds")};
+    result.bootstrap_prior_weight =
+        input.contains("bootstrap_prior_weight")
+            ? number(input.at("bootstrap_prior_weight"), "self_play.bootstrap_prior_weight")
+            : (result.bootstrap_prior == kBootstrapPriorNone ? 0.0 : 1.0);
     result.validate();
     return result;
 }
@@ -262,8 +346,17 @@ void WorkerConfig::validate() const {
                           "workers.games_per_iteration must be positive");
     if (!non_blank(retry_id))
         throw ConfigError("workers.retry_id must be a non-empty string");
-    if (logical_lanes > games_per_iteration)
-        throw ConfigError("workers.logical_lanes must not exceed workers.games_per_iteration");
+    // Games must *exceed* lanes, not merely equal them. With one game per lane
+    // the job queue never engages: a lane cannot pick up fresh work when its
+    // game ends, so the run finishes at the pace of its slowest game while the
+    // rest idle. Batch occupancy collapses toward 1 over the second half of the
+    // run and throughput is misread as a batching problem. This project has
+    // paid for that twice -- once in the Python pool, once in a measurement
+    // harness whose throughput column had to be retracted -- so it is a
+    // configuration error rather than a note in a document.
+    if (logical_lanes >= games_per_iteration)
+        throw ConfigError("workers.games_per_iteration must exceed workers.logical_lanes, "
+                          "otherwise the job queue never engages");
 }
 
 Json WorkerConfig::to_json() const {
@@ -322,12 +415,14 @@ InferenceConfig InferenceConfig::from_json(const Json& value) {
 }
 
 void ReplayConfig::validate() const {
-    if (capacity <= 0) throw ConfigError("replay.capacity must be positive");
+    if (capacity <= 0)
+        throw ConfigError("replay.capacity must be positive");
 }
 
 Json ReplayConfig::to_json() const {
     validate();
-    return Json{Object{{"capacity", Json{capacity}}, {"seed", Json{json_integer(seed, "replay.seed")}}}};
+    return Json{
+        Object{{"capacity", Json{capacity}}, {"seed", Json{json_integer(seed, "replay.seed")}}}};
 }
 
 ReplayConfig ReplayConfig::from_json(const Json& value) {
@@ -347,12 +442,15 @@ void TrainingConfig::validate() const {
         throw ConfigError("training.learning_rate must be a positive finite number");
     if (!std::isfinite(weight_decay) || weight_decay < 0)
         throw ConfigError("training.weight_decay must be a non-negative finite number");
+    if (policy_loss_domain != "full" && policy_loss_domain != "legal")
+        throw ConfigError("training.policy_loss_domain must be full or legal");
 }
 
 Json TrainingConfig::to_json() const {
     validate();
     return Json{Object{{"batch_size", Json{batch_size}},
                        {"learning_rate", Json{learning_rate}},
+                       {"policy_loss_domain", Json{policy_loss_domain}},
                        {"seed", Json{json_integer(seed, "training.seed")}},
                        {"train_steps_per_iteration", Json{train_steps_per_iteration}},
                        {"weight_decay", Json{weight_decay}}}};
@@ -360,9 +458,10 @@ Json TrainingConfig::to_json() const {
 
 TrainingConfig TrainingConfig::from_json(const Json& value) {
     const Object& input = object(value, "training");
-    require_exact_keys(
-        input, {"batch_size", "learning_rate", "seed", "train_steps_per_iteration", "weight_decay"},
-        "training");
+    require_keys(input,
+                 {"batch_size", "learning_rate", "seed", "train_steps_per_iteration",
+                  "weight_decay"},
+                 {"policy_loss_domain"}, "training");
     TrainingConfig result{
         .batch_size = integer(field(input, "batch_size", "training"), "training.batch_size"),
         .train_steps_per_iteration = integer(field(input, "train_steps_per_iteration", "training"),
@@ -370,7 +469,11 @@ TrainingConfig TrainingConfig::from_json(const Json& value) {
         .learning_rate =
             number(field(input, "learning_rate", "training"), "training.learning_rate"),
         .weight_decay = number(field(input, "weight_decay", "training"), "training.weight_decay"),
-        .seed = non_negative_seed(field(input, "seed", "training"), "training.seed")};
+        .seed = non_negative_seed(field(input, "seed", "training"), "training.seed"),
+        .policy_loss_domain = input.contains("policy_loss_domain")
+                                  ? string(field(input, "policy_loss_domain", "training"),
+                                           "training.policy_loss_domain")
+                                  : "full"};
     result.validate();
     return result;
 }
@@ -425,7 +528,8 @@ void ArenaConfig::validate() const {
 
 Json ArenaConfig::to_json() const {
     validate();
-    return Json{Object{{"games", Json{games}},
+    return Json{Object{{"enabled", Json{enabled}},
+                       {"games", Json{games}},
                        {"max_moves", Json{max_moves}},
                        {"promotion_threshold", Json{promotion_threshold}},
                        {"seed", Json{json_integer(seed, "arena.seed")}}}};
@@ -433,12 +537,15 @@ Json ArenaConfig::to_json() const {
 
 ArenaConfig ArenaConfig::from_json(const Json& value) {
     const Object& input = object(value, "arena");
-    require_exact_keys(input, {"games", "max_moves", "promotion_threshold", "seed"}, "arena");
-    ArenaConfig result{.games = integer(field(input, "games", "arena"), "arena.games"),
-                       .seed = non_negative_seed(field(input, "seed", "arena"), "arena.seed"),
-                       .max_moves = integer(field(input, "max_moves", "arena"), "arena.max_moves"),
-                       .promotion_threshold = number(field(input, "promotion_threshold", "arena"),
-                                                     "arena.promotion_threshold")};
+    require_keys(input, {"games", "max_moves", "promotion_threshold", "seed"}, {"enabled"},
+                 "arena");
+    ArenaConfig result{
+        .enabled = input.contains("enabled") ? boolean(input.at("enabled"), "arena.enabled") : true,
+        .games = integer(field(input, "games", "arena"), "arena.games"),
+        .seed = non_negative_seed(field(input, "seed", "arena"), "arena.seed"),
+        .max_moves = integer(field(input, "max_moves", "arena"), "arena.max_moves"),
+        .promotion_threshold =
+            number(field(input, "promotion_threshold", "arena"), "arena.promotion_threshold")};
     result.validate();
     return result;
 }
@@ -523,7 +630,8 @@ void ProductionConfig::validate() const {
         throw ConfigError("unsupported production config schema_version");
     if (model_name != "Soo" && model_name != "Min")
         throw ConfigError("model_name must be Soo or Min");
-    if (!non_blank(model_version)) throw ConfigError("model_version must be a non-empty string");
+    if (!non_blank(model_version))
+        throw ConfigError("model_version must be a non-empty string");
     network.validate();
     runtime.validate();
     mcts.validate();
@@ -600,4 +708,4 @@ ProductionConfig ProductionConfig::from_json(const Json& value) {
     return result;
 }
 
-}  // namespace diamond_orchestration
+} // namespace diamond_orchestration

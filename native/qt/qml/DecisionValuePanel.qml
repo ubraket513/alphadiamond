@@ -22,10 +22,9 @@ PanelSection {
 
     Text {
         visible: !root.controller.analysisAvailable
-        text: "Native Min analysis is not available."
+        text: "Neural analysis is unavailable in this build."
         color: Theme.textFaint
         font.family: Theme.fontFamily
         font.pixelSize: Theme.fontSmall
     }
 }
-

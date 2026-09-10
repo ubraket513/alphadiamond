@@ -1,6 +1,7 @@
 #include "diamond_orchestration/report.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <fstream>
 #include <ostream>
 #include <string_view>
@@ -35,6 +36,14 @@ std::string required_value(const std::vector<std::string>& arguments, std::size_
     return arguments[index];
 }
 
+uint64_t positive_count(const std::string& value, std::string_view option) {
+    uint64_t result = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size() || result == 0)
+        throw CommandArgumentError(std::string(option) + " must be a positive integer");
+    return result;
+}
+
 CommandRequest parse_request(const std::vector<std::string>& arguments) {
     if (arguments.empty()) throw CommandArgumentError("the following arguments are required: command");
     if (!is_verb(arguments.front())) throw CommandArgumentError("unknown command: " + arguments.front());
@@ -44,6 +53,8 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
     bool have_config = false, have_checkpoint = false, have_warm_start = false;
     bool have_scratch = false, have_candidate = false, have_champion = false;
     bool have_opening_suite = false;
+    bool have_max_additional_iterations = false;
+    bool have_rollback_failed_gate = false;
     for (std::size_t index = 1; index < arguments.size(); ++index) {
         const auto& option = arguments[index];
         if (option == "--run-dir") {
@@ -95,6 +106,17 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
                 throw CommandArgumentError("duplicate argument --opening-suite");
             request.opening_suite_id = required_value(arguments, index, option);
             have_opening_suite = true;
+        } else if (option == "--max-additional-iterations") {
+            if (have_max_additional_iterations)
+                throw CommandArgumentError("duplicate argument --max-additional-iterations");
+            request.max_additional_iterations =
+                positive_count(required_value(arguments, index, option), option);
+            have_max_additional_iterations = true;
+        } else if (option == "--rollback-failed-gate") {
+            if (have_rollback_failed_gate)
+                throw CommandArgumentError("duplicate argument --rollback-failed-gate");
+            request.rollback_failed_gate = required_value(arguments, index, option);
+            have_rollback_failed_gate = true;
         } else {
             throw CommandArgumentError("unrecognized argument: " + option);
         }
@@ -138,13 +160,20 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
                                  : have_warm_start ? CommandInitialization::warm_start
                                                    : CommandInitialization::native_checkpoint;
     } else if (request.command == "resume" || request.command == "report") {
-        if (have_config || initialization_count != 0 || have_candidate || have_champion ||
-            have_opening_suite || have_runtime || have_model || have_run_id) {
-            throw CommandArgumentError(request.command + " accepts only --run-dir");
+        if ((request.command == "report" &&
+             (have_config || have_max_additional_iterations || have_rollback_failed_gate)) ||
+            initialization_count != 0 || have_candidate || have_champion || have_opening_suite ||
+            have_runtime || have_model || have_run_id) {
+            throw CommandArgumentError(request.command +
+                                       (request.command == "resume"
+                                            ? " accepts only --run-dir and optional --config"
+                                            : " accepts only --run-dir"));
         }
     } else {
-        if (have_config || initialization_count != 0 || !have_candidate || !have_champion ||
-            !have_opening_suite || have_runtime || have_model || have_run_id) {
+        if (have_config || have_max_additional_iterations || have_rollback_failed_gate ||
+            initialization_count != 0 ||
+            !have_candidate || !have_champion || !have_opening_suite || have_runtime ||
+            have_model || have_run_id) {
             throw CommandArgumentError(
                 "evaluate requires only --run-dir, --candidate, --champion, and --opening-suite");
         }
@@ -154,8 +183,15 @@ CommandRequest parse_request(const std::vector<std::string>& arguments) {
 
 ProductionConfig load_config(const CommandRequest& request) {
     try {
-        const auto path = request.command == "train" ? request.config_path
-                                                     : request.run_dir / "resolved-config.json";
+        auto path = request.command == "train" ||
+                            (request.command == "resume" && !request.config_path.empty())
+                        ? request.config_path
+                        : request.run_dir / "resolved-config.json";
+        if ((request.command == "resume" && request.config_path.empty()) ||
+            request.command == "evaluate") {
+            const auto active = request.run_dir / "active-config.json";
+            if (std::filesystem::exists(active)) path = active;
+        }
         std::ifstream input(path, std::ios::binary);
         if (!input) {
             if (request.command == "train")
@@ -208,7 +244,8 @@ int dispatch_command(const std::vector<std::string>& arguments, const CommandSer
                     "", "ok",
                     {{"usage", Json{"train --run-dir DIR --config FILE (--scratch|--checkpoint "
                                     "DIR|--warm-start ARTIFACT); "
-                                    "resume --run-dir DIR; evaluate --run-dir DIR --candidate DIR "
+                                    "resume --run-dir DIR [--config FILE] [--max-additional-iterations N] "
+                                    "[--rollback-failed-gate NAME]; evaluate --run-dir DIR --candidate DIR "
                                     "--champion DIR "
                                     "--opening-suite ID; report --run-dir DIR"}}}),
                 output);

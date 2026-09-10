@@ -100,13 +100,7 @@ Options parse_options(int argc, char** argv) {
     return options;
 }
 
-soo::Match make_match() {
-    soo::Match match;
-    match.count = 2;
-    match.players[0] = {1, 0, 3};
-    match.players[1] = {2, 3, 0};
-    return match;
-}
+soo::Match make_match() { return soo::standard_soo_match(); }
 
 // Build a deterministic one-action terminal fixture. Player two is already on
 // the podium, so player one's sole move closes the match and emits one real

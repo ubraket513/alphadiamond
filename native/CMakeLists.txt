@@ -16,6 +16,7 @@ set(SOO_SEARCH_SOURCES
     src/mcts.cpp
     src/mcts3p.cpp
     src/profile.cpp
+    src/search_target_metrics.cpp
     src/selfplay.cpp
 )
 
@@ -57,7 +58,9 @@ target_compile_options(soo_search PRIVATE
 
 add_library(diamond_pipeline STATIC
     src/json.cpp
+    src/policy_diagnostics.cpp
     src/replay.cpp
+    src/replay_segment.cpp
     src/replay_store.cpp
     src/training_sample.cpp
 )
@@ -92,6 +95,8 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(topology_test "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(rules_golden_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
+    diamond_add_native_test(match_geometry_test "${DIAMOND_GOLDEN_DIR}")
+    diamond_add_native_test(geometry_hygiene_test "${CMAKE_CURRENT_SOURCE_DIR}")
     diamond_add_native_test(mcts_golden_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(mcts_stochastic_test
@@ -101,11 +106,16 @@ if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
     diamond_add_native_test(budget_test
         "${DIAMOND_GOLDEN_DIR}" "${DIAMOND_GOLDEN_DIR}/topology")
     diamond_add_native_test(batcher_test)
+    diamond_add_native_test(policy_diagnostics_test)
+    diamond_add_native_test(search_target_metrics_test)
     diamond_add_native_test(selfplay_test "${DIAMOND_GOLDEN_DIR}")
     diamond_add_native_test(replay_schema_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-schema-scratch")
     diamond_add_native_test(replay_store_test "${DIAMOND_GOLDEN_DIR}/replay-v1" "${CMAKE_CURRENT_BINARY_DIR}/replay-store-scratch")
+    diamond_add_native_test(replay_segment_test)
     target_link_libraries(replay_schema_test PRIVATE alphadiamond::diamond_pipeline)
     target_link_libraries(replay_store_test PRIVATE alphadiamond::diamond_pipeline)
+    target_link_libraries(replay_segment_test PRIVATE alphadiamond::diamond_pipeline)
+    target_link_libraries(policy_diagnostics_test PRIVATE alphadiamond::diamond_pipeline)
 
     add_executable(golden_manifest_test tests/golden_manifest_test.cpp)
     target_link_libraries(golden_manifest_test PRIVATE alphadiamond::diamond_pipeline)
@@ -144,7 +154,9 @@ if(DIAMOND_BUILD_LIBTORCH)
 
     add_library(diamond_training STATIC
         src/checkpoint.cpp
+        src/checkpoint_export.cpp
         src/device.cpp
+        src/parameter_diagnostics.cpp
         src/training_sample.cpp
         src/trainer.cpp
     )
@@ -172,6 +184,12 @@ if(DIAMOND_BUILD_LIBTORCH)
     )
     target_compile_features(diamond_release PUBLIC cxx_std_20)
 
+    if(BUILD_TESTING)
+        add_executable(checkpoint_export_test tests/checkpoint_export_test.cpp)
+        target_link_libraries(checkpoint_export_test PRIVATE alphadiamond::diamond_training)
+        add_test(NAME checkpoint_export_test COMMAND checkpoint_export_test "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-export-scratch")
+    endif()
+
     add_executable(alphadiamond-checkpoint src/checkpoint_main.cpp)
     target_link_libraries(alphadiamond-checkpoint PRIVATE alphadiamond::diamond_training)
     target_compile_features(alphadiamond-checkpoint PRIVATE cxx_std_20)
@@ -186,8 +204,10 @@ if(DIAMOND_BUILD_LIBTORCH)
     # The direct native self-play -> replay -> training path is deliberately
     # separate from the schema-only replay library: it owns LibTorch models.
     add_library(diamond_native_pipeline STATIC
+        src/learning_diagnostic.cpp
         src/model_pool.cpp
         src/pipeline.cpp
+        src/vacancy_distillation.cpp
     )
     add_library(alphadiamond::diamond_native_pipeline ALIAS diamond_native_pipeline)
     target_link_libraries(diamond_native_pipeline PUBLIC
@@ -215,6 +235,7 @@ if(DIAMOND_BUILD_LIBTORCH)
         src/report.cpp
         src/run_state.cpp
         src/schedule.cpp
+        src/training_resources.cpp
         src/training_wiring.cpp
     )
     add_library(alphadiamond::diamond_orchestration ALIAS diamond_orchestration)
@@ -236,7 +257,16 @@ if(DIAMOND_BUILD_LIBTORCH)
 
         add_executable(selfplay_benchmark benchmarks/selfplay_benchmark.cpp)
         target_link_libraries(selfplay_benchmark PRIVATE
-            alphadiamond::diamond_native_pipeline)
+            alphadiamond::diamond_native_pipeline
+            alphadiamond::diamond_orchestration)
+
+        add_executable(min_learning_diagnostic benchmarks/min_learning_diagnostic.cpp)
+        target_link_libraries(min_learning_diagnostic PRIVATE
+            alphadiamond::diamond_native_pipeline alphadiamond::diamond_orchestration)
+
+        add_executable(min_vacancy_realizability benchmarks/min_vacancy_realizability.cpp)
+        target_link_libraries(min_vacancy_realizability PRIVATE
+            alphadiamond::diamond_native_pipeline alphadiamond::diamond_orchestration)
 
         add_executable(end_to_end_benchmark benchmarks/end_to_end_benchmark.cpp)
         target_link_libraries(end_to_end_benchmark PRIVATE
@@ -244,12 +274,23 @@ if(DIAMOND_BUILD_LIBTORCH)
 
         foreach(benchmark IN ITEMS
                 training_step_benchmark checkpoint_benchmark replay_benchmark
-                selfplay_benchmark end_to_end_benchmark)
+                selfplay_benchmark min_learning_diagnostic min_vacancy_realizability
+                end_to_end_benchmark)
             target_compile_features(${benchmark} PRIVATE cxx_std_20)
         endforeach()
     endif()
 
     add_executable(alphadiamond-train src/train_main.cpp)
+    if(BUILD_TESTING AND DIAMOND_BUILD_NATIVE_TESTS)
+        add_executable(production_topology_test tests/production_topology_test.cpp)
+        target_link_libraries(production_topology_test PRIVATE
+            alphadiamond::diamond_training alphadiamond::diamond_orchestration)
+        target_include_directories(production_topology_test PRIVATE tests)
+        add_dependencies(production_topology_test alphadiamond-train)
+        add_test(NAME production_topology_test COMMAND production_topology_test
+            "${CMAKE_CURRENT_BINARY_DIR}/production-topology-scratch"
+            "$<TARGET_FILE:alphadiamond-train>" "${CMAKE_SOURCE_DIR}/tests/golden")
+    endif()
     find_package(Git QUIET)
     set(DIAMOND_SOURCE_GIT_COMMIT "unavailable")
     set(DIAMOND_SOURCE_DIRTY 1)
@@ -277,7 +318,7 @@ if(DIAMOND_BUILD_LIBTORCH)
     if(DIAMOND_BUILD_BENCHMARKS)
         foreach(benchmark IN ITEMS
                 training_step_benchmark checkpoint_benchmark replay_benchmark
-                selfplay_benchmark end_to_end_benchmark)
+                selfplay_benchmark min_vacancy_realizability end_to_end_benchmark)
             target_compile_definitions(${benchmark} PRIVATE
                 DIAMOND_SOURCE_GIT_COMMIT="${DIAMOND_SOURCE_GIT_COMMIT}"
                 DIAMOND_SOURCE_DIRTY=${DIAMOND_SOURCE_DIRTY})
@@ -319,6 +360,21 @@ if(DIAMOND_BUILD_LIBTORCH)
     target_compile_definitions(soo_evaluator_probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
     if(MSVC)
         target_compile_options(soo_evaluator_probe PRIVATE /bigobj)
+    endif()
+
+    # Which prior carries Min out of a cold start: Soo's policy through a 3P
+    # adapter, the vacancy heuristic, or nothing.  Self-play only -- it never
+    # touches the arena or a run directory.
+    add_executable(alphadiamond-min-probe src/min_bootstrap_probe.cpp)
+    target_link_libraries(alphadiamond-min-probe
+        PRIVATE alphadiamond::diamond_model alphadiamond::soo_search
+                alphadiamond::diamond_training alphadiamond::diamond_native_pipeline
+                ${TORCH_LIBRARIES})
+    target_compile_features(alphadiamond-min-probe PRIVATE cxx_std_20)
+    target_include_directories(alphadiamond-min-probe PRIVATE ${TORCH_INCLUDE_DIRS})
+    target_compile_definitions(alphadiamond-min-probe PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    if(MSVC)
+        target_compile_options(alphadiamond-min-probe PRIVATE /bigobj)
     endif()
 
     add_executable(soo_mcts_probe src/soo_mcts_probe.cpp)
@@ -417,6 +473,42 @@ if(DIAMOND_BUILD_LIBTORCH)
         target_compile_definitions(training_step_parity_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
         if(MSVC)
             target_compile_options(training_step_parity_test PRIVATE /bigobj)
+        endif()
+
+    add_executable(min_value_head_init_test tests/min_value_head_init_test.cpp)
+        target_link_libraries(min_value_head_init_test PRIVATE alphadiamond::diamond_training)
+        target_include_directories(min_value_head_init_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+        target_compile_features(min_value_head_init_test PRIVATE cxx_std_20)
+        target_compile_definitions(min_value_head_init_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+        add_test(NAME min_value_head_init_test COMMAND min_value_head_init_test)
+    set_tests_properties(min_value_head_init_test PROPERTIES LABELS training)
+
+    add_executable(parameter_diagnostics_test tests/parameter_diagnostics_test.cpp)
+    target_link_libraries(parameter_diagnostics_test PRIVATE alphadiamond::diamond_training)
+    target_include_directories(parameter_diagnostics_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+    target_compile_features(parameter_diagnostics_test PRIVATE cxx_std_20)
+    target_compile_definitions(parameter_diagnostics_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    add_test(NAME parameter_diagnostics_test COMMAND parameter_diagnostics_test)
+    set_tests_properties(parameter_diagnostics_test PROPERTIES LABELS training)
+
+    add_executable(min_learning_diagnostic_test tests/min_learning_diagnostic_test.cpp)
+    target_link_libraries(min_learning_diagnostic_test PRIVATE alphadiamond::diamond_native_pipeline)
+    target_include_directories(min_learning_diagnostic_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+    target_compile_features(min_learning_diagnostic_test PRIVATE cxx_std_20)
+    target_compile_definitions(min_learning_diagnostic_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    add_test(NAME min_learning_diagnostic_test COMMAND min_learning_diagnostic_test
+             "${CMAKE_CURRENT_BINARY_DIR}/min-learning-diagnostic-scratch")
+    set_tests_properties(min_learning_diagnostic_test PROPERTIES LABELS training)
+
+    add_executable(vacancy_distillation_test tests/vacancy_distillation_test.cpp)
+    target_link_libraries(vacancy_distillation_test PRIVATE alphadiamond::diamond_native_pipeline)
+    target_include_directories(vacancy_distillation_test PRIVATE tests ${TORCH_INCLUDE_DIRS})
+    target_compile_features(vacancy_distillation_test PRIVATE cxx_std_20)
+    target_compile_definitions(vacancy_distillation_test PRIVATE _DISABLE_EXTENDED_ALIGNED_STORAGE)
+    add_test(NAME vacancy_distillation_test COMMAND vacancy_distillation_test)
+    set_tests_properties(vacancy_distillation_test PROPERTIES LABELS training)
+        if(MSVC)
+            target_compile_options(min_value_head_init_test PRIVATE /bigobj)
         endif()
 
         add_executable(checkpoint_v2_roundtrip_test tests/checkpoint_v2_roundtrip_test.cpp)
@@ -581,17 +673,24 @@ if(DIAMOND_BUILD_LIBTORCH)
                 LABELS "cuda;training")
         endif()
         if(DIAMOND_BUILD_BENCHMARKS)
-            add_test(NAME benchmark_schema_test
+        add_test(NAME benchmark_schema_test
                 COMMAND ${CMAKE_COMMAND}
                     -DTRAINING_BENCHMARK=$<TARGET_FILE:training_step_benchmark>
                     -DCHECKPOINT_BENCHMARK=$<TARGET_FILE:checkpoint_benchmark>
                     -DREPLAY_BENCHMARK=$<TARGET_FILE:replay_benchmark>
                     -DSELFPLAY_BENCHMARK=$<TARGET_FILE:selfplay_benchmark>
+                    -DMIN_LEARNING_DIAGNOSTIC=$<TARGET_FILE:min_learning_diagnostic>
                     -DEND_TO_END_BENCHMARK=$<TARGET_FILE:end_to_end_benchmark>
                     -DMODEL_ARTIFACT=${PROJECT_SOURCE_DIR}/models/soo/2.0.0
                     -DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/benchmark-schema-scratch
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_schema_test.cmake)
             set_tests_properties(benchmark_schema_test PROPERTIES LABELS benchmark)
+
+            add_test(NAME min_vacancy_realizability_cli_test
+                COMMAND ${CMAKE_COMMAND}
+                    -DMIN_VACANCY_REALIZABILITY=${CMAKE_CURRENT_BINARY_DIR}/min_vacancy_realizability
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/min_vacancy_realizability_cli_test.cmake)
+            set_tests_properties(min_vacancy_realizability_cli_test PROPERTIES LABELS benchmark)
         endif()
         if(WIN32)
             set_tests_properties(checkpoint_v2_roundtrip_test checkpoint_v2_reject_test
