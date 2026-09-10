@@ -111,7 +111,7 @@ struct SchedulerConfig {
 struct EpisodeJob {
     State initial_state;
     uint64_t seed = 0;      // Python's derive_game_seed for this attempt
-    std::optional<Match> match;  // Per-game turn order; absent keeps the batch default.
+    std::optional<Match> match; // Per-game turn order; absent keeps the batch default.
 };
 
 // Assign every permutation equally, preserving camps and seeds. Opening jobs only.

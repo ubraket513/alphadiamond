@@ -1,0 +1,83 @@
+{
+  "schema_version": 2,
+  "model_name": "Min",
+  "model_version": "2.0.0-min-test.20064",
+  "network": {
+    "width": 128,
+    "residual_blocks": 6
+  },
+  "runtime": {
+    "device": "cuda:0",
+    "precision": "fp32"
+  },
+  "mcts": {
+    "simulations": 128,
+    "simulations_late": 0,
+    "repeat_window": 0,
+    "c_puct": 1.5,
+    "dirichlet_alpha": 0.3,
+    "dirichlet_epsilon": 0.25,
+    "seed": 7
+  },
+  "self_play": {
+    "max_moves": 500,
+    "max_game_seconds": null,
+    "temperature": 1.0,
+    "temperature_moves": 20,
+    "bootstrap_prior": "none",
+    "seed": 7,
+    "balance_turn_orders": true,
+    "bootstrap_prior_weight": 0.0
+  },
+  "workers": {
+    "logical_lanes": 6,
+    "search_threads": 4,
+    "games_per_iteration": 12,
+    "retry_id": "attempt-0"
+  },
+  "inference": {
+    "max_batch_size": 16,
+    "max_wait_us": 500,
+    "request_queue_capacity": 1024,
+    "response_timeout_s": 600.0
+  },
+  "replay": {
+    "capacity": 10000,
+    "seed": 7
+  },
+  "training": {
+    "batch_size": 32,
+    "train_steps_per_iteration": 8,
+    "learning_rate": 0.0001,
+    "policy_loss_domain": "legal",
+    "weight_decay": 0.0001,
+    "seed": 7
+  },
+  "run_budget": {
+    "max_iterations": 1,
+    "max_wall_clock_seconds": null,
+    "checkpoint_every_iterations": 1
+  },
+  "arena": {
+    "enabled": false,
+    "games": 216,
+    "max_moves": 500,
+    "promotion_threshold": 0.55,
+    "seed": 7
+  },
+  "opening_suite": {
+    "id": "production-openings-v1",
+    "version": 1,
+    "seed": 7,
+    "count": 12,
+    "max_depth": 6
+  },
+  "promotion_statistics": {
+    "method": "opening-block-bootstrap-v1",
+    "resampling_unit": "opening_block",
+    "confidence_level": 0.95,
+    "bootstrap_replicates": 10000,
+    "seed": 7
+  },
+  "run_seed": 7
+}

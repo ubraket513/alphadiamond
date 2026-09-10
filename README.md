@@ -13,6 +13,11 @@ use Soo; three-player games use Min. Both run exported AlphaZero models through
 LibTorch and native C++ MCTS. Training, checkpointing, and model release are
 native C++ as well.
 
+For the Min six-order training experiment, see the
+[datacenter quick start](docs/model-training/min_balanced_datacenter.md).
+It provides verified step 20064 inputs, CUDA smoke/pilot/control configurations,
+and per-order completion and sample diagnostics.
+
 ---
 
 ## Project overview

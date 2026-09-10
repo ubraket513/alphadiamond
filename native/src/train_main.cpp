@@ -897,18 +897,22 @@ StageOutcome execute_stage(const CommandRequest& request, const ProductionConfig
                 const auto& match = game.match ? *game.match : selfplay_job.match;
                 std::string order;
                 for (int seat = 0; seat < match.count; ++seat) {
-                    if (seat) order += "-";
+                    if (seat)
+                        order += "-";
                     order += std::to_string(match.players[seat].id);
                 }
-                auto [entry, inserted] = order_counts.try_emplace(order, Json{Object{
-                    {"requested", Json{int64_t{0}}}, {"completed", Json{int64_t{0}}},
-                    {"aborted", Json{int64_t{0}}}, {"samples", Json{int64_t{0}}}}});
+                auto [entry, inserted] =
+                    order_counts.try_emplace(order, Json{Object{{"requested", Json{int64_t{0}}},
+                                                                {"completed", Json{int64_t{0}}},
+                                                                {"aborted", Json{int64_t{0}}},
+                                                                {"samples", Json{int64_t{0}}}}});
                 (void)inserted;
                 auto& counts = std::get<Object>(entry->second.value);
                 ++std::get<int64_t>(counts.at("requested").value);
                 const auto& episode = result.episodes[index];
                 ++std::get<int64_t>(counts.at(episode.completed ? "completed" : "aborted").value);
-                std::get<int64_t>(counts.at("samples").value) += static_cast<int64_t>(episode.samples.size());
+                std::get<int64_t>(counts.at("samples").value) +=
+                    static_cast<int64_t>(episode.samples.size());
             }
             write_json(
                 per_iteration / "selfplay.metrics.json",
