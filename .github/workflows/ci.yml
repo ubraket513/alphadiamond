@@ -32,7 +32,7 @@ jobs:
           echo "CC=gcc-14" >> "$GITHUB_ENV"
           echo "CXX=g++-14" >> "$GITHUB_ENV"
       - run: tools/native_training.sh cmake --preset native-ci
-      - run: tools/native_training.sh cmake --build --preset native-ci --parallel
+      - run: tools/native_training.sh cmake --build --preset native-ci --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
       - run: tools/native_training.sh ctest --preset native-ci --output-on-failure
 
   native-sanitizers:
@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: tools/native_training.sh cmake --preset native-asan
-      - run: tools/native_training.sh cmake --build --preset native-asan --parallel
+      - run: tools/native_training.sh cmake --build --preset native-asan --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
       - run: tools/native_training.sh ctest --preset native-asan --output-on-failure
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -75,7 +75,10 @@ jobs:
         run: >-
           tools/native_training.sh cmake --preset native-training
           -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/.deps/libtorch"
-      - run: tools/native_training.sh cmake --build --preset native-training --parallel
+      # Explicit job count everywhere: bare --parallel hands make a "-j" with no
+      # limit, which forks every LibTorch translation unit at once and gets the
+      # runner OOM-killed ("received a shutdown signal").
+      - run: tools/native_training.sh cmake --build --preset native-training --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
       - run: tools/native_training.sh ctest --preset native-training --output-on-failure --no-tests=error
 
   native-qt:
@@ -99,7 +102,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DBUILD_TESTING=ON
           -DDIAMOND_BUILD_QT=ON
-      - run: cmake --build build/native-qt-ci --parallel
+      - run: cmake --build build/native-qt-ci --parallel "$(nproc)"
       - run: ctest --test-dir build/native-qt-ci --output-on-failure
         env:
           QT_QPA_PLATFORM: offscreen
@@ -161,24 +164,3 @@ jobs:
               --lines="$start:$end" "$file" || status=1
           done < "$ranges"
           exit "$status"
-
-  compatibility-core:
-    name: core (py3.12)
-    needs: [native-core, native-training]
-    runs-on: ubuntu-latest
-    steps:
-      - run: test '${{ needs.native-core.result }}' = success && test '${{ needs.native-training.result }}' = success
-
-  compatibility-bridge:
-    name: bridge (pybind boundary)
-    needs: [native-core, native-training]
-    runs-on: ubuntu-latest
-    steps:
-      - run: test '${{ needs.native-core.result }}' = success && test '${{ needs.native-training.result }}' = success
-
-  compatibility-lint:
-    name: lint (changed files)
-    needs: [native-format, native-training]
-    runs-on: ubuntu-latest
-    steps:
-      - run: test '${{ needs.native-format.result }}' = success && test '${{ needs.native-training.result }}' = success
