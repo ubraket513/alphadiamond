@@ -236,6 +236,9 @@ void ModelCatalog::rebuildRows() {
             return a.value(QStringLiteral("trainingStep")).toInt() > b.value(QStringLiteral("trainingStep")).toInt();
         return a.value(QStringLiteral("id")).toString() < b.value(QStringLiteral("id")).toString();
     });
+    for (const auto& release : releases_)
+        if (!known.contains(release.toMap().value("id").toString()))
+            rows.push_back(release);
     models_ = rows;
     Q_EMIT changed();
 }
@@ -244,6 +247,7 @@ void ModelCatalog::refresh() {
     if (busy())
         return;
     artifacts_.clear();
+    releases_.clear();
     github_files_.clear();
     hugging_face_files_.clear();
     catalog_error_.clear();
@@ -251,6 +255,7 @@ void ModelCatalog::refresh() {
     rebuildRows();
     setStatus(QStringLiteral("Refreshing GitHub and Hugging Face…"));
     fetchGitHub();
+    fetchGitHubReleases();
     fetchHuggingFace();
     fetchHuggingFaceRatings();
 }
@@ -276,6 +281,59 @@ void ModelCatalog::fetchGitHub() {
     request(QUrl(QStringLiteral("https://api.github.com/repos/%1/git/trees/main?recursive=1")
                      .arg(kRepository)),
             &ModelCatalog::parseGitHubTree);
+}
+
+void ModelCatalog::fetchGitHubReleases(int page) {
+    QNetworkRequest request(
+        QUrl(QStringLiteral("https://api.github.com/repos/%1/releases?per_page=100&page=%2")
+                 .arg(kRepository)
+                 .arg(page)));
+    request.setRawHeader("User-Agent", "AlphaDiamond");
+    request.setRawHeader("Accept", "application/vnd.github+json");
+    request.setTransferTimeout(30000);
+    beginWork();
+    auto* reply = network_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, page] {
+        if (reply->error() == QNetworkReply::NoError) {
+            const auto payload = reply->readAll();
+            parseGitHubReleases(payload);
+            if (QJsonDocument::fromJson(payload).array().size() == 100)
+                fetchGitHubReleases(page + 1);
+        } else
+            setStatus(QStringLiteral("GitHub releases: %1").arg(reply->errorString()));
+        reply->deleteLater();
+        endWork();
+    });
+}
+
+void ModelCatalog::parseGitHubReleases(const QByteArray& payload) {
+    for (const auto& value : QJsonDocument::fromJson(payload).array()) {
+        const auto release = value.toObject();
+        if (release.value("draft").toBool())
+            continue;
+        const QString tag = release.value("tag_name").toString();
+        if (!tag.startsWith("soo-") && !tag.startsWith("min-"))
+            continue;
+        QString version = tag.mid(4);
+        if (version.startsWith('v'))
+            version.remove(0, 1);
+        const QString id = tag.left(3) + '/' + version;
+        releases_.push_back(QVariantMap{{"id", id},
+                                        {"name", modelLabel(id)},
+                                        {"version", version},
+                                        {"installed", false},
+                                        {"compatible", false},
+                                        {"selected", false},
+                                        {"active", false},
+                                        {"github", true},
+                                        {"huggingFace", false},
+                                        {"githubUrl", release.value("html_url").toString()},
+                                        {"huggingFaceUrl", QString()},
+                                        {"trainingStep", 0},
+                                        {"trainingSimulations", 0},
+                                        {"latestElo", QString()}});
+    }
+    rebuildRows();
 }
 void ModelCatalog::fetchHuggingFace() {
     QNetworkRequest request(QUrl(QStringLiteral("https://huggingface.co/api/buckets/%1/"
@@ -471,6 +529,7 @@ void ModelCatalog::selectModel(const QString& modelId) {
                       selected_id_);
     setStatus(QStringLiteral("%1 selected for next game.").arg(modelLabel(modelId)));
     rebuildRows();
+    Q_EMIT selectionChanged();
 }
 bool ModelCatalog::activateSelected(const QString& family) {
     if (!family.isEmpty()) {
@@ -613,6 +672,7 @@ void ModelCatalog::startDownload(const QString& modelId, bool huggingFace) {
 void ModelCatalog::requestDownloadFile(const QString& relativePath, const QUrl& url) {
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent", "AlphaDiamond");
+    request.setTransferTimeout(60000);
     QNetworkReply* reply = network_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, relativePath] {
         if (reply->error() == QNetworkReply::NoError) {

@@ -51,6 +51,10 @@ do
     if [ -f "$candidate" ]; then exe=$candidate; break; fi
 done
 [ -n "$exe" ] || { echo "Qt executable not found under $build_dir" >&2; exit 1; }
+if grep -q '^DIAMOND_QML_PREVIEW:BOOL=ON' "$build_dir/CMakeCache.txt"; then
+    echo "refusing to package a QML debugging build; use the native-package preset" >&2
+    exit 1
+fi
 
 qt_bin=$environment_root/Library/lib/qt6/bin
 qt_root=$environment_root/Library/lib/qt6
@@ -92,7 +96,7 @@ if [ -e "$destination" ]; then
 fi
 mkdir -p -- "$destination/assets/sounds"
 cp -f -- "$exe" "$destination/diamond_qt.exe"
-cp -f -- "$repo/native/qt/assets/sounds/move.m4a" "$destination/assets/sounds/move.m4a"
+cp -f -- "$repo/native/qt/assets/sounds/move.wav" "$destination/assets/sounds/move.wav"
 
 copy_glob() {
     target=$1
@@ -226,6 +230,8 @@ forbidden=$(find "$destination" -type f \( \
 
 run_smoke() {
     argument=$1
+    platform=offscreen
+    if [ "$argument" = '--window-smoke' ]; then platform=windows; fi
     windows_destination=$(cygpath -w "$PWD/$destination")
     windows_root=${SystemRoot:-C:\\Windows}
     env -i \
@@ -233,13 +239,13 @@ run_smoke() {
         SystemRoot="$windows_root" \
         WINDIR="$windows_root" \
         PATH="$windows_destination;$windows_root\\System32;$windows_root" \
-        QT_QPA_PLATFORM=offscreen \
+        QT_QPA_PLATFORM="$platform" \
         "$destination/diamond_qt.exe" "$argument"
 }
 
 if [ "$runtime_smoke" -eq 1 ]; then
     for argument in --smoke --game-smoke --worker-smoke --rotation-smoke \
-        --analysis-smoke --failure-smoke --sound-smoke
+        --analysis-smoke --replay-smoke --failure-smoke --sound-smoke --window-smoke
     do
         run_smoke "$argument"
     done

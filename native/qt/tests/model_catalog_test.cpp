@@ -17,6 +17,9 @@
 #include "../model_catalog.hpp"
 
 struct ModelCatalogTestAccess {
+    static void releases(ModelCatalog& catalog, const QByteArray& payload) {
+        catalog.parseGitHubReleases(payload);
+    }
     static void localModels(ModelCatalog& catalog, const QStringList& paths) {
         catalog.local_models_.clear();
         catalog.local_paths_.clear();
@@ -102,9 +105,12 @@ void liveDownload(bool github) {
     ModelCatalog catalog;
     catalog.refresh();
     waitForCatalog(catalog);
+    bool historical = false;
     bool found = false;
     for (const auto& row : catalog.models()) {
         const auto model = row.toMap();
+        if (model.value("id") == "soo/2.0.0-alpha.1")
+            historical = model.value("github").toBool() && !model.value("compatible").toBool();
         if (model.value("id") == "soo/2.0.0") {
             require(model.value("github").toBool() && model.value("huggingFace").toBool(),
                     "live catalog must merge both sources into the Soo row");
@@ -112,6 +118,8 @@ void liveDownload(bool github) {
         }
     }
     require(found, "live catalog lists released Soo model");
+    require(historical,
+            "live catalog must list historical GitHub checkpoints separately from native bundles");
     ModelCatalogTestAccess::isolateDownload(catalog, destination.path(), github);
     catalog.downloadModel(QStringLiteral("soo/2.0.0"));
     waitForCatalog(catalog);
@@ -182,6 +190,21 @@ int main(int argc, char** argv) {
         downloadResponse(false);
         downloadResponse(true);
         ModelCatalog treeCatalog;
+        ModelCatalogTestAccess::releases(
+            treeCatalog,
+            R"([{"tag_name":"soo-v2.0.0-alpha.1","html_url":"https://github.com/ubraket513/alphadiamond/releases/tag/soo-v2.0.0-alpha.1"},{"tag_name":"soo-v9.0.0","draft":true}])");
+        bool historicalFound = false;
+        for (const auto& value : treeCatalog.models()) {
+            const auto row = value.toMap();
+            if (row.value("id") == "soo/2.0.0-alpha.1") {
+                historicalFound = true;
+                require(!row.value("compatible").toBool() && row.value("github").toBool(),
+                        "training checkpoint must not be offered as a native runtime model");
+            }
+            require(row.value("id") != "soo/9.0.0", "draft releases are private to publishers");
+        }
+        require(historicalFound,
+                "release discovery must include versions absent from the current index");
         require(ModelCatalogTestAccess::parseFileTree(treeCatalog,
                     R"([{"type":"directory","path":"models/min/2.0.0/weights"},{"type":"file","path":"models/min/2.0.0/weights/a.f32"}])")
                     == QStringList{QStringLiteral("models/min/2.0.0/weights/a.f32")},

@@ -97,6 +97,13 @@ jobs:
           version: '6.8.1'
           modules: 'qtmultimedia'
           cache: true
+      - name: Provide an audio output for Qt sound-effect tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=qt_ci
+          pactl set-default-sink qt_ci
       - run: >-
           cmake -S . -B build/native-qt-ci
           -DCMAKE_BUILD_TYPE=RelWithDebInfo

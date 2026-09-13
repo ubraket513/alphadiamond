@@ -2,9 +2,9 @@
 
 #include <QAbstractNativeEventFilter>
 #include <QObject>
+#include <QPointer>
 #include <QRectF>
-
-class QWindow;
+#include <QWindow>
 
 class NativeChrome final : public QObject, public QAbstractNativeEventFilter {
     Q_OBJECT
@@ -15,6 +15,7 @@ class NativeChrome final : public QObject, public QAbstractNativeEventFilter {
 
     bool maximiseHovered() const { return maximise_hovered_; }
     void attach(QWindow* window);
+    Q_INVOKABLE void setupWindow(QWindow* window);
     Q_INVOKABLE void setMaximiseButtonRect(double x, double y, double width, double height);
 
     bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -30,7 +31,7 @@ class NativeChrome final : public QObject, public QAbstractNativeEventFilter {
   private:
     void setHovered(bool hovered);
 
-    QWindow* window_ = nullptr;
+    QPointer<QWindow> window_;
     quintptr native_handle_ = 0;
     QRectF maximise_rect_;
     bool maximise_hovered_ = false;

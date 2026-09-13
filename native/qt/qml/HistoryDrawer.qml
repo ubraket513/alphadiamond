@@ -20,7 +20,7 @@ Item {
 
     Rectangle {
         id: panel
-        width: Math.min(390, root.width * 0.42)
+        width: Math.min(440, root.width * 0.45)
         height: root.height
         x: root.open ? root.width - width : root.width
         color: Theme.surface
@@ -60,6 +60,7 @@ Item {
         HistoryPanel {
             objectName: "drawerHistoryPanel"
             controller: root.controller
+            onReplayRequested: root.open = false
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: heading.bottom

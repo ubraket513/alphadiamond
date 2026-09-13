@@ -237,6 +237,7 @@ Rectangle {
 
         // -- caption buttons ----------------------------------------------
         WindowButton {
+            objectName: "minimiseButton"
             kind: "minimise"
             onClicked: root.window.showMinimized()
         }

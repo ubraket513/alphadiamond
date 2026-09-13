@@ -179,6 +179,16 @@ int main(int argc, char** argv) {
         "Qt Multimedia could not load/decode the packaged move sound")) return 1;
     qInfo("controller contract: sound");
     controller.startMatch(QVariantList{1, 2}, QVariantList{});
+#ifdef DIAMOND_QT_HAS_SOO
+    if (!require(pump_until(
+                     app, [&controller] { return controller.hintPathIds().size() >= 2; }, 10000),
+                 "human turn has no AI hint route"))
+        return 1;
+    if (!require(controller.canSelect() && !controller.hasProposal() &&
+                     controller.selectedPosition() < 0,
+                 "hint changed the human selection or created an actionable proposal"))
+        return 1;
+#endif
 
     auto* geometry = qobject_cast<GeometryModel*>(controller.geometry());
     if (!require(geometry && geometry->holes().size() == soo::kBoardSize,

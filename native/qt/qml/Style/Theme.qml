@@ -24,6 +24,7 @@ QtObject {
     readonly property color systemOrange: "#FF9500"
     readonly property color systemYellow: "#FFCC00"
     readonly property color systemGreen:  "#34C759"
+    readonly property color systemMint:   "#00C7BE"
     readonly property color systemTeal:   "#30B0C7"
     readonly property color systemBlue:   "#007AFF"
     readonly property color systemIndigo: "#5856D6"
@@ -154,7 +155,7 @@ QtObject {
 
     // A hop must finish inside the native controller's 140 ms landing timer;
     // overrun and the piece lags the tick.
-    readonly property int hopDuration:   130
+    readonly property int hopDuration:   220
     readonly property int fadeDuration:  160
     readonly property int panelDuration: 260
 }

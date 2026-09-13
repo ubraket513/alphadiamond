@@ -8,6 +8,9 @@ import Style
 ApplicationWindow {
     id: window
 
+    Component.onCompleted: nativeChrome.setupWindow(window)
+    onVisibleChanged: if (visible) nativeChrome.setupWindow(window)
+
     width: 1440
     height: 900
     minimumWidth: 980
@@ -80,8 +83,8 @@ ApplicationWindow {
                 controller: window.ctrl
                 clip: true
                 visible: Layout.preferredWidth > 0.5
-                opacity: titleBar.panelVisible ? 1 : 0
-                Layout.preferredWidth: titleBar.panelVisible ? Theme.panelWidth : 0
+                opacity: titleBar.panelVisible && !window.ctrl.replayActive ? 1 : 0
+                Layout.preferredWidth: titleBar.panelVisible && !window.ctrl.replayActive ? Theme.panelWidth : 0
                 Layout.maximumWidth: Theme.panelWidth
                 Layout.fillHeight: true
 
@@ -110,8 +113,15 @@ ApplicationWindow {
             }
         }
 
+        ReplayBar {
+            controller: window.ctrl
+            visible: window.ctrl.replayActive
+            Layout.fillWidth: true
+        }
+
         RowLayout {
             id: analysisFooter
+            visible: !window.ctrl.replayActive
             objectName: "analysisFooter"
             Layout.fillWidth: true
             Layout.preferredHeight: 252
@@ -140,6 +150,21 @@ ApplicationWindow {
     }
 
     // -- keyboard shortcuts ----------------------------------------------
+    Shortcut {
+        sequence: "Space"
+        enabled: window.ctrl.replayActive && !window.dialogOpen
+        onActivated: window.ctrl.toggleReplayPlayback()
+    }
+    Shortcut {
+        sequence: "Left"
+        enabled: window.ctrl.replayActive && !window.dialogOpen
+        onActivated: window.ctrl.seekReplay(window.ctrl.replayIndex - 1)
+    }
+    Shortcut {
+        sequence: "Right"
+        enabled: window.ctrl.replayActive && !window.dialogOpen
+        onActivated: window.ctrl.seekReplay(window.ctrl.replayIndex + 1)
+    }
     // Each one re-checks controller state, so no shortcut can confirm or undo
     // something the current phase does not allow.
     Shortcut {
