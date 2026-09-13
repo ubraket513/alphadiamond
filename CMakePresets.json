@@ -59,11 +59,22 @@
       }
     },
     {
+      "name": "native-qt-preview",
+      "inherits": "native-qt",
+      "displayName": "Qt 6.12 development with QML hot reload",
+      "binaryDir": "${sourceDir}/build/native-qt-preview",
+      "cacheVariables": {
+        "DIAMOND_QML_PREVIEW": "ON",
+        "Qt6_DIR": "$env{DIAMOND_QT_ROOT}/lib/cmake/Qt6",
+        "CMAKE_PREFIX_PATH": "$env{DIAMOND_QT_ROOT};$env{CONDA_PREFIX}/Library"
+      }
+    },
+    {
       "name": "native-package",
       "inherits": "native-qt",
       "displayName": "Native Windows package",
       "binaryDir": "${sourceDir}/build/native-package",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "DIAMOND_QML_PREVIEW": "OFF" }
     }
   ],
   "buildPresets": [
@@ -72,9 +83,17 @@
     { "name": "native-training", "configurePreset": "native-training", "configuration": "RelWithDebInfo" },
     { "name": "native-asan", "configurePreset": "native-asan", "configuration": "Debug" },
     { "name": "native-qt", "configurePreset": "native-qt", "configuration": "RelWithDebInfo" },
+    { "name": "native-qt-preview", "configurePreset": "native-qt-preview", "configuration": "RelWithDebInfo" },
     { "name": "native-package", "configurePreset": "native-package", "configuration": "Release" }
   ],
   "testPresets": [
+    {
+      "name": "native-qt-preview",
+      "configurePreset": "native-qt-preview",
+      "configuration": "RelWithDebInfo",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
     {
       "name": "native-ci",
       "configurePreset": "native-ci",

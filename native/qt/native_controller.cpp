@@ -192,6 +192,19 @@ QHash<int, QByteArray> ContractListModel::roleNames() const {
 }
 
 void ContractListModel::setRows(QVariantList rows) {
+    // Keep piece delegates alive across selection and post-move refreshes.
+    if (kind_ == "piece" && rows.size() == rows_.size()) {
+        bool sameIdentities = true;
+        for (int row = 0; row < rows.size(); ++row)
+            sameIdentities &=
+                rows[row].toMap().value("pieceId") == rows_[row].toMap().value("pieceId");
+        if (sameIdentities) {
+            for (int row = 0; row < rows.size(); ++row)
+                if (rows[row] != rows_[row])
+                    updateRow(row, rows[row].toMap());
+            return;
+        }
+    }
     beginResetModel();
     rows_ = std::move(rows);
     endResetModel();
@@ -234,11 +247,43 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
 #endif
     model_catalog_->activateSelected(QStringLiteral("soo"));
     soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
+    connect(model_catalog_, &ModelCatalog::selectionChanged, this, [this] {
+        const QString family = match_.count == 3 ? QStringLiteral("min/") : QStringLiteral("soo/");
+        if (!ai_seats_.isEmpty() || !model_catalog_->selectedModelId().startsWith(family))
+            return;
+        cancelSearch();
+        pending_telemetry_.reset();
+        model_catalog_->activateSelected(family.chopped(1));
+        soo_runtime_ = std::make_shared<SooSearchRuntime>(model_catalog_->activeModelPath());
+        QTimer::singleShot(0, this, &NativeController::startHumanAnalysis);
+    });
     sound_player_ = new NativeMovePlayer(this);
     connect(sound_player_, &NativeMovePlayer::changed, this, &NativeController::changed);
     animation_timer_ = new QTimer(this);
-    animation_timer_->setInterval(140);
+    // Leave a visible landing between the 220 ms QML hops.
+    animation_timer_->setInterval(300);
+    animation_timer_->setTimerType(Qt::PreciseTimer);
     connect(animation_timer_, &QTimer::timeout, this, &NativeController::animationTick);
+    replay_timer_ = new QTimer(this);
+    replay_timer_->setInterval(900);
+    connect(replay_timer_, &QTimer::timeout, this, [this] {
+        if (animating_)
+            return;
+        if (replay_index_ >= replayCount()) {
+            replay_timer_->stop();
+            replay_playing_ = false;
+            Q_EMIT changed();
+            return;
+        }
+        const QVariantList ids = history_[replay_index_].toMap().value("pathIds").toList();
+        QVector<int> path;
+        for (const auto& id : ids)
+            path.push_back(id.toInt());
+        const int row =
+            path.isEmpty() ? -1 : piece_model_->rowWithValue("positionId", path.front());
+        ++replay_index_;
+        startAnimation(row, path);
+    });
     connect(ai_worker_, &NativeAiWorker::resultReady, this,
             [this](quint64 generation, const AiSearchResult& result) {
                 if (generation != generation_) return;
@@ -250,6 +295,14 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                         state_.current_player == pending_telemetry_player_) {
                         pending_telemetry_ = result.telemetry;
                         publishLatestCompute(result.telemetry);
+                        std::vector<uint8_t> path;
+                        if (soo::canonical_move_path(
+                                state_, result.selected_action / soo::kBoardSize,
+                                result.selected_action % soo::kBoardSize, path)) {
+                            hint_path_.clear();
+                            for (uint8_t position : path)
+                                hint_path_.push_back(position);
+                        }
                     }
                     Q_EMIT changed();
                     return;
@@ -305,7 +358,10 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
                 }
             });
     connect(ai_worker_, &NativeAiWorker::becameIdle, this, [this] {
-        if (!ai_restart_when_idle_) return;
+        if (!replay_active_ && !animating_ && !isCurrentPlayerAi() && !ai_failure_latched_)
+            QTimer::singleShot(0, this, &NativeController::startHumanAnalysis);
+        if (!ai_restart_when_idle_)
+            return;
         ai_restart_when_idle_ = false;
         if (!ai_failure_latched_ && !ai_thinking_ && proposal_action_ < 0 &&
             !isGameOver() && isCurrentPlayerAi())
@@ -331,9 +387,93 @@ NativeController::NativeController(QObject* parent) : QObject(parent) {
 
 NativeController::~NativeController() { shutdown(); }
 
+QVariantList NativeController::replayPathIds() const {
+    return replay_active_ && replay_index_ > 0
+               ? history_[replay_index_ - 1].toMap().value("pathIds").toList()
+               : QVariantList{};
+}
+
+void NativeController::refreshReplay() {
+    // Render a historical snapshot without modifying the live game, proposal,
+    // save payload, telemetry, or rating state.
+    const auto live = state_;
+    const auto proposal = proposal_path_;
+    const auto legal = legal_actions_;
+    const int selected = selected_position_;
+    const int last = last_action_;
+    state_ = replay_index_ < state_history_.size() ? state_history_[replay_index_] : live;
+    proposal_path_.clear();
+    legal_actions_.clear();
+    selected_position_ = -1;
+    last_action_ = -1;
+    const auto path = replayPathIds();
+    if (path.size() > 1)
+        last_action_ = path.front().toInt() * soo::kBoardSize + path.back().toInt();
+    refreshModels();
+    state_ = live;
+    proposal_path_ = proposal;
+    legal_actions_ = legal;
+    selected_position_ = selected;
+    last_action_ = last;
+}
+
+void NativeController::seekReplay(int index) {
+    if (history_.isEmpty() || (!replay_active_ && animating_))
+        return;
+    if (!replay_active_)
+        cancelSearch();
+    replay_active_ = true;
+    replay_playing_ = false;
+    replay_timer_->stop();
+    stopAnimation();
+    replay_index_ = std::clamp(index, 0, replayCount());
+    // Seeking is a cut, not a fictitious move between unrelated positions.
+    piece_model_->setRows({});
+    refreshReplay();
+    Q_EMIT changed();
+}
+
+void NativeController::leaveReplay() {
+    if (!replay_active_)
+        return;
+    replay_timer_->stop();
+    replay_playing_ = false;
+    stopAnimation();
+    replay_active_ = false;
+    piece_model_->setRows({});
+    refreshModels();
+    Q_EMIT changed();
+    if (!isCurrentPlayerAi())
+        pending_telemetry_.reset();
+    if (proposal_action_ < 0 || !isCurrentPlayerAi()) {
+        if (isCurrentPlayerAi())
+            startAiTurn();
+        else
+            startHumanAnalysis();
+    }
+}
+
+void NativeController::toggleReplayPlayback() {
+    if (!replay_active_)
+        seekReplay(0);
+    if (!replay_active_)
+        return;
+    if (replay_playing_) {
+        replay_playing_ = false;
+        replay_timer_->stop();
+    } else {
+        if (replay_index_ == replayCount())
+            seekReplay(0);
+        replay_playing_ = true;
+        replay_timer_->start();
+    }
+    Q_EMIT changed();
+}
+
 QObject* NativeController::modelCatalog() const { return model_catalog_; }
 
 void NativeController::cancelSearch() {
+    hint_path_.clear();
     ++generation_;
     ai_restart_when_idle_ = false;
     if (ai_worker_) ai_worker_->cancel();
@@ -545,6 +685,9 @@ bool NativeController::startMatch(const QVariantList& order, const QVariantList&
             return false;
         }
     }
+    replay_active_ = false;
+    replay_playing_ = false;
+    replay_timer_->stop();
     cancelSearch();
     ai_failure_latched_ = false;
     match_ = {};
@@ -1073,7 +1216,10 @@ void NativeController::commitAction(int32_t action) {
 void NativeController::startAnimation(int pieceRow, const QVector<int>& path) {
     if (pieceRow < 0 || path.size() < 2) {
         sound_player_->play();
-        rebuildPieceModel();
+        if (replay_active_)
+            refreshReplay();
+        else
+            rebuildPieceModel();
         finishMove();
         return;
     }
@@ -1081,16 +1227,23 @@ void NativeController::startAnimation(int pieceRow, const QVector<int>& path) {
     animation_path_ = path;
     animation_index_ = 0;
     animating_ = true;
-    status_message_ = QStringLiteral("Animating move…");
+    if (!replay_active_)
+        status_message_ = QStringLiteral("Animating move…");
     Q_EMIT changed();
     animation_timer_->start();
 }
 
 void NativeController::animationTick() {
+    // Sound belongs to the landing, after the preceding visual segment.
+    if (animation_index_ > 0)
+        sound_player_->play();
     ++animation_index_;
     if (animation_index_ >= animation_path_.size()) {
         stopAnimation();
-        rebuildPieceModel();
+        if (replay_active_)
+            refreshReplay();
+        else
+            rebuildPieceModel();
         finishMove();
         return;
     }
@@ -1100,7 +1253,6 @@ void NativeController::animationTick() {
     piece_model_->updateRow(animation_row_, QVariantMap{{"positionId", position},
         {"unitX", point.value("x")}, {"unitY", point.value("y")},
         {"isMoving", !last_hop}});
-    sound_player_->play();
 }
 
 void NativeController::stopAnimation() {
@@ -1112,6 +1264,14 @@ void NativeController::stopAnimation() {
 }
 
 void NativeController::finishMove() {
+    if (replay_active_) {
+        if (replay_index_ >= replayCount()) {
+            replay_timer_->stop();
+            replay_playing_ = false;
+        }
+        Q_EMIT changed();
+        return;
+    }
     announceFinishers();
     if (isGameOver()) {
         recordTerminalRating();
@@ -1178,11 +1338,15 @@ void NativeController::fail(const QString& message) {
 }
 
 void NativeController::startAiTurn() {
+    if (replay_active_)
+        return;
     if (isGameOver() || !ai_seats_.contains(state_.current_player) || ai_failure_latched_) return;
     startSearch(true);
 }
 
 void NativeController::startHumanAnalysis() {
+    if (replay_active_ || animating_)
+        return;
 #ifdef DIAMOND_QT_HAS_SOO
     if (isGameOver() || !analysisAvailable() || ai_seats_.contains(state_.current_player) ||
         analysis_thinking_ || (pending_telemetry_ &&
@@ -1193,6 +1357,8 @@ void NativeController::startHumanAnalysis() {
 }
 
 void NativeController::startSearch(bool selectMove) {
+    if (shutting_down_ || replay_active_)
+        return;
     if (ai_worker_->isRunning()) {
         if (selectMove) ai_restart_when_idle_ = true;
         return;
@@ -1284,11 +1450,14 @@ void NativeController::selectPosition(int position) {
 }
 
 void NativeController::confirmProposal() {
-    if (proposal_action_ < 0) return;
+    if (!canConfirm())
+        return;
     commitAction(proposal_action_);
 }
 
 void NativeController::cancelProposal() {
+    if (replay_active_)
+        return;
     if (proposal_is_ai_) return;
     clearProposal(); selected_position_ = -1; legal_actions_.clear();
     status_message_ = QStringLiteral("Proposal cancelled.");
@@ -1296,6 +1465,8 @@ void NativeController::cancelProposal() {
 }
 
 void NativeController::thinkAgain() {
+    if (replay_active_)
+        return;
     if (!proposal_is_ai_ || proposal_action_ < 0 || ai_thinking_) return;
     ai_rejected_.push_back(proposal_action_);
     clearProposal();
@@ -1306,10 +1477,15 @@ void NativeController::thinkAgain() {
 }
 
 void NativeController::undoLastMove() {
+    if (replay_active_ || animating_)
+        return;
     if (state_history_.isEmpty()) {
         fail(QStringLiteral("Nothing to undo."));
         return;
     }
+    replay_active_ = false;
+    replay_playing_ = false;
+    replay_timer_->stop();
     cancelSearch();
     ai_failure_latched_ = false;
     stopAnimation();
@@ -1344,6 +1520,9 @@ void NativeController::requestAiMove() {
 }
 
 void NativeController::shutdown() {
+    shutting_down_ = true;
+    if (replay_timer_)
+        replay_timer_->stop();
     stopAnimation();
     cancelSearch();
 }

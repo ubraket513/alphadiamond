@@ -1,10 +1,10 @@
 #include "native_move_player.hpp"
 
-#include <QAudioOutput>
+#include <QSoundEffect>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
-#include <QMediaPlayer>
+
 #include <QUrl>
 
 #include <algorithm>
@@ -13,46 +13,36 @@
 NativeMovePlayer::NativeMovePlayer(QObject* parent) : QObject(parent) {
     setObjectName(QStringLiteral("movePlayer"));
     const QString path = QDir(QCoreApplication::applicationDirPath())
-                             .filePath(QStringLiteral("assets/sounds/move.m4a"));
+                             .filePath(QStringLiteral("assets/sounds/move.wav"));
     if (!QFileInfo::exists(path)) {
         status_ = QStringLiteral("Sound file missing: %1").arg(path);
         return;
     }
 
-    output_ = new QAudioOutput(this);
-    output_->setVolume(static_cast<float>(volume_));
-    player_ = new QMediaPlayer(this);
-    player_->setAudioOutput(output_);
-    connect(player_, &QMediaPlayer::mediaStatusChanged, this,
-            [this](QMediaPlayer::MediaStatus media_status) {
-                if (media_status == QMediaPlayer::InvalidMedia) {
-                    setStatus(QStringLiteral("Cannot decode move.m4a; no compatible codec is available."));
-                } else if (media_status == QMediaPlayer::LoadedMedia ||
-                           media_status == QMediaPlayer::BufferedMedia) {
-                    loaded_ = true;
-                    Q_EMIT changed();
-                    if (pending_) {
-                        pending_ = false;
-                        startPlayback();
-                    }
-                }
-            });
-    connect(player_, &QMediaPlayer::errorOccurred, this,
-            [this](QMediaPlayer::Error error, const QString& message) {
-                if (error == QMediaPlayer::NoError) return;
-                setStatus(message.isEmpty() ? QStringLiteral("Move sound playback failed.") : message);
-            });
+    player_ = new QSoundEffect(this);
+    player_->setVolume(volume_);
+    connect(player_, &QSoundEffect::statusChanged, this, [this] {
+        loaded_ = player_->status() == QSoundEffect::Ready;
+        if (player_->status() == QSoundEffect::Error)
+            setStatus(QStringLiteral("Cannot load move.wav."));
+        if (loaded_ && pending_) {
+            pending_ = false;
+            startPlayback();
+        }
+        Q_EMIT changed();
+    });
     player_->setSource(QUrl::fromLocalFile(path));
 }
 
 bool NativeMovePlayer::available() const {
-    return player_ != nullptr && output_ != nullptr && status_.isEmpty();
+    return player_ != nullptr && status_.isEmpty();
 }
 
 void NativeMovePlayer::setMuted(bool muted) {
     if (muted_ == muted) return;
     muted_ = muted;
-    if (output_) output_->setMuted(muted_);
+    if (player_)
+        player_->setMuted(muted_);
     Q_EMIT changed();
 }
 
@@ -62,10 +52,12 @@ void NativeMovePlayer::setVolume(double volume) {
     const bool should_unmute = volume > 0.0 && muted_;
     if (volume_ == volume && !should_unmute) return;
     volume_ = volume;
-    if (output_) output_->setVolume(static_cast<float>(volume_));
+    if (player_)
+        player_->setVolume(static_cast<float>(volume_));
     if (should_unmute) {
         muted_ = false;
-        if (output_) output_->setMuted(false);
+        if (player_)
+            player_->setMuted(false);
     }
     Q_EMIT changed();
 }
@@ -91,6 +83,5 @@ void NativeMovePlayer::setStatus(const QString& status) {
 void NativeMovePlayer::startPlayback() {
     if (!player_) return;
     player_->stop();
-    player_->setPosition(0);
     player_->play();
 }

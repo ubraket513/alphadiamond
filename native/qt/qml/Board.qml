@@ -189,11 +189,13 @@ Item {
             ctx.reset()
             ctx.clearRect(0, 0, width, height)
 
-            const ids = root.controller.proposalPathIds
+            const hint = !root.controller.replayActive && root.controller.proposalPathIds.length < 2
+            const ids = root.controller.replayActive ? root.controller.replayPathIds
+                      : hint ? root.controller.hintPathIds : root.controller.proposalPathIds
             if (!ids || ids.length < 2)
                 return
 
-            ctx.strokeStyle = Theme.pathLine
+            ctx.strokeStyle = hint ? Theme.systemMint : Theme.pathLine
             ctx.lineWidth = Math.max(2, root.unitScale * 0.09)
             ctx.lineCap = "round"
             ctx.lineJoin = "round"
@@ -280,6 +282,8 @@ Item {
     Repeater {
         model: root.controller.pieceModel
         delegate: Piece {
+            required property int pieceId
+            objectName: "boardPiece-" + pieceId
             required property string color
             required property int    positionId
 

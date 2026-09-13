@@ -13,7 +13,7 @@ AppDialog {
     title: "Models"
     message: "Browse native models from GitHub and Hugging Face. "
              + "Soo plays two-player games; Min plays three-player games. "
-             + "Selections apply to the next game of that type."
+             + "Selections apply to the next agent game, or immediately to hints in an all-human game of that type."
     acceptText: "Close"
     showReject: false
     implicitWidth: 780
@@ -179,7 +179,7 @@ AppDialog {
                         }
 
                         Text {
-                            text: "Training steps: " + modelData.trainingStep
+                            text: !modelData.compatible ? "Training checkpoint · native export required" : "Training steps: " + modelData.trainingStep
                                   + "  ·  Latest ELO: "
                                   + (modelData.latestElo === "" ? "unavailable" : modelData.latestElo)
                                   + "  ·  Training simulations: "
@@ -201,10 +201,10 @@ AppDialog {
                     }
 
                     ActionButton {
-                        text: modelData.selected ? "Selected"
-                              : modelData.installed ? "Use next game" : "Download"
+                        text: !modelData.compatible ? "Export required" : modelData.selected ? "Selected"
+                              : modelData.installed ? (root.controller.aiSeats.length === 0 ? "Use model" : "Use next game") : "Download"
                         primary: modelData.installed && !modelData.selected
-                        enabled: !root.catalog.busy && !modelData.selected
+                        enabled: modelData.compatible && !root.catalog.busy && !modelData.selected
                                  && (modelData.installed || modelData.github || modelData.huggingFace)
                         onClicked: {
                             if (modelData.installed)

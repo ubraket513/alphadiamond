@@ -662,6 +662,23 @@ mamba activate C:/ProgramData/miniforge3/envs/alphadiamond
 tools/build_native_qt.sh
 ```
 
+For QML hot reload, use a separate Qt 6.12+ MSVC development kit and run:
+
+```bash
+export DIAMOND_QT_ROOT="$HOME/Qt/6.12.0/msvc2022_64"
+tools/preview_native_qt.sh
+```
+
+This builds `native-qt-preview` with QML debugging enabled and launches Qt's
+`qmlpreview` with the resource maps for this application. Saving a QML file
+updates the running interface; C++ changes require a rebuild. Qt 6.12 is still
+prerelease as of September 14, 2026. Keep its kit separate from the stable
+environment used by `native-package`, which disables QML debugging.
+
+Both build scripts use every logical CPU by default. Set
+`CMAKE_BUILD_PARALLEL_LEVEL` to override the job count. The C++ compiler and
+linker run on the CPU; the GPU handles the Qt Quick interface at runtime.
+
 ## How to run
 
 Run the packaged Soo application through the launcher, which clears stale Qt
@@ -844,6 +861,36 @@ Undo works normally after a load.
 * Undo has no redo.
 
 ---
+
+## Qt replay, hints, and model browsing
+
+Open **History** to browse move cards or replay from the initial position. Click a
+move to seek directly to it. Replay preserves the live game, disables board input,
+and provides First/Back/Play/Next/Last controls and a move slider. Space toggles
+playback; arrow keys step through moves. Return to game restores the live position.
+Playback follows each canonical jump landing with a separate sound effect.
+
+Human turns show a read-only mint suggested route computed by the game's model.
+In an all-human game, selecting a compatible model in Models immediately changes
+the hint model. Agent games keep their model until the next game.
+
+Models fetches the paginated GitHub releases list as well as the native model
+index and Hugging Face bucket. Historical training-only releases are visible but
+marked **Export required**: a Python training `.pt` checkpoint or training archive
+is not a native deployment bundle. The currently published native bundles can be
+downloaded, digest-validated, installed atomically, and selected without another
+runtime dependency. Older training checkpoints need a compatible export first;
+the app does not execute checkpoint pickle payloads or install Python.
+
+Move audio uses a preloaded 220 ms PCM WAV derived from the original M4A, with its
+leading/trailing silence removed. Qt Multimedia supplies low-latency playback;
+FFmpeg was used once to produce the checked-in asset and is not required at runtime.
+
+`diamond_qt --replay-smoke` checks actual QML piece coordinates at both landings of
+a turning two-jump move, sound counts, playback, and isolation from the live game.
+`diamond_qt_model_catalog_test --live-github` downloads and activates a native
+model in temporary storage and verifies historical release discovery. Smoke modes
+use isolated settings rather than changing the user's selected model.
 
 ## Training and deployment boundary
 

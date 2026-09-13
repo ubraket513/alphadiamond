@@ -3,6 +3,11 @@
 # cleanly and fails when the application loads its interface.
 find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2 Multimedia)
 
+option(DIAMOND_QML_PREVIEW "Enable Qt 6.12 QML hot reload for development" OFF)
+if(DIAMOND_QML_PREVIEW AND Qt6_VERSION VERSION_LESS 6.12)
+    message(FATAL_ERROR "DIAMOND_QML_PREVIEW requires Qt 6.12 or newer (use the isolated preview kit)")
+endif()
+
 if(DIAMOND_BUILD_QT_SOO)
     find_package(Torch REQUIRED)
     if(NOT TARGET alphadiamond::diamond_model)
@@ -82,6 +87,7 @@ qt_add_resources(diamond_qt qml_resources
         "${QML_ROOT}/HistoryDrawer.qml"
         "${QML_ROOT}/Hole.qml"
         "${QML_ROOT}/HistoryPanel.qml"
+        "${QML_ROOT}/ReplayBar.qml"
         "${QML_ROOT}/Icon.qml"
         "${QML_ROOT}/NewMatchDialog.qml"
         "${QML_ROOT}/PanelScrollBar.qml"
@@ -123,6 +129,26 @@ target_link_libraries(diamond_qt PRIVATE
 target_compile_features(diamond_qt PRIVATE cxx_std_20)
 set_target_properties(diamond_qt PROPERTIES AUTOMOC ON WIN32_EXECUTABLE TRUE)
 
+# This app uses explicit resources rather than qt_add_qml_module. Supply their
+# maps to qmlpreview so edits to source files update the embedded qrc: URLs.
+set_target_properties(diamond_qt PROPERTIES QT_QML_NO_QML_PREVIEW TRUE)
+if(DIAMOND_QML_PREVIEW)
+    find_program(DIAMOND_QML_PREVIEW_EXECUTABLE NAMES qmlpreview qmlpreview.exe
+        HINTS "${Qt6_DIR}/../../../bin" "${Qt6_DIR}/../../../lib/qt6/bin"
+        NO_DEFAULT_PATH REQUIRED)
+    target_compile_definitions(diamond_qt PRIVATE QT_QML_DEBUG)
+    get_target_property(preview_resources diamond_qt _qt_generated_qrc_files)
+    set(preview_arguments)
+    foreach(resource IN LISTS preview_resources)
+        list(APPEND preview_arguments --resource "${resource}")
+    endforeach()
+    add_custom_target(diamond_qt_preview
+        COMMAND "${DIAMOND_QML_PREVIEW_EXECUTABLE}" --verbose ${preview_arguments} $<TARGET_FILE:diamond_qt>
+        DEPENDS diamond_qt
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        USES_TERMINAL VERBATIM)
+endif()
+
 if(MSVC)
     target_compile_options(diamond_qt PRIVATE /W4)
 endif()
@@ -131,6 +157,23 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+    if(DIAMOND_QML_PREVIEW)
+        add_executable(diamond_qt_preview_test tests/qml_preview_test.cpp)
+        target_link_libraries(diamond_qt_preview_test PRIVATE Qt6::Core)
+        add_test(NAME diamond_qt_preview_test COMMAND diamond_qt_preview_test
+            "${DIAMOND_QML_PREVIEW_EXECUTABLE}" $<TARGET_FILE:diamond_qt>
+            "${CMAKE_CURRENT_BINARY_DIR}/.qt/rcc/qml_resources.qrc")
+    endif()
+    if(WIN32)
+        add_executable(diamond_qt_native_chrome_test
+            tests/native_chrome_test.cpp native_chrome.cpp native_chrome.hpp)
+        target_link_libraries(diamond_qt_native_chrome_test PRIVATE
+            Qt6::Core Qt6::Gui dwmapi shell32 user32)
+        target_include_directories(diamond_qt_native_chrome_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_target_properties(diamond_qt_native_chrome_test PROPERTIES AUTOMOC ON)
+        add_test(NAME diamond_qt_native_chrome_test COMMAND diamond_qt_native_chrome_test)
+        add_test(NAME diamond_qt_window_smoke COMMAND diamond_qt --window-smoke)
+    endif()
     if(DIAMOND_BUILD_QT_SOO)
         add_executable(diamond_qt_min_position_audit min_position_audit.cpp)
         target_link_libraries(diamond_qt_min_position_audit PRIVATE diamond_qt_backend)
@@ -158,6 +201,7 @@ if(BUILD_TESTING)
         target_compile_options(diamond_qt_controller_contract PRIVATE /W4)
     endif()
     add_test(NAME diamond_qt_controller_contract COMMAND diamond_qt_controller_contract)
+    add_test(NAME diamond_qt_replay_smoke COMMAND diamond_qt --replay-smoke)
     add_test(NAME diamond_qt_analysis_smoke COMMAND diamond_qt --analysis-smoke)
 
     add_executable(diamond_qt_model_catalog_test tests/model_catalog_test.cpp)
@@ -181,6 +225,13 @@ if(BUILD_TESTING)
     endif()
 
     get_filename_component(DIAMOND_QT_ENV_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+    if(EXISTS "${DIAMOND_QT_ENV_PREFIX}/plugins")
+        set(DIAMOND_QT_PLUGIN_DIR "${DIAMOND_QT_ENV_PREFIX}/plugins")
+        set(DIAMOND_QT_QML_DIR "${DIAMOND_QT_ENV_PREFIX}/qml")
+    else()
+        set(DIAMOND_QT_PLUGIN_DIR "${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins")
+        set(DIAMOND_QT_QML_DIR "${DIAMOND_QT_ENV_PREFIX}/lib/qt6/qml")
+    endif()
     set(DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS
         "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/bin"
         "PATH=path_list_prepend:${DIAMOND_QT_ENV_PREFIX}/lib/qt6/bin")
@@ -192,6 +243,7 @@ if(BUILD_TESTING)
     set(DIAMOND_QT_TESTS
         diamond_qt_controller_contract
         diamond_qt_analysis_smoke
+        diamond_qt_replay_smoke
         diamond_qt_model_catalog_test)
     if(TARGET diamond_qt_rating_bridge_test)
         list(APPEND DIAMOND_QT_TESTS diamond_qt_rating_bridge_test)
@@ -199,18 +251,33 @@ if(BUILD_TESTING)
     set_tests_properties(${DIAMOND_QT_TESTS} PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         ENVIRONMENT
-            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/plugins;QML_IMPORT_PATH=${DIAMOND_QT_ENV_PREFIX}/lib/qt6/qml;QT_FORCE_STDERR_LOGGING=1"
+            "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${DIAMOND_QT_PLUGIN_DIR};QML_IMPORT_PATH=${DIAMOND_QT_QML_DIR};QT_FORCE_STDERR_LOGGING=1"
         ENVIRONMENT_MODIFICATION "${DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS}"
     )
+    if(WIN32)
+        # Offscreen tests cannot exercise Windows caption messages.
+        set_tests_properties(diamond_qt_native_chrome_test diamond_qt_window_smoke PROPERTIES
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_PLUGIN_PATH=${DIAMOND_QT_PLUGIN_DIR};QML_IMPORT_PATH=${DIAMOND_QT_QML_DIR};QT_FORCE_STDERR_LOGGING=1"
+            ENVIRONMENT_MODIFICATION "${DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS}"
+            TIMEOUT 30)
+    endif()
+    if(DIAMOND_QML_PREVIEW)
+        set_tests_properties(diamond_qt_preview_test PROPERTIES
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_PLUGIN_PATH=${DIAMOND_QT_PLUGIN_DIR};QML_IMPORT_PATH=${DIAMOND_QT_QML_DIR};QMLPREVIEW_HOTRELOAD=1;QT_FORCE_STDERR_LOGGING=1"
+            ENVIRONMENT_MODIFICATION "${DIAMOND_QT_RUNTIME_PATH_MODIFICATIONS}"
+            TIMEOUT 50)
+    endif()
 endif()
 
-set(MOVE_SOUND "${ASSET_ROOT}/sounds/move.m4a")
+set(MOVE_SOUND "${ASSET_ROOT}/sounds/move.wav")
 foreach(sound_target diamond_qt diamond_qt_controller_contract)
     if(TARGET ${sound_target})
         add_custom_command(TARGET ${sound_target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${sound_target}>/assets/sounds"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${MOVE_SOUND}" "$<TARGET_FILE_DIR:${sound_target}>/assets/sounds/move.m4a"
+                    "${MOVE_SOUND}" "$<TARGET_FILE_DIR:${sound_target}>/assets/sounds/move.wav"
             VERBATIM)
     endif()
 endforeach()

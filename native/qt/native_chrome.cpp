@@ -1,6 +1,7 @@
 #include "native_chrome.hpp"
 
 #include <QWindow>
+#include <QGuiApplication>
 
 #include <algorithm>
 
@@ -25,6 +26,18 @@ NativeChrome::NativeChrome(QObject* parent) : QObject(parent) {}
 void NativeChrome::attach(QWindow* window) {
     window_ = window;
     native_handle_ = window ? static_cast<quintptr>(window->winId()) : 0;
+    setHovered(false);
+}
+
+void NativeChrome::setupWindow(QWindow* window) {
+    if (!window || QGuiApplication::platformName() != QStringLiteral("windows"))
+        return;
+    // Preview can replace the root window. Reattach the chrome to the new HWND.
+    if (window_ == window && native_handle_ == static_cast<quintptr>(window->winId()))
+        return;
+    attach(window);
+    enableShellIntegration(window);
+    applyDwmAppearance(window);
 }
 
 void NativeChrome::setMaximiseButtonRect(double x, double y, double width, double height) {
@@ -39,7 +52,8 @@ void NativeChrome::setHovered(bool hovered) {
 
 bool NativeChrome::nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) {
 #ifdef Q_OS_WIN
-    if (eventType != QByteArrayLiteral("windows_generic_MSG") || !native_handle_) return false;
+    if (eventType != QByteArrayLiteral("windows_generic_MSG") || !window_ || !native_handle_)
+        return false;
     auto* msg = static_cast<MSG*>(message);
     const HWND hwnd = reinterpret_cast<HWND>(native_handle_);
     if (msg->hwnd != hwnd) return false;
@@ -56,7 +70,11 @@ bool NativeChrome::nativeEventFilter(const QByteArray& eventType, void* message,
                 params->rgrc[0].bottom = std::min(params->rgrc[0].bottom, info.rcWork.bottom);
             }
         }
-        *result = 0;
+        // The Win32 dispatcher passes nullptr for queued messages; only the
+        // window-procedure path supplies storage for an LRESULT. Both paths
+        // still need to consume the message (notably queued caption clicks).
+        if (result)
+            *result = 0;
         return true;
     }
 
@@ -68,17 +86,20 @@ bool NativeChrome::nativeEventFilter(const QByteArray& eventType, void* message,
             ? window_->devicePixelRatio() : 1.0;
         const bool over = maximise_rect_.contains(point.x / ratio, point.y / ratio);
         setHovered(over);
-        *result = over ? HTMAXBUTTON : HTCLIENT;
+        if (result)
+            *result = over ? HTMAXBUTTON : HTCLIENT;
         return true;
     }
     if (msg->message == WM_NCMOUSELEAVE) setHovered(false);
     if (msg->message == WM_NCLBUTTONDOWN && msg->wParam == HTMAXBUTTON) {
-        *result = 0;
+        if (result)
+            *result = 0;
         return true;
     }
     if (msg->message == WM_NCLBUTTONUP && msg->wParam == HTMAXBUTTON) {
         Q_EMIT maximiseClicked();
-        *result = 0;
+        if (result)
+            *result = 0;
         return true;
     }
 #else

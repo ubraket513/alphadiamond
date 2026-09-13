@@ -122,6 +122,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap latestSearchCompute READ latestSearchCompute NOTIFY changed)
     Q_PROPERTY(bool analysisAvailable READ analysisAvailable NOTIFY changed)
     Q_PROPERTY(int perspectivePlayerId READ perspectivePlayerId WRITE setPerspectivePlayerId NOTIFY changed)
+    Q_PROPERTY(bool replayActive READ replayActive NOTIFY changed)
+    Q_PROPERTY(int replayIndex READ replayIndex NOTIFY changed)
+    Q_PROPERTY(int replayCount READ replayCount NOTIFY changed)
+    Q_PROPERTY(bool replayPlaying READ replayPlaying NOTIFY changed)
+    Q_PROPERTY(QVariantList hintPathIds READ hintPathIds NOTIFY changed)
+    Q_PROPERTY(QVariantList replayPathIds READ replayPathIds NOTIFY changed)
 
   public:
     explicit NativeController(QObject* parent = nullptr);
@@ -147,12 +153,19 @@ class NativeController final : public QObject {
     int winnerId() const { return state_.finished_count ? state_.finish_order[0] : 0; }
     QString winnerName() const { return winnerId() ? playerName(static_cast<uint8_t>(winnerId())) : QString(); }
     QString resultSummary() const;
-    bool canSelect() const { return !isGameOver() && !ai_thinking_ && !animating_ && !proposal_is_ai_; }
-    bool canUndo() const {
-        return !isGameOver() && !history_.isEmpty() && !animating_;
+    bool canSelect() const {
+        return !replay_active_ && !isGameOver() && !ai_thinking_ && !animating_ && !proposal_is_ai_;
     }
-    bool canConfirm() const { return proposal_action_ >= 0; }
-    bool canCancel() const { return (!proposal_is_ai_ && proposal_action_ >= 0) || selected_position_ >= 0; }
+    bool canUndo() const {
+        return !replay_active_ && !isGameOver() && !history_.isEmpty() && !animating_;
+    }
+    bool canConfirm() const {
+        return !replay_active_ && proposal_action_ >= 0;
+    }
+    bool canCancel() const {
+        return !replay_active_ &&
+               ((!proposal_is_ai_ && proposal_action_ >= 0) || selected_position_ >= 0);
+    }
     bool hasProposal() const { return proposal_action_ >= 0; }
     bool proposalIsAi() const { return proposal_is_ai_; }
     bool proposalIsMultiHop() const { return proposal_path_.size() > 2; }
@@ -183,6 +196,27 @@ class NativeController final : public QObject {
     QVariantMap latestSearchCompute() const { return latest_search_compute_; }
     bool analysisAvailable() const;
     int perspectivePlayerId() const { return perspective_player_id_; }
+    bool replayActive() const {
+        return replay_active_;
+    }
+    int replayIndex() const {
+        return replay_index_;
+    }
+    int replayCount() const {
+        return history_.size();
+    }
+    bool replayPlaying() const {
+        return replay_timer_ && replay_playing_;
+    }
+    QVariantList hintPathIds() const {
+        return !replay_active_ && !animating_ && !isGameOver() && !isCurrentPlayerAi()
+                   ? hint_path_
+                   : QVariantList{};
+    }
+    QVariantList replayPathIds() const;
+    Q_INVOKABLE void seekReplay(int index);
+    Q_INVOKABLE void leaveReplay();
+    Q_INVOKABLE void toggleReplayPlayback();
 
     Q_INVOKABLE QVariantList seatColorsFor(int count) const;
     Q_INVOKABLE void selectPosition(int position);
@@ -212,6 +246,13 @@ class NativeController final : public QObject {
     void playerFinished(int playerId, int place);
 
   private:
+    friend struct ReplayTestAccess;
+    void refreshReplay();
+    bool replay_active_ = false;
+    bool replay_playing_ = false;
+    int replay_index_ = 0;
+    QTimer* replay_timer_ = nullptr;
+    QVariantList hint_path_;
     void loadTopology();
     void refreshModels(bool rebuildPieces = true);
     void rebuildPieceModel();
@@ -282,6 +323,7 @@ class NativeController final : public QObject {
     enum class SearchPurpose : uint8_t { None, AiMove, HumanAnalysis };
     SearchPurpose search_purpose_ = SearchPurpose::None;
     bool analysis_thinking_ = false;
+    bool shutting_down_ = false;
     std::optional<SearchTelemetry> pending_telemetry_;
     int pending_telemetry_turn_ = -1;
     int pending_telemetry_player_ = 0;

@@ -16,6 +16,9 @@
 #include <QPainter>
 #include <QPen>
 #include <QTimer>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 
 #include <cmath>
 #include <cstdio>
@@ -24,6 +27,7 @@
 #include "native_controller.hpp"
 #include "native_chrome.hpp"
 #include "model_catalog.hpp"
+#include "tests/replay_smoke.hpp"
 
 class PlaceholderIconProvider final : public QQuickImageProvider {
   public:
@@ -77,8 +81,11 @@ class PlaceholderIconProvider final : public QQuickImageProvider {
 int main(int argc, char* argv[]) {
     bool smoke_mode = false;
     for (int i = 1; i < argc; ++i)
-        smoke_mode = smoke_mode || QString::fromLocal8Bit(argv[i]).endsWith(QStringLiteral("-smoke"));
-    if (smoke_mode) qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+        smoke_mode =
+            smoke_mode || (QString::fromLocal8Bit(argv[i]).endsWith(QStringLiteral("-smoke")) &&
+                           QString::fromLocal8Bit(argv[i]) != QStringLiteral("--window-smoke"));
+    if (smoke_mode && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
 #ifdef Q_OS_WIN
     if (qEnvironmentVariableIsEmpty("QT_MEDIA_BACKEND"))
         qputenv("QT_MEDIA_BACKEND", QByteArrayLiteral("windows"));
@@ -88,6 +95,12 @@ int main(int argc, char* argv[]) {
     app.setQuitOnLastWindowClosed(true);
     app.setApplicationName(QStringLiteral("Diamond Controller"));
     app.setOrganizationName(QStringLiteral("alphadiamond"));
+    QTemporaryDir smoke_settings;
+    if (smoke_mode) {
+        QStandardPaths::setTestModeEnabled(true);
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, smoke_settings.path());
+    }
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 
     QStringList font_families;
@@ -140,9 +153,7 @@ int main(int argc, char* argv[]) {
         window->raise();
         window->requestActivate();
         if (!smoke_mode) {
-            native_chrome.attach(window);
-            NativeChrome::enableShellIntegration(window);
-            NativeChrome::applyDwmAppearance(window);
+            native_chrome.setupWindow(window);
         }
         QTimer::singleShot(100, window, [window] {
             if (!window->isVisible()) {
@@ -155,6 +166,83 @@ int main(int argc, char* argv[]) {
     }
     for (int i = 1; i < argc; ++i) {
         const QString argument = QString::fromLocal8Bit(argv[i]);
+#ifdef QT_QML_DEBUG
+        if (argument == QStringLiteral("--preview-check")) {
+            QPointer<QQuickWindow> original_window = qobject_cast<QQuickWindow*>(root);
+            QPointer<QObject> title_bar = root->findChild<QObject*>(QStringLiteral("titleBar"));
+            if (!original_window || !title_bar)
+                return 1;
+            title_bar->setProperty("panelVisible", false);
+            QTimer check;
+            QObject::connect(&check, &QTimer::timeout, &app, [&] {
+                if (!original_window || !title_bar) {
+                    qCritical("preview check: hot reload replaced the original UI objects");
+                    app.exit(1);
+                } else if (original_window->title() ==
+                           QStringLiteral("Diamond hot reload verified")) {
+                    const bool preserved = !title_bar->property("panelVisible").toBool();
+                    qInfo("preview check: source edit applied in place, UI state preserved=%d",
+                          preserved);
+                    app.exit(preserved ? 0 : 1);
+                }
+            });
+            check.start(100);
+            qInfo("preview check: ready for a source edit");
+            QTimer::singleShot(30000, &app, [&app] { app.exit(1); });
+            return app.exec();
+        }
+#endif
+        if (argument == QStringLiteral("--window-smoke")) {
+            auto* window = qobject_cast<QQuickWindow*>(root);
+            auto* minimise = root->findChild<QObject*>(QStringLiteral("minimiseButton"));
+            if (!window || !minimise ||
+                QGuiApplication::platformName() != QStringLiteral("windows")) {
+                qCritical("window smoke requires the Windows platform and caption controls");
+                return 1;
+            }
+            int frames = 0;
+            int step = 0;
+            QObject::connect(window, &QQuickWindow::frameSwapped, &app, [&] { ++frames; });
+            QTimer check;
+            QObject::connect(&check, &QTimer::timeout, &app, [&] {
+                const auto expected = step % 4 == 1   ? QWindow::Maximized
+                                      : step % 4 == 3 ? QWindow::Minimized
+                                                      : QWindow::Windowed;
+                if (window->visibility() != expected ||
+                    (expected != QWindow::Minimized && frames == 0)) {
+                    qCritical("window smoke failed at step %d: visibility=%d frames=%d", step,
+                              int(window->visibility()), frames);
+                    app.exit(1);
+                    return;
+                }
+                if (step == 20) {
+                    qInfo(
+                        "window smoke: 20 caption transitions passed with rendering after restore");
+                    app.quit();
+                    return;
+                }
+                frames = 0;
+                switch (step++ % 4) {
+                case 0:
+                case 1:
+                    Q_EMIT native_chrome.maximiseClicked();
+                    break;
+                case 2:
+                    QMetaObject::invokeMethod(minimise, "clicked");
+                    break;
+                case 3:
+                    window->showNormal();
+                    break;
+                }
+                window->requestUpdate();
+            });
+            check.start(500);
+            QTimer::singleShot(20000, &app, [&app] { app.exit(1); });
+            return app.exec();
+        }
+        if (argument == QStringLiteral("--replay-smoke"))
+            return replaySmoke(app, controller, root,
+                               i + 1 < argc ? QString::fromLocal8Bit(argv[i + 1]) : QString());
         if (argument == QStringLiteral("--models-smoke")) {
             auto* catalog = qobject_cast<ModelCatalog*>(controller.modelCatalog());
             QString minId;
@@ -170,7 +258,8 @@ int main(int argc, char* argv[]) {
             if (!dialog || !QMetaObject::invokeMethod(dialog, "open")) return 1;
             QTimer check;
             QObject::connect(&check, &QTimer::timeout, &app, [&] {
-                if (catalog->busy()) return;
+                if (!dialog->property("opened").toBool() || catalog->busy())
+                    return;
                 check.stop();
                 auto* list = root->findChild<QObject*>(QStringLiteral("modelsList"));
                 auto* chart = root->findChild<QObject*>(QStringLiteral("positionOutlookChart"));
@@ -181,8 +270,9 @@ int main(int argc, char* argv[]) {
                 if (i + 1 < argc)
                     if (auto* window = qobject_cast<QQuickWindow*>(root))
                         window->grabWindow().save(QString::fromLocal8Bit(argv[i + 1]));
-                qInfo("models smoke: active=%s rows=%d", qPrintable(catalog->activeModelId()),
-                      list ? list->property("count").toInt() : 0);
+                qInfo("models smoke: active=%s rows=%d status=%s",
+                      qPrintable(catalog->activeModelId()),
+                      list ? list->property("count").toInt() : 0, qPrintable(catalog->status()));
                 app.exit(valid ? 0 : 1);
             });
             check.start(100);

@@ -54,6 +54,7 @@ class ModelCatalog final : public QObject {
     bool activateSelected(const QString& family = {}); // Commits selection for this game's family.
   Q_SIGNALS:
     void changed();
+    void selectionChanged();
 
   private:
     friend struct ModelCatalogTestAccess;
@@ -72,6 +73,8 @@ class ModelCatalog final : public QObject {
     void beginWork();
     void endWork();
     void fetchGitHub();
+    void fetchGitHubReleases(int page = 1);
+    void parseGitHubReleases(const QByteArray& payload);
     void fetchHuggingFace();
     void parseGitHubIndex(const QByteArray& payload);
     void parseGitHubTree(const QByteArray& payload);
@@ -92,6 +95,7 @@ class ModelCatalog final : public QObject {
     QString destinationFor(const QString& modelId) const;
     QNetworkAccessManager* network_;
     QVariantList models_;
+    QVariantList releases_;
     QList<LocalModel> local_models_;
     QHash<QString, QString> local_paths_;
     QHash<QString, Artifact> artifacts_;

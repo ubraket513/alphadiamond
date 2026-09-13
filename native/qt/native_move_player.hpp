@@ -3,8 +3,7 @@
 #include <QObject>
 #include <QString>
 
-class QAudioOutput;
-class QMediaPlayer;
+class QSoundEffect;
 
 class NativeMovePlayer final : public QObject {
     Q_OBJECT
@@ -31,8 +30,7 @@ class NativeMovePlayer final : public QObject {
     void setStatus(const QString& status);
     void startPlayback();
 
-    QMediaPlayer* player_ = nullptr;
-    QAudioOutput* output_ = nullptr;
+    QSoundEffect* player_ = nullptr;
     bool muted_ = false;
     bool loaded_ = false;
     bool pending_ = false;
